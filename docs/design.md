@@ -370,8 +370,9 @@ def permissions_for(reads) -> list[str]    # sorted; includes reference data per
 class Syncer:
     def __init__(self, client: FolioClient, cache: Cache, site: Site) -> None
     def run(self, reads: Iterable[str], force_full: bool = False) -> SyncReport
-    def sample(self, reads: Iterable[str], instances: int) -> SyncReport   # previews: the first instances by id
-        # that have holdings, with their holdings, items, loans and MARC, into this (temporary) cache
+    def sample(self, reads: Iterable[str], instances: int) -> SyncReport   # previews: about N instances found
+        # from the first items by id (most instances on many tenants have none), with all their holdings,
+        # items, loans and MARC, into this (temporary) cache; a tenant with no items gets its first instances
 def reads_to_sync(feeds: list[Feed]) -> set[str]   # the union over enabled feeds
 ```
 Reference data always syncs; when a table cannot be loaded, the copy from the last sync is used, and with no copy the sync fails (names and codes go into the files). Entities sync in `ENTITY_ORDER`, limited to `reads`; MARC is fetched for MARC-source instances when `marc` is in `reads`, and each sync retries MARC-source instances that still have none. FOLIOHQ's full/delta/auto rules, `incomplete` flags and 10-minute overlap are kept, and:

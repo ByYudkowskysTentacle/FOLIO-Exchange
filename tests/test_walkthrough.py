@@ -99,3 +99,39 @@ def test_yaml_layout_errors_are_explained(site, capsys, caplog):
                                              encoding="utf-8")
     assert main(["-s", str(site), "feeds"]) == 1
     assert "Check the indentation" in capsys.readouterr().out
+
+
+def test_preview_finds_items_when_most_instances_have_none(site, folio, capsys):
+    """On the Eureka reference tenant 10,015 of 10,042 instances have no holdings; previews must still show rows."""
+    from mock_folio import U, meta
+
+    renamed = {}
+    for inst in folio.data["instances"]:                             # move the instances with items to the end
+        new = "ffffffff" + inst["id"][8:]
+        renamed[inst["id"]] = new
+        inst["id"] = new
+    for h in folio.data["holdingsRecords"]:
+        h["instanceId"] = renamed[h["instanceId"]]
+    folio.data["srs"] = {renamed[k]: v for k, v in folio.data["srs"].items()}
+    folio.data["instances"] += [{"id": U(5000 + n), "hrid": f"e{n}", "source": "FOLIO", "title": f"E-book {n}",
+                                 "metadata": meta()} for n in range(150)]
+    assert main(["-s", str(site), "preview", "chq", "-n", "3"]) == 0
+    out = capsys.readouterr().out
+    assert "0 item rows" not in out and "items row 1" in out
+
+
+def test_check_explains_an_env_password_without_suggesting_the_keyring(tmp_path, folio, monkeypatch, capsys):
+    from sitekit import make_site
+
+    monkeypatch.setenv("FOLIO_PASSWORD", "secret")
+    root = make_site(tmp_path / "s", folio.url, folio={"secret": "env:FOLIO_PASSWORD"})
+    make_feed(root)
+    assert main(["-s", str(root), "check"]) == 0
+    out = capsys.readouterr().out
+    assert "Set it for the user the scheduled task runs as" in out and "secret set folio" not in out
+
+
+def test_check_delivery_names_the_local_folder(site, capsys):
+    (site / "vendor-drop").mkdir()
+    assert main(["-s", str(site), "check", "--delivery"]) == 0
+    assert f"{site / 'vendor-drop'} has 0 entries" in capsys.readouterr().out

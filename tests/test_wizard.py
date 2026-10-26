@@ -22,7 +22,8 @@ def test_wizard_sets_up_a_working_feed(tmp_path, folio, monkeypatch):
     assert run_wizard(root, p) == 0, "\n".join(p.transcript)
     site = yaml.safe_load((root / "site.yaml").read_text(encoding="utf-8"))
     feed = yaml.safe_load((root / "feeds" / "chq.yaml").read_text(encoding="utf-8"))
-    assert site["folio"] == {"base_url": folio.url, "tenant": "diku", "username": "fx_reader", "secret": "keyring"}
+    assert site["folio"] == {"base_url": folio.url, "tenant": "diku", "username": "fx_reader",
+                            "secret": "env:FOLIO_PASSWORD"}   # no keyring here: it says where the password is
     assert feed["uses"] == "chq-academic@^1.0" and feed["enabled"] is True
     assert feed["filters"] == {"exclude_location_codes": ["ONLINE"]}
     assert feed["legacy"] == {"circ_count_note_type": "Legacy circ count",

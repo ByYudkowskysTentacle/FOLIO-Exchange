@@ -251,6 +251,7 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
             "Also store this password in the system keyring, so scheduled runs have it?", True):
         credentials.store(credentials.FOLIO_SERVICE, account, os.environ["FOLIO_PASSWORD"])
     elif os.environ.get("FOLIO_PASSWORD"):
+        folio["secret"] = "env:FOLIO_PASSWORD"       # say where the password really comes from
         p.say("Note: scheduled runs need FOLIO_PASSWORD set for the user that runs them.")
     raw_site["folio"] = folio
     write_yaml(site_path, raw_site, SITE_HEADER)
@@ -321,6 +322,8 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
         "Leave out items with any of these statuses? (most vendors want every status)",
         [(s, s) for s in STATUSES], filters.get("exclude_item_statuses") or [])
     raw["filters"] = {k: v for k, v in filters.items() if v}
+    if not raw["filters"]:
+        raw.pop("filters")
 
     note_types = sorted(t.get("name") for t in client.get_all("/item-note-types", "itemNoteTypes") if t.get("name"))
     if note_types and p.confirm("\nWere items migrated from an older system with counts or dates kept in item "

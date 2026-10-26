@@ -22,14 +22,22 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
-- 161 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples, CI with a secret scan (not yet run on GitHub).
+- 167 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
 
-**Not done:** nothing has run against a real tenant or vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
+**Eureka trial (26 Oct 2026).** Run against the public Eureka Snapshot reference system (`https://folio-etesting-snapshot-kong.ci.folio.org`, tenant `diku`, the published demo login), delivering to a local folder:
+- `check`: login and every endpoint readable (10,042 instances, 27 holdings, 33 items, 15 loans, ten reference tables).
+- `run chq`: a full sync in 30 seconds (10,000 MARC records fetched), held as a first delivery; `release` sent it; the next run was a delta of under 4 seconds and delivered straight away.
+- A feed with `bibs_without_items: true` built 10,041 bibs (10,000 from SRS). Every record parsed; 001 = instance HRID and 999 ff $i = instance UUID on all of them; leader 9 = `a`; no duplicates; every PSV row had 20 columns and linked to a bib.
+- `init` ran end to end with typed answers: login, permissions, the tenant's own locations, a live preview, a local delivery test.
+- Fixed from what it showed: previews sampled the first instances by id, and on this tenant (like a library with many e-resources) none had items, so previews were empty. They now start from items. Also: the password note in `check` and `schedule` now matches where `site.yaml` says the password is; the wizard writes `secret: env:FOLIO_PASSWORD` when the password stays in the environment, and no empty `filters`; `check --delivery` names the local folder.
+- In this sample data every instance with items is FOLIO-source, so the default chq feed sends generated bibs only; a real tenant will mostly send SRS MARC, as the all-bibs feed showed.
+
+**Not done:** nothing has run against the library's own tenant or a vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
 
 **Next**
-1. Run the tests on GitHub (Linux and Windows) and the secret scan once the branch is pushed.
-2. Try `init`, `run` and `release` against the public Eureka reference system (`diku`), with a local-folder delivery.
-3. Decide the license before the first release.
+1. Decide the license before the first release.
+2. Gate 1 in FOLIOHQ (see Next steps below); then repeat this trial against the library's tenant with `run --no-deliver`.
+3. Try the hourly Windows task (`folio-exchange schedule`) on the library PC, with the password in Credential Manager.
 
 ## Decisions
 

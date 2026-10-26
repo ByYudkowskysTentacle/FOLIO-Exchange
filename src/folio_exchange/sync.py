@@ -176,42 +176,37 @@ class Syncer:
 
     # --------------------------------------------------------------- preview
     def sample(self, reads: Iterable[str], instances: int) -> SyncReport:
-        """Fetch the first ``instances`` instances by id that have items, with their holdings, items, loans
-        and MARC, into this cache (a temporary one, for previews). Nothing else is read."""
+        """Fetch about ``instances`` instances that have items, with all their holdings, items, loans and
+        MARC, into this cache (a temporary one, for previews). Nothing else is read.
+
+        The sample starts from items, because on many tenants most instances (e-resources, records loaded
+        for discovery) have none. A tenant with no items at all gets its first instances instead."""
         wanted = set(reads)
         self._marc = "marc" in wanted
         t0 = time.monotonic()
         self.sync_refdata()
         gen = 1
         inst_read, hold_read, item_read = READS["instances"], READS["holdings"], READS["items"]
-        insts: list[dict] = []
-        holdings: list[dict] = []
-        last_id: str | None = None
-        # Read a few pages of instances and keep those with holdings, so the sample has item rows.
-        for _ in range(5):
-            cql = (f'id>"{last_id}" sortBy id' if last_id else "cql.allRecords=1 sortBy id")
-            page = (self.client.get(inst_read.path, {"query": cql, "limit": max(instances * 4, 20),
-                                                     "totalRecords": "none"}) or {}).get(inst_read.key, [])
-            if not page:
-                break
-            last_id = page[-1]["id"]
-            found = list(self.client.iter_where_in(hold_read.path, hold_read.key, "instanceId",
-                                                   [r["id"] for r in page]))
-            with_holdings = {h.get("instanceId") for h in found}
-            insts += [r for r in page if r["id"] in with_holdings]
-            holdings += found
-            if len(insts) >= instances:
-                break
-        insts = insts[:instances]
-        chosen = {r["id"] for r in insts}
-        holdings = [h for h in holdings if h.get("instanceId") in chosen]
+        first_items = (self.client.get(item_read.path, {"query": "cql.allRecords=1 sortBy id",
+                                                        "limit": min(500, max(50, instances * 10)),
+                                                        "totalRecords": "none"}) or {}).get(item_read.key, [])
+        some_holdings = list(self.client.iter_where_in(
+            hold_read.path, hold_read.key, "id", [i.get("holdingsRecordId") for i in first_items]))
+        by_id = {h["id"]: h for h in some_holdings}
+        chosen = list(dict.fromkeys(by_id[i["holdingsRecordId"]].get("instanceId") for i in first_items
+                                    if i.get("holdingsRecordId") in by_id))[:instances]
+        if chosen:
+            insts = list(self.client.iter_where_in(inst_read.path, inst_read.key, "id", chosen))
+        else:
+            insts = (self.client.get(inst_read.path, {"query": "cql.allRecords=1 sortBy id", "limit": instances,
+                                                      "totalRecords": "none"}) or {}).get(inst_read.key, [])
         self._store("instances", insts, gen)
+        holdings = list(self.client.iter_where_in(hold_read.path, hold_read.key, "instanceId",
+                                                  [r["id"] for r in insts]))
         self._store("holdings", holdings, gen)
-        items: list[dict] = []
-        if "items" in wanted:
-            items = list(self.client.iter_where_in(item_read.path, item_read.key, "holdingsRecordId",
-                                                   [h["id"] for h in holdings]))
-            self._store("items", items, gen)
+        items = list(self.client.iter_where_in(item_read.path, item_read.key, "holdingsRecordId",
+                                               [h["id"] for h in holdings]))
+        self._store("items", items, gen)
         if "loans" in wanted and items:
             loans_read = READS["loans"]
             loans = list(self.client.iter_where_in(loans_read.path, loans_read.key, "itemId",
