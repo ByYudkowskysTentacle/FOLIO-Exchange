@@ -42,7 +42,8 @@ def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> No
 
 def check_marc_file(path: Path) -> list[str]:
     """Problems that stop ``path`` being read as binary MARC 21; an empty list means it parses."""
-    data = Path(path).read_bytes()
+    with open(path, "rb") as fh:
+        data = fh.read(4 << 20)           # the separators show up in the first records
     if not data:
         return []
     problems: list[str] = []

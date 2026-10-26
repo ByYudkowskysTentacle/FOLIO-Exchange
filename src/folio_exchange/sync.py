@@ -185,6 +185,7 @@ class Syncer:
         gen = 1
         inst_read, hold_read, item_read = READS["instances"], READS["holdings"], READS["items"]
         insts: list[dict] = []
+        holdings: list[dict] = []
         last_id: str | None = None
         # Read a few pages of instances and keep those with holdings, so the sample has item rows.
         for _ in range(5):
@@ -194,16 +195,17 @@ class Syncer:
             if not page:
                 break
             last_id = page[-1]["id"]
-            ids = [r["id"] for r in page]
-            with_holdings = {h.get("instanceId") for h in
-                             self.client.iter_where_in(hold_read.path, hold_read.key, "instanceId", ids)}
+            found = list(self.client.iter_where_in(hold_read.path, hold_read.key, "instanceId",
+                                                   [r["id"] for r in page]))
+            with_holdings = {h.get("instanceId") for h in found}
             insts += [r for r in page if r["id"] in with_holdings]
+            holdings += found
             if len(insts) >= instances:
                 break
         insts = insts[:instances]
+        chosen = {r["id"] for r in insts}
+        holdings = [h for h in holdings if h.get("instanceId") in chosen]
         self._store("instances", insts, gen)
-        holdings = list(self.client.iter_where_in(hold_read.path, hold_read.key, "instanceId",
-                                                  [r["id"] for r in insts]))
         self._store("holdings", holdings, gen)
         items: list[dict] = []
         if "items" in wanted:

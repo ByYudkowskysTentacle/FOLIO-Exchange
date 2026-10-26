@@ -144,3 +144,30 @@ def test_history_db_has_no_user_columns(site):
     assert {r[1] for r in db.execute("PRAGMA table_info(loans)")} == {
         "id", "item_id", "loan_date", "return_date", "due_date", "status", "renewals", "gen"}
     db.close()
+
+
+def test_superseded_blocked_runs_are_pruned(site, folio):
+    data = yaml.safe_load((site / "site.yaml").read_text(encoding="utf-8"))
+    write_yaml(site / "site.yaml", {**data, "runs": {"keep_local_runs": 1}})
+    assert main(["-s", str(site), "run", "chq"]) == 2
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    keep = folio.data["items"]
+    folio.data["items"] = keep[:1]
+    assert main(["-s", str(site), "run", "chq"]) == 2                 # blocked
+    blocked = sorted(p for p in (site / "out" / "chq").iterdir() if p.name[:1].isdigit())[-1]
+    folio.data["items"] = keep
+    assert main(["-s", str(site), "run", "chq"]) == 0                 # supersedes the blocked run
+    assert main(["-s", str(site), "run", "chq"]) == 0
+    assert not blocked.exists()
+
+
+def test_manual_builds_do_not_hide_a_stopped_schedule(site):
+    make_feed(site, schedule="daily 00:00")
+    s = load_site(site)
+    with History(s.history_path) as h:
+        h.set_meta("feed_seen:chq", "2020-01-01T00:00:00+00:00")
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0   # built, by hand
+    feed = load_feed(site / "feeds" / "chq.yaml", RecipeLibrary(s.recipe_dirs), s.root)
+    with History(s.history_path) as h:
+        nxt = sched.next_slot(sched.parse("daily 00:00"), datetime.now(timezone.utc), None)
+        assert runner.overdue(s, feed, h, nxt + sched.timedelta(hours=1))   # the build was after the slot before

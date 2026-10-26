@@ -330,7 +330,9 @@ def cmd_sync(args) -> int:
 
     site = _site(args)
     feeds, _errors = _load(site)
-    wanted = reads_to_sync(feeds) or set(reads.READS)
+    wanted = reads_to_sync(feeds)
+    if not wanted:
+        raise ConfigError("No enabled feed, so there is nothing to sync. Set one up with `folio-exchange init`.")
     with runner.RunLock(site.lock_path):
         rep = runner.sync(site, wanted, args.full)
     print(json.dumps(rep, indent=2, default=str))

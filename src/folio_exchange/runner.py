@@ -324,9 +324,11 @@ def cache_not_ready(cache: Cache, feed: Feed) -> str | None:
 
 
 def _prune(site: Site, feed: Feed, hist: History) -> None:
-    protect = {Path(r["run_dir"]) for r in hist.runs(feed.name, 200)
-               if r.get("run_dir") and r.get("status") in ("held", "blocked")}
     last = hist.last_delivered(feed.name)
+    # Runs waiting for release are kept; once a later delivery supersedes them they can be pruned.
+    protect = {Path(r["run_dir"]) for r in hist.runs(feed.name, 200)
+               if r.get("run_dir") and r.get("status") in ("held", "blocked")
+               and (not last or r["id"] > last["id"])}
     if last and last.get("run_dir"):
         protect.add(Path(last["run_dir"]))
     delivery.prune_runs(site.out_dir / feed.name, int(site.runs["keep_local_runs"]), protect)
@@ -430,7 +432,8 @@ def overdue(site: Site, feed: Feed, hist: History, now: datetime) -> str | None:
     before = schedule.last_slot(s, slot - timedelta(seconds=1), site.timezone)
     if before is None or before <= feed_created(hist, feed):
         return None
-    good = [r for r in hist.runs(feed.name, 50) if r.get("status") in ("success", "built")]
+    good = [r for r in hist.runs(feed.name, 500)
+            if r.get("status") == "success" or (r.get("trigger") == "schedule" and r.get("status") in schedule.SETTLED)]
     last_ok = datetime.fromisoformat(good[0]["started"]) if good else None
     if last_ok is None or last_ok < before:
         when = f"last success {last_ok:%Y-%m-%d %H:%M} UTC" if last_ok else "no successful run yet"
