@@ -70,13 +70,15 @@ def client_for(site: Site) -> FolioClient:
     )
 
 
-def _new_run_dir(base: Path, prefix: str = "") -> Path:
+def _new_run_dir(base: Path, prefix: str = "", hist: History | None = None) -> Path:
+    """A new run folder named by the UTC time. Names are never reused, even after an old folder was pruned
+    (history still names it), and runs within one second get -02, -03 ... so names sort oldest first."""
     stamp = now_utc().strftime("%Y%m%d-%H%M%S")
     path = base / f"{prefix}{stamp}"
-    n = 2
-    while path.exists():
-        path = base / f"{prefix}{stamp}-{n}"
+    n = 1
+    while path.exists() or (hist is not None and hist.run_by_dir(path) is not None):
         n += 1
+        path = base / f"{prefix}{stamp}-{n:02d}"
     return path
 
 
@@ -220,7 +222,7 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
              sync_report: dict | None = None) -> RunResult:
     """One feed, with the site lock already held by the caller (see run_many)."""
     out_base = site.out_dir / feed.name
-    run_dir = _new_run_dir(out_base)
+    run_dir = _new_run_dir(out_base, hist=hist)
     dest = delivery.destination_key(feed.delivery)
     previous = hist.last_run(feed.name)
     run_id = hist.start_run(feed.name, feed.recipe.id, feed.recipe.version_str, opts.trigger, run_dir, dest)

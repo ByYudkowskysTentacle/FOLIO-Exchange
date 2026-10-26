@@ -171,3 +171,18 @@ def test_manual_builds_do_not_hide_a_stopped_schedule(site):
     with History(s.history_path) as h:
         nxt = sched.next_slot(sched.parse("daily 00:00"), datetime.now(timezone.utc), None)
         assert runner.overdue(s, feed, h, nxt + sched.timedelta(hours=1))   # the build was after the slot before
+
+
+def test_run_folder_names_are_never_reused_and_sort_in_order(site, monkeypatch):
+    from folio_exchange import runner as runner_mod
+
+    fixed = datetime(2026, 10, 26, 21, 25, 40, tzinfo=timezone.utc)
+    monkeypatch.setattr(runner_mod, "now_utc", lambda: fixed)          # every run in the same second
+    data = yaml.safe_load((site / "site.yaml").read_text(encoding="utf-8"))
+    write_yaml(site / "site.yaml", {**data, "runs": {"keep_local_runs": 1}})
+    for _ in range(3):
+        assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    with History(site / "data" / "history.sqlite") as h:
+        dirs = [Path(r["run_dir"]).name for r in reversed(h.runs("chq"))]
+    assert dirs == ["20261026-212540", "20261026-212540-02", "20261026-212540-03"]
+    assert sorted(dirs) == dirs
