@@ -4,11 +4,14 @@ Guidance for Claude Code (and humans) working in this repository.
 
 ## What this is
 
-FOLIO-Exchange is an open-source platform, at the spec stage, for scheduled data exchanges between the FOLIO library services platform and vendor platforms. collectionHQ comes first, followed by OCLC, other analytics tools and discovery layers. Each feed is a declarative **recipe**: a shared, versioned layout plus a library's local settings. Staff set feeds up and run them without code.
+FOLIO-Exchange is an open-source platform, with v1 in development, for scheduled data exchanges between the FOLIO library services platform and vendor platforms. collectionHQ comes first, followed by OCLC, other analytics tools and discovery layers. Each feed is a declarative **recipe**: a shared, versioned layout plus a library's local settings. Staff set feeds up and run them without code.
 
-There is no code yet. Start with:
+Start with:
 - `docs/spec.md`: the spec sheet (goals, roles, catalogue, requirements, recipe format, safety, roadmap, open questions).
+- `docs/design.md`: the v1 build contract – site and feed files, recipe format, every module's signatures, the CLI, testing, and what is deliberately left out. Keep code and this file in step in the same change.
 - `docs/notes.md`: decisions so far, lessons from FOLIOHQ, collectionHQ and FOLIO facts, and next steps.
+
+Code lives in `src/folio_exchange/` (bundled recipes in `recipes/<id>/<version>.yaml`, JSON Schemas in `schemas/`). Run the tests with `.venv/Scripts/python -m pytest -q` and lint with `.venv/Scripts/ruff check .` (dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -e ".[dev]"`).
 
 ## The live spec
 

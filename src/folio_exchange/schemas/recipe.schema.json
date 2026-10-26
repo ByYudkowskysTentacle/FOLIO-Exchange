@@ -1,0 +1,487 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://folio-exchange.invalid/schemas/recipe.schema.json",
+  "title": "FOLIO-Exchange recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "recipe": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "vendor": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "spec_source": {
+      "type": "string"
+    },
+    "changelog": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+          },
+          "date": {
+            "type": "string"
+          },
+          "changes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "date",
+          "changes"
+        ]
+      }
+    },
+    "reads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "instances",
+          "holdings",
+          "items",
+          "loans",
+          "marc"
+        ]
+      }
+    },
+    "patron_data": {
+      "const": "none"
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bib_field": {
+          "enum": [
+            "999 ff $i",
+            "001"
+          ]
+        },
+        "item_column": {
+          "type": "string"
+        },
+        "value": {
+          "enum": [
+            "instance_hrid",
+            "instance_id"
+          ]
+        }
+      },
+      "required": [
+        "bib_field",
+        "item_column",
+        "value"
+      ]
+    },
+    "file_prefix": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "include_suppressed_instances": {
+          "type": "boolean"
+        },
+        "include_suppressed_items": {
+          "type": "boolean"
+        },
+        "include_items_without_barcode": {
+          "type": "boolean"
+        },
+        "bibs_without_items": {
+          "type": "boolean"
+        },
+        "exclude_item_statuses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "include_location_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude_location_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "last_circ_date_from": {
+          "enum": [
+            "checkout",
+            "any"
+          ]
+        },
+        "loan_window_months": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timezone": {
+          "type": "string",
+          "description": "An IANA zone such as America/New_York"
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "format": {
+                "const": "marc21"
+              },
+              "file_name": {
+                "type": "string",
+                "pattern": "^([A-Za-z0-9._-]|\\{prefix\\}|\\{date\\})+$"
+              },
+              "split_every": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "embed_items": {
+                "type": "boolean"
+              },
+              "item_field": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "tag": {
+                    "type": "string",
+                    "pattern": "^(0[1-9][0-9]|[1-9][0-9]{2})$"
+                  },
+                  "strip_existing": {
+                    "type": "boolean"
+                  },
+                  "max_per_record": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "subfields": {
+                    "type": "object",
+                    "propertyNames": {
+                      "pattern": "^[a-z0-9]$"
+                    },
+                    "additionalProperties": {
+                      "enum": [
+                        "barcode",
+                        "call_number",
+                        "call_number_bare",
+                        "call_number_full",
+                        "call_number_prefix",
+                        "call_number_suffix",
+                        "call_number_type",
+                        "campus_code",
+                        "campus_name",
+                        "chronology",
+                        "copy_number",
+                        "created_date",
+                        "due_date",
+                        "enumeration",
+                        "holdings_hrid",
+                        "instance_hrid",
+                        "instance_id",
+                        "instance_suppressed",
+                        "institution_code",
+                        "institution_name",
+                        "item_hrid",
+                        "item_id",
+                        "item_identifier",
+                        "item_level_call_number",
+                        "item_suppressed",
+                        "last_checkin_date",
+                        "last_checkout_date",
+                        "last_circ_date",
+                        "last_return_date",
+                        "legacy_circ_count",
+                        "library_code",
+                        "library_name",
+                        "loan_type",
+                        "loans_folio",
+                        "loans_total",
+                        "loans_window",
+                        "location_code",
+                        "location_name",
+                        "location_name_code",
+                        "material_type",
+                        "number_of_pieces",
+                        "permanent_location_code",
+                        "renewals_total",
+                        "status",
+                        "status_date",
+                        "title",
+                        "volume"
+                      ],
+                      "description": "A field from `folio-exchange fields`."
+                    }
+                  }
+                }
+              },
+              "date_format": {
+                "type": "string",
+                "pattern": "%",
+                "description": "A strftime pattern, e.g. %Y-%m-%d"
+              }
+            },
+            "required": [
+              "name",
+              "format"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "format": {
+                "const": "delimited"
+              },
+              "file_name": {
+                "type": "string",
+                "pattern": "^([A-Za-z0-9._-]|\\{prefix\\}|\\{date\\})+$"
+              },
+              "extension": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9]+$",
+                "not": {
+                  "pattern": "^[Mm][Rr][Cc]$"
+                }
+              },
+              "delimiter": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              },
+              "header": {
+                "type": "boolean"
+              },
+              "empty_value": {
+                "type": "string"
+              },
+              "date_format": {
+                "type": "string",
+                "pattern": "%",
+                "description": "A strftime pattern, e.g. %Y-%m-%d"
+              },
+              "columns": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "header": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "field": {
+                      "enum": [
+                        "barcode",
+                        "call_number",
+                        "call_number_bare",
+                        "call_number_full",
+                        "call_number_prefix",
+                        "call_number_suffix",
+                        "call_number_type",
+                        "campus_code",
+                        "campus_name",
+                        "chronology",
+                        "copy_number",
+                        "created_date",
+                        "due_date",
+                        "enumeration",
+                        "holdings_hrid",
+                        "instance_hrid",
+                        "instance_id",
+                        "instance_suppressed",
+                        "institution_code",
+                        "institution_name",
+                        "item_hrid",
+                        "item_id",
+                        "item_identifier",
+                        "item_level_call_number",
+                        "item_suppressed",
+                        "last_checkin_date",
+                        "last_checkout_date",
+                        "last_circ_date",
+                        "last_return_date",
+                        "legacy_circ_count",
+                        "library_code",
+                        "library_name",
+                        "loan_type",
+                        "loans_folio",
+                        "loans_total",
+                        "loans_window",
+                        "location_code",
+                        "location_name",
+                        "location_name_code",
+                        "material_type",
+                        "number_of_pieces",
+                        "permanent_location_code",
+                        "renewals_total",
+                        "status",
+                        "status_date",
+                        "title",
+                        "volume"
+                      ],
+                      "description": "A field from `folio-exchange fields`."
+                    },
+                    "required": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "header",
+                    "field"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "name",
+              "format",
+              "columns"
+            ]
+          }
+        ]
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_item_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "must_be_filled": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "barcode",
+              "call_number",
+              "call_number_bare",
+              "call_number_full",
+              "call_number_prefix",
+              "call_number_suffix",
+              "call_number_type",
+              "campus_code",
+              "campus_name",
+              "chronology",
+              "copy_number",
+              "created_date",
+              "due_date",
+              "enumeration",
+              "holdings_hrid",
+              "instance_hrid",
+              "instance_id",
+              "instance_suppressed",
+              "institution_code",
+              "institution_name",
+              "item_hrid",
+              "item_id",
+              "item_identifier",
+              "item_level_call_number",
+              "item_suppressed",
+              "last_checkin_date",
+              "last_checkout_date",
+              "last_circ_date",
+              "last_return_date",
+              "legacy_circ_count",
+              "library_code",
+              "library_name",
+              "loan_type",
+              "loans_folio",
+              "loans_total",
+              "loans_window",
+              "location_code",
+              "location_name",
+              "location_name_code",
+              "material_type",
+              "number_of_pieces",
+              "permanent_location_code",
+              "renewals_total",
+              "status",
+              "status_date",
+              "title",
+              "volume"
+            ],
+            "description": "A field from `folio-exchange fields`."
+          }
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transport": {
+          "enum": [
+            "sftp",
+            "local",
+            "none"
+          ]
+        },
+        "upload_mode": {
+          "enum": [
+            "staged",
+            "direct"
+          ]
+        }
+      }
+    },
+    "default_schedule": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "recipe",
+    "version",
+    "vendor",
+    "title",
+    "changelog",
+    "reads",
+    "patron_data",
+    "outputs"
+  ],
+  "description": "A shared FOLIO-Exchange recipe: recipes/<id>/<version>.yaml"
+}

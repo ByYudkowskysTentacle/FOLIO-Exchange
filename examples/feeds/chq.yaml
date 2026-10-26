@@ -1,0 +1,34 @@
+# A collectionHQ Academic feed: this library's settings over the shared chq-academic recipe.
+# The recipe holds the file layout cHQ agreed; this file holds only local choices.
+# Check it with `folio-exchange check`; see the layout with `folio-exchange recipes summary chq`.
+
+uses: chq-academic@^1.0          # 1.x updates automatically; 2.0 waits for `folio-exchange upgrade`
+title: collectionHQ (Main Library)
+enabled: true
+file_prefix: chq                 # -> chq_bibs_YYYYMMDD.mrc and chq_items_YYYYMMDD.psv
+
+filters:                         # any key of the recipe's selection
+  exclude_location_codes: ["ONLINE"]   # quote codes that look like numbers, e.g. "0123"
+
+options:
+  timezone: America/Detroit      # dates in the files, and how legacy note dates are read
+
+legacy:                          # item note type names from Settings > Inventory, for migrated values
+  circ_count_note_type: null     # e.g. "Legacy circ count"; added to the loan count
+  created_date_note_type: null
+  last_circ_date_note_type: null
+
+checks:
+  min_item_ratio: 0.9            # block a delivery whose item count falls below 90% of the last one
+
+delivery:
+  transport: sftp
+  host: sftp.us.collectionhq.com
+  port: 22
+  username: your_chq_username
+  remote_dir: "."                # cHQ says which folder bibs and items go in
+  # Pinned server key. `folio-exchange check --delivery` shows the server's; confirm it with cHQ.
+  host_key_fingerprint: "SHA256:confirm-this-value-with-collectionHQ"
+  secret: keyring                # `folio-exchange secret set chq` stores the SFTP password
+
+schedule: Sun 03:30

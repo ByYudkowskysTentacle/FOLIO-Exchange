@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "folio-exchange"
+version = "0.1.0.dev0"
+description = "Set up, test and run scheduled data exchanges between FOLIO and vendor platforms from shared recipes"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "FOLIO-Exchange contributors" }]
+keywords = ["FOLIO", "library", "collectionHQ", "MARC", "SFTP", "integration"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Education",
+  "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+  "requests>=2.31",
+  "pymarc>=5.1",
+  "paramiko>=3.4",
+  "PyYAML>=6.0",
+  "python-dateutil>=2.8",
+  "keyring>=25",            # the OS credential store holds passwords on a library PC
+  "tzdata>=2024.1; platform_system == 'Windows'",
+]
+
+[project.urls]
+Repository = "https://github.com/ByYudkowskysTentacle/FOLIO-Exchange"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "jsonschema>=4.20"]
+
+[project.scripts]
+folio-exchange = "folio_exchange.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+folio_exchange = ["recipes/*/*.yaml", "recipes/*/*.md", "recipes/*/samples/*", "schemas/*.json"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "E731"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,10 +1,10 @@
 # Working notes
 
-_Last updated: 26 October 2026, when this repo was started. Read with `docs/spec.md`._
+_Last updated: 26 October 2026, after the v1 build. Read with `docs/spec.md` and `docs/design.md`._
 
 ## Where things stand
 
-- **FOLIO-Exchange** is at the spec stage: no code yet. The spec sheet is `docs/spec.md`.
+- **FOLIO-Exchange** v1 is built and tested offline (see below); not yet released or run against a real tenant. The spec sheet is `docs/spec.md`.
 - **Phase 0 is [FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ)** (`folio-chq-extract`), a working one-vendor tool for collectionHQ Academic. It is the reference implementation this platform generalizes. Its `docs/HANDOFF.md` has its own status and open questions.
 - **FOLIOHQ status:**
   - Tested end to end against FOLIO's public reference systems (Okapi and Eureka).
@@ -12,6 +12,24 @@ _Last updated: 26 October 2026, when this repo was started. Read with `docs/spec
   - The cHQ SFTP login is verified.
   - It has **not** yet run against the library's own tenant, and nothing has been uploaded to cHQ.
 - **The first library's tenant is on Eureka.**
+
+## v1 build (26 Oct 2026)
+
+The contract is `docs/design.md`; it was revised after a three-lens design review (spec coverage, safety and correctness, operator UX and FOLIOHQ parity), and its last section lists what was reviewed and left for later.
+
+**Done**
+- The whole pipeline: recipe library and feed overlay, read-only FOLIO client with patron and redirect guards, sync, MARC and delimited builders, checks, SFTP and local delivery, run history and audit, schedules, alerts, the runner, the command line and the guided `init`.
+- Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
+- A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
+- `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
+- 161 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples, CI with a secret scan (not yet run on GitHub).
+
+**Not done:** nothing has run against a real tenant or vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
+
+**Next**
+1. Run the tests on GitHub (Linux and Windows) and the secret scan once the branch is pushed.
+2. Try `init`, `run` and `release` against the public Eureka reference system (`diku`), with a local-folder delivery.
+3. Decide the license before the first release.
 
 ## Decisions
 
@@ -24,6 +42,9 @@ _Last updated: 26 October 2026, when this repo was started. Read with `docs/spec
 | 2026-10-26 | Outbound feeds after cHQ are unranked candidates | The second recipe is whichever a partner library needs first |
 | 2026-10-26 | Writing into FOLIO (inbound loads) waits for v2, behind a separate account and a second approver | Writes carry far more risk than reads |
 | 2026-10-26 | Working name FOLIO-Exchange | Check FOLIO's trademark guidance before announcing it |
+| 2026-10-26 | A delivery to a new destination, or on a new recipe major version, waits for a person to release it | A test delivery to a local folder must not disarm the review of the first real upload |
+| 2026-10-26 | Recipe minor and patch versions never change an output's bytes; any layout change is a new major | `^1.0` updates automatically, so a vendor must never see an unreviewed change |
+| 2026-10-26 | A shared recipe sets only how files travel (transport, upload mode); hosts, folders and server keys are local | A recipe from another site must not choose where files go or which server to trust |
 
 Still open: patron data, license (MIT vs Apache-2.0), upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
 
