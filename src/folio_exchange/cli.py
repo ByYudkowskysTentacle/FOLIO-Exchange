@@ -267,7 +267,12 @@ def cmd_run(args) -> int:
         bad = errors
         with History(site.history_path) as hist:
             runner.audit_settings(site, hist)
-            chosen = runner.due_feeds(site, feeds, datetime.now(timezone.utc), hist)
+            now = datetime.now(timezone.utc)
+            chosen = runner.due_feeds(site, feeds, now, hist)
+            for f in feeds:
+                late = runner.overdue(site, f, hist, now)
+                if late and f not in chosen:
+                    log.warning("Feed %s is %s", f.name, late)
         if not chosen and not bad:
             log.info("No feed is due.")
             return 0

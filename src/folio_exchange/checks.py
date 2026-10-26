@@ -36,7 +36,7 @@ def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> No
         raise SafetyCheckFailed(
             f"Item count fell from {last_delivered:,} to {items_written:,} (below {ratio:.0%} of the last "
             "delivery). Files were built but not delivered. If the drop is expected (weeding, a location "
-            f"removed), deliver this run with `folio-exchange deliver {feed.name} --force`."
+            f"removed), look at the files, then send them with `folio-exchange release {feed.name}`."
         )
 
 

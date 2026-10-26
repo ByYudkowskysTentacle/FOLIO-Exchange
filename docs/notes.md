@@ -1,10 +1,10 @@
 # Working notes
 
-_Last updated: 26 October 2026, when this repo was started. Read with `docs/spec.md`._
+_Last updated: 26 October 2026, after the v1 build. Read with `docs/spec.md` and `docs/design.md`._
 
 ## Where things stand
 
-- **FOLIO-Exchange** is at the spec stage: no code yet. The spec sheet is `docs/spec.md`.
+- **FOLIO-Exchange** v1 is built and tested offline (see below); not yet released or run against a real tenant. The spec sheet is `docs/spec.md`.
 - **Phase 0 is [FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ)** (`folio-chq-extract`), a working one-vendor tool for collectionHQ Academic. It is the reference implementation this platform generalizes. Its `docs/HANDOFF.md` has its own status and open questions.
 - **FOLIOHQ status:**
   - Tested end to end against FOLIO's public reference systems (Okapi and Eureka).
@@ -12,27 +12,23 @@ _Last updated: 26 October 2026, when this repo was started. Read with `docs/spec
   - The cHQ SFTP login is verified.
   - It has **not** yet run against the library's own tenant, and nothing has been uploaded to cHQ.
 - **The first library's tenant is on Eureka.**
-- **The v1 build has started** (26 Oct 2026, paused at a checkpoint): see "Build checkpoint" below and `docs/design.md`.
 
-## Build checkpoint (26 Oct 2026)
+## v1 build (26 Oct 2026)
 
-The plan is `docs/design.md`: the site folder, recipe and feed formats, every module's contract and the CLI. This is the sanctioned "in parallel" work from Next steps (recipe schema, splitting FOLIOHQ's core); FOLIOHQ stays the path to gate 1.
+The contract is `docs/design.md`; it was revised after a three-lens design review (spec coverage, safety and correctness, operator UX and FOLIOHQ parity), and its last section lists what was reviewed and left for later.
 
 **Done**
-- Scaffold: `pyproject.toml` (package and command `folio-exchange`, Python 3.10+, `keyring` as a core dependency), `src/` layout, `NOTICE.md` (MIT notice for code adapted from FOLIOHQ), `.gitignore` for site files, `tests/conftest.py` (real keyring and env secrets blocked; `folio` and `site` fixtures) and `tests/sitekit.py`.
-- Written and smoke-tested by hand, **no unit tests yet:** `errors`, `credentials` (secret references, keyring), `config` (`site.yaml`, rejects secrets), `reads` (read registry, path allowlist, patron denylist), `fields` (registry with what each field needs), `lock`, `history` (runs and audit), `schedule` (slots, due runs, OS scheduler command), `notify` (webhook, email), `delivery` (pinned-key SFTP, local folder).
-- Recipe `chq-academic` 1.0.0: same 20 columns, headers, delimiter, empty value, date format and 949 settings as FOLIOHQ's `config.example.yaml` (checked by script).
+- The whole pipeline: recipe library and feed overlay, read-only FOLIO client with patron and redirect guards, sync, MARC and delimited builders, checks, SFTP and local delivery, run history and audit, schedules, alerts, the runner, the command line and the guided `init`.
+- Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
+- `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
+- 136 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples, CI with a secret scan (not yet run on GitHub).
 
-**Copied from FOLIOHQ, not yet adapted** (the package does not import cleanly until they are): `client.py` (needs the allowlist guard and `iter_where_in`), `sync.py` (driven by reads and `Site`; `sample()` for previews), `marc.py`, `build.py` (still on FOLIOHQ's config dict), `tests/mock_folio.py` (needs `field==("a" or "b")` queries).
+**Not done:** nothing has run against a real tenant or vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
 
-**Not started:** `recipe.py`, `delimited.py`, `checks.py`, `runner.py`, `cli.py`, `wizard.py`, JSON Schemas, example site and feed files, all tests, CI, and README and CLAUDE.md updates.
-
-**To resume**
-1. Re-run the design critique (three reviewers: spec coverage, safety and correctness, operator UX and FOLIOHQ parity) and fold its findings into `docs/design.md`.
-2. Build in parallel against the contract: recipe loader and schemas; client and sync; build and checks; tests for the modules already written. Then runner and CLI, the setup wizard, and docs and CI.
-3. Review the whole build adversarially, fix, and run `pytest` and `ruff check .` clean.
-
-Dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -e ".[dev]"`.
+**Next**
+1. Run the tests on GitHub (Linux and Windows) and the secret scan once the branch is pushed.
+2. Try `init`, `run` and `release` against the public Eureka reference system (`diku`), with a local-folder delivery.
+3. Decide the license before the first release.
 
 ## Decisions
 
@@ -45,6 +41,9 @@ Dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -
 | 2026-10-26 | Outbound feeds after cHQ are unranked candidates | The second recipe is whichever a partner library needs first |
 | 2026-10-26 | Writing into FOLIO (inbound loads) waits for v2, behind a separate account and a second approver | Writes carry far more risk than reads |
 | 2026-10-26 | Working name FOLIO-Exchange | Check FOLIO's trademark guidance before announcing it |
+| 2026-10-26 | A delivery to a new destination, or on a new recipe major version, waits for a person to release it | A test delivery to a local folder must not disarm the review of the first real upload |
+| 2026-10-26 | Recipe minor and patch versions never change an output's bytes; any layout change is a new major | `^1.0` updates automatically, so a vendor must never see an unreviewed change |
+| 2026-10-26 | A shared recipe sets only how files travel (transport, upload mode); hosts, folders and server keys are local | A recipe from another site must not choose where files go or which server to trust |
 
 Still open: patron data, license (MIT vs Apache-2.0), upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
 
