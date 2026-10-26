@@ -14,6 +14,8 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import requests
+
 from . import credentials, delivery, reads, runner, schedule
 from .client import FolioClient, FolioError
 from .config import SITE_FILE, load_site, read_yaml, write_yaml
@@ -240,10 +242,16 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
                          verify_tls=bool(folio.get("verify_tls", True)))
     try:
         client.login()
-    except FxError as exc:
-        p.say(f"Login failed: {exc}\nNothing was saved. Check the address, tenant and account, then run init again.")
+    except (FxError, requests.RequestException) as exc:
+        p.say(f"Could not log in: {exc}\nNothing was saved. Check the address, tenant and account, then run init "
+              "again.")
         return 1
     p.say(f"Logged in to {client.base_url} as {client.username}.")
+    if os.environ.get("FOLIO_PASSWORD") and credentials.keyring_available() and p.confirm(
+            "Also store this password in the system keyring, so scheduled runs have it?", True):
+        credentials.store(credentials.FOLIO_SERVICE, account, os.environ["FOLIO_PASSWORD"])
+    elif os.environ.get("FOLIO_PASSWORD"):
+        p.say("Note: scheduled runs need FOLIO_PASSWORD set for the user that runs them.")
     raw_site["folio"] = folio
     write_yaml(site_path, raw_site, SITE_HEADER)
     _audit(root, None, "site settings written by init", {"file": SITE_FILE})
@@ -352,13 +360,21 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
         ("sftp", "upload to the vendor's SFTP server"),
         ("local", "copy into a folder (for testing, or a shared drive another tool picks up)"),
         ("none", "not yet: build the files and leave them in the run folder"),
-    ], d.get("transport") if d.get("transport") in ("sftp", "local", "none") else "sftp")
+    ], d.get("transport") if d.get("transport") in ("sftp", "local") else "sftp")
     d["transport"] = transport
     keep_paused = False
     if transport == "local":
+        def folder_ok(answer: str) -> str | None:
+            if not answer.strip():
+                return "This is needed."
+            try:
+                _in_site(root, answer).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return f"That folder cannot be used ({exc.strerror or exc}). Enter another."
+            return None
+
         d = {"transport": "local", "directory": p.ask("Folder to copy the files into", d.get("directory"),
-                                                      _required)}
-        _in_site(root, d["directory"]).mkdir(parents=True, exist_ok=True)
+                                                      folder_ok)}
     elif transport == "sftp":
         d["host"] = p.ask("SFTP server name (from the vendor)", d.get("host"), _required)
         d["port"] = int(p.ask("Port", str(d.get("port") or 22),

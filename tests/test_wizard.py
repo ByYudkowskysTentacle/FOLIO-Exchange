@@ -55,4 +55,4 @@ def test_wizard_stops_before_saving_on_a_bad_login(tmp_path, folio, monkeypatch)
     p = ScriptedPrompter([folio.url, "diku", "fx_reader"])
     assert run_wizard(tmp_path / "site", p) == 1
     assert not (tmp_path / "site" / "site.yaml").exists()
-    assert "Login failed" in "\n".join(p.transcript)
+    assert "Could not log in" in "\n".join(p.transcript)

@@ -359,6 +359,7 @@ def permissions_for(reads) -> list[str]    # sorted; includes reference data per
 - `guard(method, path)` runs before anything is sent: a patron path raises `PatronDataRefused`; a path outside the reads registry raises `FolioError`; anything but `GET`, or `POST` to the login paths and `/source-storage/source-records` (a read by POST), raises `FolioError("read-only: …")`.
 - Redirects are never followed (`allow_redirects=False`, `max_redirects = 0`); a 3xx is a `FolioError` naming the `Location`.
 - `iter_where_in(path, key, field, values, batch=50) -> Iterator[dict]`: CQL `field==("v1" or "v2" …)` in batches, for previews.
+- **Fail fast, log in once.** When FOLIO has never answered (connection refused, unknown name, untrusted certificate), the client raises `FolioUnreachable` at once with a plain message instead of retrying for minutes. A refused login raises `LoginFailed`, and the client never posts the password again in that run; a scheduled run that ended this way is not retried within its slot (`no_retry` in the report), so a wrong password cannot lock the service account. Reference-data loading never swallows either error.
 - Messages never include the password. The empty-password message names `FOLIO_PASSWORD` and `folio-exchange secret set folio`. Default user agent `folio-exchange/<version>`.
 
 **cache.py** – FOLIOHQ's, unchanged, plus `sync_state(entity) -> str | None` ("never synced" or "the last full sync did not finish") and `marc_source_without_marc() -> list[str]`. Loans never store a borrower: the table has no user columns, and sync drops `userId`, `proxyUserId` and related keys on arrival (tested).
@@ -423,7 +424,7 @@ def conformance(feed, run_dir, samples: dict[str, Path], files: dict[str, list[s
     # delimited = same header row, column count and delimiter; marc21 = both files parse as binary MARC
 def sample_files(feed: Feed) -> dict[str, Path]   # <recipe folder>/samples/<output name>.<ext>
 ```
-Blocked messages give the last delivered and current counts and the exact command to release the run.
+Blocked messages give the last delivered and current counts, the run folder, the command to release the run, and what to do if the drop is not expected (fix FOLIO and run again; the blocked run is then superseded and never sent). Feed problems name settings as the feed file writes them (`filters.…`, `checks.must_be_filled`), and a misspelled required column is reported as a misspelling.
 
 **delivery.py**
 ```python
@@ -502,7 +503,7 @@ def worst_code(results) -> int                      # 1 if any failed, else 2 if
 
 **First-delivery hold.** A delivery waits for a person (status `held`) when the feed has never delivered to this destination (transport, host, port and folder, or local directory), or when its recipe's major version differs from the last delivery's. A local test delivery therefore never disarms the hold for the real SFTP destination, and the item-ratio baseline always compares like with like.
 
-**Release.** `release FEED [RUN_DIR]` (also `deliver`) takes the lock and sends the latest held, blocked or built run (previews and failed runs never). It first shows the run, its counts against the last delivery, the reason it waited, the files and the destination, and asks for confirmation (`--yes` for scripts). It re-checks every file's SHA-256 against the run record (a file opened and saved in Excel is refused), refuses if the feed's destination changed since the build, and runs the item-ratio check for a `built` run unless `--force`. Releasing a held or blocked run is itself the person's approval. The release is recorded in history and the audit log with who did it.
+**Release.** `release FEED [RUN_DIR]` (also `deliver`) takes the lock and sends the latest held, blocked or built run that is newer than the feed's last delivery (previews and failed runs never). A run older than the last delivery is superseded: sending it would replace the vendor's newer files, so it needs its `RUN_DIR` and `--force`. It first shows the run, its counts against the last delivery, the reason it waited, the files and the destination, and asks for confirmation (`--yes` for scripts). It re-checks every file's SHA-256 against the run record (a file opened and saved in Excel is refused), refuses if the feed's destination changed since the build, and runs the item-ratio check for a `built` run unless `--force`. Releasing a held or blocked run is itself the person's approval. The release is recorded in history and the audit log with who did it.
 
 **Partial deliveries.** When a delivery stops after the vendor's copy may have changed (a direct upload started, a staged rename, or a local move done), the run fails with a message listing what the vendor already has, `partially_delivered` in the report, and an audit entry. A partial delivery never becomes the ratio baseline.
 
@@ -517,7 +518,7 @@ def worst_code(results) -> int                      # 1 if any failed, else 2 if
 | Command | Does |
 | --- | --- |
 | `init [FOLDER]` | Guided setup (`wizard.py`): connect, pick a recipe, filters, preview, delivery, schedule, alerts. |
-| `check [FEED]` | Password source, login, every endpoint the enabled feeds need with record counts (DENIED names the missing permission), recipe updates held for review, feed and recipe file problems, overdue feeds, a 0 item ratio on a delivering feed, alerts switched off. |
+| `check [FEED]` | Password source (and a note when it is only this window's environment, which a scheduled task will not have), login, every endpoint the enabled feeds need with record counts, recipe updates held for review, feed and recipe file problems, overdue feeds, a 0 item ratio on a delivering feed, alerts switched off. Only DENIED endpoints produce the list of permissions for the FOLIO administrator; a file problem ends with how to fix the file. |
 | `check --delivery` (alias `--sftp`) | Tests each feed's vendor login and lists the folder, or checks the local folder; uploads nothing. Messages as FOLIOHQ's `check --sftp`. |
 | `check --alerts` | Sends a test alert on every configured channel. |
 | `preview FEED [-n 25] [--rows 3] [--columns ...]` | Sample from live data in a temporary cache; prints item rows one per block (header: value); writes `PREVIEW_` files; shows sample conformance. |
@@ -576,7 +577,7 @@ FOLIO-Exchange reads none of FOLIOHQ's files; a library moving over runs `init` 
 - Everything runs offline against `tests/mock_folio.py` (login, keyset paging, `updatedDate` deltas, `field==("a" or "b")` lookups, SRS by instance id; its loans carry a `userId` so tests can prove it is dropped). SFTP is mocked; the keyring is blocked by an autouse fixture.
 - `tests/sitekit.py` writes site and feed files; `conftest.py` gives `folio` (a running mock) and `site` (a site folder with a `chq` feed delivering to a local folder).
 - FOLIOHQ's tests are ported (`test_end_to_end.py`, `test_units.py`), including its regression tests: fields over 9,999 bytes, refusing to deliver a partial or failed run, login retry, the legacy date off-by-one, stale MARC after a source change, the atomic SFTP pair, direct mode, upload-only listing, credentials.
-- Regression tests for the build review's findings (`test_regressions.py`).
+- Regression tests for the build review's findings (`test_regressions.py`) and the operator walkthrough (`test_walkthrough.py`).
 - New: recipes and overlay (`test_recipe.py`), patron and read-only guards, redirects, TLS and secrets (`test_safety.py`), schedules across daylight saving and the due rules (`test_schedule.py`), holds, release, scheduled runs, alerts, audit and crash recovery (`test_runner.py`), the wizard (`test_wizard.py`), schemas (`test_schemas.py`).
 - Every bundled recipe has a fixture test against the mock (`test_chq_academic_psv_layout`).
 - Byte parity with FOLIOHQ is checked by running both tools on the mock data; repeat it when the builders change.

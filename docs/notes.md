@@ -20,8 +20,9 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 **Done**
 - The whole pipeline: recipe library and feed overlay, read-only FOLIO client with patron and redirect guards, sync, MARC and delimited builders, checks, SFTP and local delivery, run history and audit, schedules, alerts, the runner, the command line and the guided `init`.
 - Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
+- A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
-- 152 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples, CI with a secret scan (not yet run on GitHub).
+- 161 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples, CI with a secret scan (not yet run on GitHub).
 
 **Not done:** nothing has run against a real tenant or vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
 

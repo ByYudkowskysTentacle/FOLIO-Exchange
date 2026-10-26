@@ -20,7 +20,7 @@ from pathlib import Path
 from . import __version__, credentials, delivery, reads, runner, schedule
 from .client import FolioError
 from .config import BUNDLED_RECIPES, Site, find_site, load_site, read_yaml
-from .errors import ConfigError, FxError, LockBusy
+from .errors import ConfigError, FxError, LockBusy, RecipeError
 from .fields import FIELDS
 from .history import History
 from .recipe import (
@@ -129,17 +129,24 @@ def _rewrite_key(path: Path, key: str, value: str) -> None:
 
 
 # ------------------------------------------------------------------ check
-def _probe(client, label: str, path: str, permission: str) -> tuple[bool, str]:
+def _probe(client, label: str, path: str, permission: str) -> tuple[bool, str, str | None]:
+    """(worked, line to print, the permission that was denied or None)."""
     try:
         if path == reads.READS["marc"].path:
             client.get(path, {"limit": 0})
-            return True, f"  OK       {label}"
-        return True, f"  OK       {label}: {client.count(path):,} records"
+            return True, f"  OK       {label}", None
+        return True, f"  OK       {label}: {client.count(path):,} records", None
     except FolioError as exc:
         text = str(exc)
-        if " 401" in text or " 403" in text or "-> 401" in text or "-> 403" in text:
-            return False, f"  DENIED   {label}: the account lacks {permission}"
-        return False, f"  FAILED   {label}: {text[:160]}"
+        if "-> 401" in text or "-> 403" in text:
+            return False, f"  DENIED   {label}: the account lacks {permission}", permission
+        return False, f"  FAILED   {label}: {_short(text)}", None
+
+
+def _short(text: str, width: int = 200) -> str:
+    import textwrap
+
+    return textwrap.shorten(" ".join(str(text).split()), width=width, placeholder=" ...")
 
 
 def cmd_check(args) -> int:
@@ -160,6 +167,7 @@ def cmd_check(args) -> int:
     if args.feed and not chosen and args.feed not in errors:
         raise ConfigError(f"No feed called {args.feed!r}")
     ok = True
+    file_problems = False
     with History(site.history_path) as hist:
         changed = runner.audit_settings(site, hist)
         if changed:
@@ -167,7 +175,7 @@ def cmd_check(args) -> int:
         print(f"Site: {site.root}")
         for name, err in errors.items():
             if not args.feed or name == args.feed:
-                ok = False
+                file_problems = True
                 print(f"Feed {name}: PROBLEM\n  " + err.replace("\n", "\n  "))
         for p in library.problems():
             print("Recipe file problem:\n  " + p.replace("\n", "\n  "))
@@ -190,27 +198,40 @@ def cmd_check(args) -> int:
     elif site.alerts.get("on") == "never":
         print("WARNING  alerts.on is never: failed runs send no alert.")
 
-    print(f"FOLIO password: {site.folio_password_source()}")
+    source = site.folio_password_source()
+    print(f"FOLIO password: {source}")
+    if source.startswith("environment"):
+        print("NOTE     The password comes from this window's environment. The scheduled task needs it too: "
+              "store it with `folio-exchange secret set folio`, or set FOLIO_PASSWORD for the user the task "
+              "runs as.")
     client = runner.client_for(site)
     client.login()
     print(f"Logged in to {client.base_url} (tenant {client.tenant}) as {client.username}")
     needed = set().union(*(set(f.reads) for f in chosen)) if chosen else set(reads.READS)
+    denied: list[str] = []
     for name in reads.ENTITY_ORDER + ("marc",):
         if name in needed:
             r = reads.READS[name]
-            good, line = _probe(client, f"{name} ({r.path})", r.path, r.permission)
+            good, line, perm = _probe(client, f"{name} ({r.path})", r.path, r.permission)
             ok &= good
+            denied.extend([perm] if perm else [])
             print(line)
     for kind, (path, _key, perm) in reads.REFDATA.items():
-        good, line = _probe(client, f"{kind} ({path})", path, perm)
+        good, line, missing = _probe(client, f"{kind} ({path})", path, perm)
         ok &= good
+        denied.extend([missing] if missing else [])
         print(line)
-    if not ok:
-        print("\nSome checks failed. The FOLIO account needs these permissions (on Eureka, the matching "
+    if denied:
+        print("\nAsk your FOLIO administrator to add these permissions to the account (on Eureka, the matching "
               "capabilities in its role):")
-        for perm in reads.permissions_for(needed):
+        for perm in sorted(set(denied)):
             print(f"  {perm}")
-    return 0 if ok else 1
+    elif not ok:
+        print("\nSome FOLIO requests failed (see FAILED above). Try again; if it repeats, check the address and "
+              "the network.")
+    if file_problems:
+        print("\nFix the feed file problems shown above, then run `folio-exchange check` again.")
+    return 0 if ok and not file_problems else 1
 
 
 def cmd_check_delivery(args) -> int:
@@ -344,7 +365,10 @@ def cmd_release(args) -> int:
     if res.report.get("cancelled"):
         print("Nothing was sent.")
         return 2
-    print(json.dumps({"run_dir": str(res.run_dir), "delivered": res.report.get("delivered")}, indent=2))
+    sent = res.report.get("delivered") or []
+    print(f"Sent {len(sent)} file(s) to {delivery.describe_destination(feed.delivery)}. Later runs to this "
+          f"destination deliver without waiting. To run on a schedule: folio-exchange schedule")
+    print(json.dumps({"run_dir": str(res.run_dir), "delivered": sent}, indent=2))
     return 0
 
 
@@ -399,6 +423,10 @@ def cmd_feeds(args) -> int:
         path = site.feeds_dir / f"{args.feed}.yaml"
         if not path.is_file():
             raise ConfigError(f"No feed file {path}")
+        current = read_yaml(path).get("enabled", True)
+        if current is (args.action == "resume"):
+            print(f"Feed {args.feed} is already {'running' if current else 'paused'}.")
+            return 0
         _rewrite_key(path, "enabled", "false" if args.action == "pause" else "true")
         with History(site.history_path) as hist:
             hist.audit(None, args.feed, f"feed {args.action}d", {"file": str(path)})
@@ -423,11 +451,16 @@ def cmd_feeds(args) -> int:
             print(f"  delivers  {delivery.describe_destination(f.delivery)}")
             if last:
                 print(f"  last run  {_when(last['started'])}: {last['status']}"
-                      + (f" ({last['error'][:120]})" if last.get("error") else ""))
-                if last["status"] in ("held", "blocked", "built"):
-                    print(f"            {runner.next_step(f, last['status'], Path(last['run_dir']))}")
+                      + (f" ({Path(last['run_dir']).name})" if last.get("run_dir") else ""))
+                if last.get("error"):
+                    print(f"            {_short(last['error'], 300)}")
+                if last["status"] in ("held", "blocked", "built", "failed"):
+                    step = runner.next_step(f, last["status"], Path(last["run_dir"]) if last.get("run_dir") else None)
+                    print(f"  next      {step}")
             else:
                 print("  last run  never")
+                print(f"  next      folio-exchange run {f.name}"
+                      + ("   (the first delivery is held for you to check)" if f.delivers else ""))
             newer = library.newer_major(f.uses)
             if newer:
                 print(f"  update    {newer.ref} is available (held for review; see `folio-exchange upgrade`)")
@@ -524,11 +557,18 @@ def cmd_upgrade(args) -> int:
     library = _library(site)
     feed = _one(site, args.feed)
     if args.to:
-        target = args.to
+        target = args.to if "@" in args.to else f"{feed.recipe.id}@{args.to}"
     else:
         newer = library.newer_major(feed.uses) or library.latest(feed.recipe.id)
+        if newer is None or newer.version <= feed.recipe.version:
+            print(f"No newer version of {feed.recipe.id} is available; {feed.name} uses {feed.recipe.ref}.")
+            return 0
         target = f"{newer.id}@^{newer.version[0]}.{newer.version[1]}"
-    rid, _spec = parse_uses(target)
+    try:
+        rid, _spec = parse_uses(target)
+        library.resolve(target)
+    except RecipeError as exc:
+        raise ConfigError(f"--to {args.to or target}: {str(exc).removeprefix('uses: ')}") from None
     if rid != feed.recipe.id:
         raise ConfigError(f"{target} is a different recipe; set up a new feed for it with `folio-exchange init`.")
     raw = read_yaml(feed.path)
@@ -589,6 +629,10 @@ def cmd_history(args) -> int:
             print(f"  status     {row['status']}")
             if row.get("error"):
                 print(f"  problem    {row['error']}")
+            rep = row.get("report") or {}
+            if rep.get("released_by"):
+                print(f"  released   by {rep['released_by']} on {_when(rep.get('released'))}"
+                      + (f", despite: {rep['released_after']}" if rep.get("released_after") else ""))
             print(f"  bibs/items {row.get('bibs')}/{row.get('items')}")
             for f in row.get("files") or []:
                 print(f"  file       {f['name']}  {f['bytes']:,} bytes  sha256 {f['sha256'][:16]}…")
@@ -602,9 +646,11 @@ def cmd_history(args) -> int:
         if not rows:
             print("No runs yet.")
         for r in reversed(rows):
+            folder = Path(r["run_dir"]).name if r.get("run_dir") else "-"
             print(f"{r['id']:>5}  {_when(r['started'])}  {r['feed']:<14} {r['status']:<8} "
-                  f"items {r.get('items') if r.get('items') is not None else '-':>8}  "
-                  f"{(r.get('error') or '')[:80]}")
+                  f"items {r.get('items') if r.get('items') is not None else '-':>8}  {folder:<22} "
+                  f"{_short(r.get('error') or '', 80) if r.get('error') else ''}")
+        print("(Times are this computer's; run folder names are in UTC.)")
     return 0
 
 
@@ -640,14 +686,16 @@ def cmd_secret(args) -> int:
             targets.append("smtp")
         feeds, _errors = _feeds(site)
         targets += [f.name for f in feeds if f.delivery["transport"] == "sftp"]
+        missing = False
         for t in targets:
             service, account, ref, what = _secret_target(site, t)
             src = (site.folio_password_source() if t == "folio"
                    else credentials.source(ref, service, account))
             print(f"{t:<14} {what}: {src}")
+            missing = missing or src.startswith("NOT FOUND")
         print(f"\n(Keyring entries belong to the Windows or system user who stored them; this is {getpass.getuser()}. "
               "A scheduled task must run as the same user.)")
-        return 0
+        return 1 if missing else 0
     if not args.target:
         raise ConfigError("Say which secret: folio, smtp, webhook, or a feed name.")
     service, account, ref, what = _secret_target(site, args.target)
@@ -684,6 +732,9 @@ def cmd_schedule(args) -> int:
         import os
 
         user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
+    if site.folio_password_source().startswith("environment"):
+        print("\nWARNING  The FOLIO password comes only from this window's FOLIO_PASSWORD. The scheduled task "
+              "will not have it: run `folio-exchange secret set folio` first (as the user the task runs as).")
     print("\nNothing runs until the computer's scheduler starts `run --due` every hour. Register it once with:\n")
     print("  " + schedule.os_command(site.root, exe, system, user))
     if system == "Windows":

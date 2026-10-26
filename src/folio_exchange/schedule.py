@@ -161,6 +161,8 @@ def is_due(
         return False
     since = [r for r in runs if _started(r) is not None and _started(r) >= slot]
     scheduled = [r for r in since if r.get("trigger") == "schedule"]
+    if any((r.get("report") or {}).get("no_retry") for r in scheduled):
+        return False                         # FOLIO refused the login: retrying could lock the account
     if any(r.get("status") in SETTLED for r in scheduled) or any(r.get("status") == "success" and
                                                                   r.get("trigger") != "preview" for r in since):
         return False

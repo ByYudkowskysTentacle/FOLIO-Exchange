@@ -32,6 +32,14 @@ class FolioError(FxError):
     pass
 
 
+class LoginFailed(FolioError):
+    """FOLIO refused the user name or password. Never retried: repeated failures can lock the account."""
+
+
+class FolioUnreachable(FolioError):
+    """FOLIO could not be reached at all (wrong address, DNS, firewall, VPN). Not worth retrying for minutes."""
+
+
 def guard(method: str, path: str) -> None:
     """Refuse patron paths, paths outside the reads registry, and any write. Raises before sending."""
     if reads.is_patron_path(path):
@@ -51,6 +59,17 @@ def _no_redirect(resp) -> None:
             f"FOLIO answered with a redirect (HTTP {resp.status_code}) to {resp.headers.get('Location', '?')}. "
             "Redirects are never followed; set folio.base_url to the final address (the Kong gateway on Eureka)."
         )
+
+
+def _reason(exc: Exception) -> str:
+    text = str(exc)
+    for marker, plain in (("10061", "connection refused"), ("Connection refused", "connection refused"),
+                          ("getaddrinfo", "the name was not found"), ("Name or service not known",
+                                                                      "the name was not found"),
+                          ("CERTIFICATE_VERIFY_FAILED", "its certificate is not trusted")):
+        if marker in text:
+            return plain
+    return type(exc).__name__
 
 
 def _cql_quote(value: str) -> str:
@@ -99,14 +118,30 @@ class FolioClient:
         )
         self._token: str | None = None
         self._expires: datetime | None = None
+        self._reached = False                      # has FOLIO ever answered this client?
+        self._refused: LoginFailed | None = None
 
     # ------------------------------------------------------------------ auth
     def login(self) -> None:
-        """Log in once. Transient failures raise _TransientLoginError; use request() for retries."""
+        """Log in once. Transient failures raise _TransientLoginError; use request() for retries.
+        A refused login raises LoginFailed, and every later call raises it again without asking FOLIO."""
+        if self._refused:
+            raise self._refused
         guard("POST", "/authn/login-with-expiry")
         url = f"{self.base_url}/authn/login-with-expiry"
         body = {"username": self.username, "password": self._password}
-        resp = self.session.post(url, json=body, timeout=self.timeout, allow_redirects=False)
+        try:
+            resp = self.session.post(url, json=body, timeout=self.timeout, allow_redirects=False)
+        except requests.ConnectionError as exc:
+            if self._reached:
+                raise _TransientLoginError(type(exc).__name__) from None
+            raise FolioUnreachable(
+                f"Cannot reach FOLIO at {self.base_url} ({_reason(exc)}). Check folio.base_url in site.yaml and "
+                "the network or VPN, then run `folio-exchange check`."
+            ) from None
+        except requests.Timeout:
+            raise _TransientLoginError("login timed out") from None
+        self._reached = True
         _no_redirect(resp)
         if resp.status_code in RETRY_STATUSES:
             raise _TransientLoginError(f"login returned HTTP {resp.status_code}")
@@ -123,10 +158,12 @@ class FolioClient:
             exp = (resp.json() or {}).get("accessTokenExpiration")
             self._expires = _parse_dt(exp) or datetime.now(timezone.utc) + timedelta(minutes=10)
         if not resp.ok or not self._token:
-            raise FolioError(
-                f"Login failed for user '{self.username}' (HTTP {resp.status_code}). Check the user name, the "
-                "password (`folio-exchange secret status`) and folio.tenant."
+            self._refused = LoginFailed(
+                f"FOLIO refused the login for user '{self.username}' (HTTP {resp.status_code}). Check the user "
+                "name, folio.tenant and the password (`folio-exchange secret status`). To avoid locking the "
+                "account, FOLIO-Exchange does not try again until you run it again."
             )
+            raise self._refused
         self.session.headers["x-okapi-token"] = self._token
         log.debug("Logged in; token expires %s", self._expires)
 
@@ -147,6 +184,7 @@ class FolioClient:
                 self._ensure_token()
                 resp = self.session.request(method, url, params=params, json=json, timeout=self.timeout,
                                             allow_redirects=False)
+                self._reached = True
                 _no_redirect(resp)
                 if resp.status_code == 401 and not relogged:
                     relogged = True

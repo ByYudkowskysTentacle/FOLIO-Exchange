@@ -171,7 +171,12 @@ def read_yaml(path: Path, where: str | None = None) -> dict:
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
-        raise ConfigError(f"{where}: not valid YAML{at}: {getattr(exc, 'problem', exc)}") from None
+        line = f"line {mark.line + 1}" if mark else "the line named"
+        raise ConfigError(
+            f"{where}: the file's layout is broken{at}. Check the indentation on {line} and the line above "
+            "(settings under a heading are indented by the same spaces), that a list in [ ] has its closing ], "
+            f"and that text containing : or # is in quotes. (YAML says: {getattr(exc, 'problem', exc)})"
+        ) from None
     if data is None:
         return {}
     if not isinstance(data, dict):

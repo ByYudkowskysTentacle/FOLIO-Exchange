@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from .cache import Cache
-from .client import FolioClient, FolioError
+from .client import FolioClient, FolioError, FolioUnreachable, LoginFailed
 from .dates import now_utc, parse, to_folio
 from .reads import ENTITY_ORDER, READS, REFDATA
 
@@ -110,6 +110,8 @@ class Syncer:
         for kind, (path, key, _perm) in REFDATA.items():
             try:
                 recs = self.client.get_all(path, key)
+            except (LoginFailed, FolioUnreachable):
+                raise
             except FolioError as exc:
                 if not self.cache.refdata(kind):
                     raise FolioError(f"Could not load {kind} from FOLIO ({exc}). Their names and codes go into "

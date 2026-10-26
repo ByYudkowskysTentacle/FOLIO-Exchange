@@ -17,7 +17,7 @@ from pathlib import Path
 from . import __version__, checks, credentials, delivery, notify, schedule
 from .build import BuildReport, build
 from .cache import Cache
-from .client import FolioClient
+from .client import FolioClient, LoginFailed
 from .config import Site, read_yaml
 from .dates import now_utc
 from .errors import ConfigError, DeliveryError, FxError, LockBusy, SafetyCheckFailed
@@ -100,6 +100,13 @@ def hold_reason(hist: History, feed: Feed) -> str | None:
         return (f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
                 f"{last.get('recipe_version')})")
     return None
+
+
+def _local(iso: str | None) -> str:
+    try:
+        return datetime.fromisoformat(str(iso)).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(iso)
 
 
 def next_step(feed: Feed, status: str, run_dir: Path | None) -> str:
@@ -263,8 +270,10 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
                 sent = delivery.deliver([run_dir / n for n in rep.files], feed.delivery, feed.name)
                 report["delivered"] = sent
     except SafetyCheckFailed as exc:
-        status, code, error = "blocked", 2, str(exc)
-        log.error("%s", exc)
+        status, code = "blocked", 2
+        error = (f"{exc} The files are in {run_dir}. If the drop is not expected, fix it in FOLIO and run "
+                 f"`folio-exchange run {feed.name}` again; this run is then never sent.")
+        log.error("%s", error)
     except DeliveryError as exc:
         status, code, error = "failed", 1, str(exc)
         report["partially_delivered"] = exc.sent
@@ -273,6 +282,8 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         log.error("Run failed: %s", exc)
     except FxError as exc:
         status, code, error = "failed", 1, str(exc)
+        if isinstance(exc, LoginFailed):
+            report["no_retry"] = True
         log.error("Run failed: %s", exc)
     except Exception as exc:  # noqa: BLE001 - top level: report every failure
         status, code, error = "failed", 1, f"{type(exc).__name__}: {exc}"
@@ -365,8 +376,12 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
                 for f in feeds:
                     run_id = hist.start_run(f.name, f.recipe.id, f.recipe.version_str, opts.trigger, None,
                                             delivery.destination_key(f.delivery))
-                    hist.finish_run(run_id, "failed", error=f"Sync failed: {err}", report={"error": err})
-                    results.append(RunResult(f.name, "failed", 1, None, {"error": f"Sync failed: {err}"}))
+                    rep = {"error": f"Sync failed: {err}", "status": "failed",
+                           "next": "Fix the problem above, then run: folio-exchange check"}
+                    if isinstance(exc, LoginFailed):
+                        rep["no_retry"] = True
+                    hist.finish_run(run_id, "failed", error=f"Sync failed: {err}", report=rep)
+                    results.append(RunResult(f.name, "failed", 1, None, rep))
                 alert(site, ", ".join(f.name for f in feeds), "failed",
                       f"Could not update the cache from FOLIO, so no feed ran.\n{err}\n"
                       "Run `folio-exchange check` to test the connection.")
@@ -424,16 +439,24 @@ def overdue(site: Site, feed: Feed, hist: History, now: datetime) -> str | None:
 
 
 # ------------------------------------------------------------- release
-def releasable_run(hist: History, feed: Feed, run_dir: Path | None) -> dict:
+def releasable_run(hist: History, feed: Feed, run_dir: Path | None, force: bool = False) -> dict:
+    """The run to release: the newest held, blocked or built run that no later delivery has superseded, or
+    the one named. A superseded run (older than the last delivery) needs ``force``: sending it would replace
+    the vendor's newer files."""
+    last = hist.last_delivered(feed.name)
     if run_dir is not None:
         row = hist.run_by_dir(Path(run_dir).resolve()) or hist.run_by_dir(Path(run_dir))
         if row is None or row.get("feed") != feed.name:
             raise FxError(f"{run_dir} is not a run of feed {feed.name} in this site's history.")
+        if last and row["id"] < last["id"] and not force:
+            raise FxError(f"{run_dir} is older than the delivery of {_local(last['started'])}; sending it would "
+                          "replace the vendor's newer files. Add --force only if that is what you want.")
     else:
-        rows = [r for r in hist.runs(feed.name, 200) if r.get("status") in RELEASABLE | {"success", "failed"}]
-        rows = [r for r in rows if r.get("status") in RELEASABLE and r.get("run_dir")]
+        rows = [r for r in hist.runs(feed.name, 200)
+                if r.get("status") in RELEASABLE and r.get("run_dir") and (not last or r["id"] > last["id"])]
         if not rows:
-            raise FxError(f"Feed {feed.name} has no held, blocked or built run to release.")
+            raise FxError(f"Feed {feed.name} has no held, blocked or built run newer than its last delivery. "
+                          f"`folio-exchange history {feed.name}` lists its runs.")
         row = rows[0]
     if row["status"] not in RELEASABLE:
         raise FxError(
@@ -449,7 +472,7 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
     is asked before anything is sent. Built runs still pass the checks unless ``force``; releasing a held
     or blocked run is itself the person's approval."""
     with RunLock(site.lock_path), History(site.history_path) as hist:
-        row = releasable_run(hist, feed, run_dir)
+        row = releasable_run(hist, feed, run_dir, force)
         rdir = Path(row["run_dir"])
         files = row.get("files") or []
         if not files or not rdir.is_dir():

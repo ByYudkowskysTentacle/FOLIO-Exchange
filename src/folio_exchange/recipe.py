@@ -437,10 +437,10 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
     ratio = chk.get("min_item_ratio", 0)
     if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0 <= ratio <= 1:
         c.add("checks.min_item_ratio", f"must be a number from 0 (off) to 1, got {ratio!r}")
-    for j, name in enumerate(c.text_list(chk.get("must_be_filled"), "checks.must_be_filled")):
-        c.field(name, f"checks.must_be_filled[{j}]", read_set)
+    for name in c.text_list(chk.get("must_be_filled"), "checks.must_be_filled"):
+        c.field(name, "checks.must_be_filled", read_set)
         if name == "barcode" and {**SELECTION_DEFAULTS, **sel}.get("include_items_without_barcode"):
-            c.add(f"checks.must_be_filled[{j}]", "barcode must be filled, but selection keeps items without a "
+            c.add("checks.must_be_filled", "barcode must be filled, but selection keeps items without a "
                                                   "barcode, so every run would be blocked; set "
                                                   "include_items_without_barcode: false or drop the check")
 
@@ -605,11 +605,21 @@ def _overlay_outputs(recipe_outputs: list[dict], local: object, c: _Checker) -> 
             if key == "columns":
                 cols = value if isinstance(value, list) else []
                 have = {col.get("field") for col in cols if isinstance(col, dict) and isinstance(col.get("field"), str)}
+                headers = {col.get("header"): col.get("field") for col in cols
+                           if isinstance(col, dict) and isinstance(col.get("header"), str)}
                 for col in target.get("columns") or []:
-                    if col.get("required") and col.get("field") not in have:
+                    if not col.get("required") or col.get("field") in have:
+                        continue
+                    found = headers.get(col.get("header"))
+                    if col.get("header") in headers and not (isinstance(found, str) and found in FIELDS):
+                        continue                    # a misspelled field: the unknown-field message says so
+                    if col.get("header") in headers:
+                        c.add(f"outputs.{name}.columns", f"column {col.get('header')!r} must keep the field "
+                                                         f"{col.get('field')!r} (the recipe requires it)")
+                    else:
                         c.add(f"outputs.{name}.columns",
-                              f"the recipe requires the column {col.get('header')!r} (field {col.get('field')!r}); "
-                              "keep it")
+                              f"the recipe requires the column {col.get('header')!r} (field {col.get('field')!r}); a "
+                              "columns list replaces the recipe's whole list, so include it")
                 target["columns"] = copy.deepcopy(value)
             elif isinstance(value, dict) and isinstance(target.get(key), dict):
                 target[key] = merge(target[key], value)
@@ -704,7 +714,8 @@ def load_feed_data(raw: dict, path: Path, library: RecipeLibrary, root: Path | N
                    "must_be_filled": must},
         "delivery": merge(merge(DELIVERY_DEFAULTS, r.get("delivery")), delivery),
     }
-    problems = c.problems + validate_recipe(merged, where, shared=False)
+    problems = c.problems + [p.replace(f"{where}: selection.", f"{where}: filters.")
+                             for p in validate_recipe(merged, where, shared=False)]
     d = merged["delivery"]
     if d["transport"] == "sftp":
         for key in ("host", "username"):
