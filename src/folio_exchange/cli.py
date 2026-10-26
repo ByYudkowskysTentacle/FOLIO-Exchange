@@ -143,6 +143,23 @@ def _probe(client, label: str, path: str, permission: str) -> tuple[bool, str, s
         return False, f"  FAILED   {label}: {_short(text)}", None
 
 
+def _env_password_note(site: Site) -> str | None:
+    """When the FOLIO password comes from an environment variable, what the scheduled task needs to have it."""
+    source = site.folio_password_source()
+    if not source.startswith("environment ("):
+        return None
+    name = source[len("environment ("):-1]
+    if str(site.folio.get("secret") or "").startswith("env:") and name != "FOLIO_PASSWORD":
+        return (f"The FOLIO password is read from the environment variable {name}. Set {name} for the user the "
+                "scheduled task runs as, too.")
+    if site.folio.get("secret") == "env:FOLIO_PASSWORD":
+        return ("The FOLIO password is read from the environment variable FOLIO_PASSWORD. Set it for the user the "
+                "scheduled task runs as, too.")
+    return ("The FOLIO password comes from this window's FOLIO_PASSWORD, not from the keyring that site.yaml "
+            "names. The scheduled task will not have it: run `folio-exchange secret set folio` (as the user the "
+            "task runs as), or set FOLIO_PASSWORD for that user.")
+
+
 def _short(text: str, width: int = 200) -> str:
     import textwrap
 
@@ -200,10 +217,9 @@ def cmd_check(args) -> int:
 
     source = site.folio_password_source()
     print(f"FOLIO password: {source}")
-    if source.startswith("environment"):
-        print("NOTE     The password comes from this window's environment. The scheduled task needs it too: "
-              "store it with `folio-exchange secret set folio`, or set FOLIO_PASSWORD for the user the task "
-              "runs as.")
+    note = _env_password_note(site)
+    if note:
+        print(f"NOTE     {note}")
     client = runner.client_for(site)
     client.login()
     print(f"Logged in to {client.base_url} (tenant {client.tenant}) as {client.username}")
@@ -265,7 +281,7 @@ def cmd_check_delivery(args) -> int:
             print(f"  FAILED   {type(exc).__name__}: {str(exc)[:200]}")
             worst = 1
             continue
-        folder = d.get("remote_dir") or d.get("directory") or "."
+        folder = d.get("directory") if d["transport"] == "local" else (d.get("remote_dir") or ".")
         if names is None:
             print(f"  OK       logged in; listing {folder} is not permitted (normal for upload-only accounts). "
                   "Nothing was uploaded.")
@@ -387,6 +403,12 @@ def cmd_preview(args) -> int:
     skipped = b.get("items_skipped") or {}
     if skipped:
         print("  Items left out: " + ", ".join(f"{k} {v}" for k, v in skipped.items()))
+    if not b.get("items_written"):
+        fetched = (res.report.get("sync") or {}).get("fetched") or {}
+        why = ("every sampled item was left out by the feed's filters (above)" if skipped else
+               "the sampled records have no items" if fetched.get("instances") else "FOLIO returned no records")
+        print(f"  No item rows came out: {why}. Try a larger sample with -n, or check the filters in "
+              f"feeds/{feed.name}.yaml.")
     for o in feed.outputs:
         if o["format"] != "delimited":
             continue
@@ -734,9 +756,9 @@ def cmd_schedule(args) -> int:
         import os
 
         user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
-    if site.folio_password_source().startswith("environment"):
-        print("\nWARNING  The FOLIO password comes only from this window's FOLIO_PASSWORD. The scheduled task "
-              "will not have it: run `folio-exchange secret set folio` first (as the user the task runs as).")
+    note = _env_password_note(site)
+    if note:
+        print(f"\nWARNING  {note}")
     print("\nNothing runs until the computer's scheduler starts `run --due` every hour. Register it once with:\n")
     print("  " + schedule.os_command(site.root, exe, system, user))
     if system == "Windows":
