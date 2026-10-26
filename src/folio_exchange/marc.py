@@ -1,5 +1,5 @@
 """MARC record handling: SRS records, fallback records for FOLIO-source
-instances, and embedding item data in a 9XX field."""
+instances, and embedding item data in a 9XX field (from folio-chq-extract)."""
 from __future__ import annotations
 
 import json
@@ -130,7 +130,7 @@ def from_instance(inst: dict, ref) -> Record:
 
 
 def _set_instance_link(rec: Record, instance_id: str) -> bool:
-    """Make 999 ff $i hold the instance UUID (the link cHQ uses). Returns True if it already did."""
+    """Make 999 ff $i hold the instance UUID (the link vendors such as cHQ use). Returns True if it already did."""
     links = [f for f in rec.get_fields("999") if f.indicator1 == "f" and f.indicator2 == "f"]
     if links and [s.value for s in links[0].subfields if s.code == "i"] == [instance_id]:
         return True
@@ -148,13 +148,20 @@ def _add(rec: Record, field: Field | None) -> None:
 
 
 class MarcBuilder:
-    def __init__(self, cfg: dict, date_fmt) -> None:
-        m = cfg["output"]["marc"]
-        self.embed = bool(m["embed_items"])
-        self.tag = str(m["item_field_tag"])
-        self.subfields: dict[str, str] = {str(k): v for k, v in m["item_subfields"].items()}
-        self.strip = bool(m["strip_existing_item_field"])
-        self.max_items = int(m["max_items_per_record"])
+    """Finalizes one bib per instance for a ``marc21`` output.
+
+    Every record gets 001 = instance HRID and 999 ff $i = instance UUID (FOLIO's own
+    convention), so both link options a recipe may name always hold. ``item_field``
+    is stripped from source records when ``strip_existing`` is set, whether or not
+    items are embedded."""
+
+    def __init__(self, output: dict, date_fmt) -> None:
+        f = output.get("item_field") or {}
+        self.embed = bool(output.get("embed_items"))
+        self.tag = str(f.get("tag", "949"))
+        self.subfields: dict[str, str] = {str(k): v for k, v in (f.get("subfields") or {}).items()}
+        self.strip = bool(f.get("strip_existing", True))
+        self.max_items = int(f.get("max_per_record", 500))
         self.date_fmt = date_fmt
         self.truncated = 0
         self.oversize = 0

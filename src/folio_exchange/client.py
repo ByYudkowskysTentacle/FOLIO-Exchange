@@ -1,9 +1,14 @@
-"""Minimal FOLIO HTTP client.
+"""Minimal, read-only FOLIO HTTP client (adapted from folio-chq-extract).
 
 Works with both Okapi-based FOLIO and Eureka (Kong gateway) deployments:
 both expose ``POST /authn/login-with-expiry``, which returns the access and
 refresh tokens as cookies. The access token is also sent as
 ``x-okapi-token`` so the client works with gateways that ignore cookies.
+
+Every request passes two guards before anything is sent: user and patron paths
+are refused outright (``PatronDataRefused``), and only the paths in the reads
+registry may be called, with GET, or POST for logging in and for fetching MARC
+records by instance id (a read).
 """
 from __future__ import annotations
 
@@ -15,13 +20,41 @@ from typing import Any
 
 import requests
 
+from . import __version__, reads
+from .errors import FxError, PatronDataRefused
+
 log = logging.getLogger(__name__)
 
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
-class FolioError(RuntimeError):
+class FolioError(FxError):
     pass
+
+
+def guard(method: str, path: str) -> None:
+    """Refuse patron paths, paths outside the reads registry, and any write. Raises before sending."""
+    if reads.is_patron_path(path):
+        raise PatronDataRefused(
+            f"Refused {method} {path.split('?', 1)[0]}: FOLIO-Exchange never reads user or patron data."
+        )
+    if not reads.is_allowed_path(path):
+        raise FolioError(f"Refused {method} {path.split('?', 1)[0]}: not a path in the reads registry.")
+    clean = "/" + "/".join(s for s in path.split("?", 1)[0].lower().split("/") if s)
+    if method.upper() != "GET" and not (method.upper() == "POST" and clean in reads.POST_PATHS):
+        raise FolioError(f"read-only: refused {method} {clean}; FOLIO-Exchange only reads from FOLIO.")
+
+
+def _no_redirect(resp) -> None:
+    if 300 <= resp.status_code < 400:
+        raise FolioError(
+            f"FOLIO answered with a redirect (HTTP {resp.status_code}) to {resp.headers.get('Location', '?')}. "
+            "Redirects are never followed; set folio.base_url to the final address (the Kong gateway on Eureka)."
+        )
+
+
+def _cql_quote(value: str) -> str:
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 class _TransientLoginError(Exception):
@@ -39,14 +72,14 @@ class FolioClient:
         timeout: float = 120,
         max_retries: int = 5,
         verify_tls: bool = True,
-        user_agent: str = "folio-chq-extract",
+        user_agent: str = f"folio-exchange/{__version__}",
     ) -> None:
         if not base_url:
             raise FolioError("folio.base_url is not set")
         if not password:
             raise FolioError(
-                "FOLIO password is empty (set FOLIO_PASSWORD or folio.password, or store it in the OS keyring "
-                "under service 'folio-chq-folio' and the FOLIO username)"
+                "No FOLIO password found. Store it with `folio-exchange secret set folio`, "
+                "or set the FOLIO_PASSWORD environment variable."
             )
         self.base_url = base_url.rstrip("/")
         self.tenant = tenant
@@ -56,6 +89,7 @@ class FolioClient:
         self.max_retries = max_retries
         self.session = requests.Session()
         self.session.verify = verify_tls
+        self.session.max_redirects = 0  # never follow a redirect: it could carry the token elsewhere
         self.session.headers.update(
             {
                 "x-okapi-tenant": tenant,
@@ -69,14 +103,18 @@ class FolioClient:
     # ------------------------------------------------------------------ auth
     def login(self) -> None:
         """Log in once. Transient failures raise _TransientLoginError; use request() for retries."""
+        guard("POST", "/authn/login-with-expiry")
         url = f"{self.base_url}/authn/login-with-expiry"
         body = {"username": self.username, "password": self._password}
-        resp = self.session.post(url, json=body, timeout=self.timeout)
+        resp = self.session.post(url, json=body, timeout=self.timeout, allow_redirects=False)
+        _no_redirect(resp)
         if resp.status_code in RETRY_STATUSES:
             raise _TransientLoginError(f"login returned HTTP {resp.status_code}")
         if resp.status_code == 404:
             # Very old FOLIO releases (pre-Poppy) only have the legacy endpoint.
-            resp = self.session.post(f"{self.base_url}/authn/login", json=body, timeout=self.timeout)
+            resp = self.session.post(f"{self.base_url}/authn/login", json=body, timeout=self.timeout,
+                                     allow_redirects=False)
+            _no_redirect(resp)
             if resp.ok:
                 self._token = resp.headers.get("x-okapi-token")
                 self._expires = datetime.now(timezone.utc) + timedelta(days=1)
@@ -85,7 +123,10 @@ class FolioClient:
             exp = (resp.json() or {}).get("accessTokenExpiration")
             self._expires = _parse_dt(exp) or datetime.now(timezone.utc) + timedelta(minutes=10)
         if not resp.ok or not self._token:
-            raise FolioError(f"Login failed for user '{self.username}' ({resp.status_code}): {resp.text[:300]}")
+            raise FolioError(
+                f"Login failed for user '{self.username}' (HTTP {resp.status_code}). Check the user name, the "
+                "password (`folio-exchange secret status`) and folio.tenant."
+            )
         self.session.headers["x-okapi-token"] = self._token
         log.debug("Logged in; token expires %s", self._expires)
 
@@ -97,13 +138,16 @@ class FolioClient:
 
     # --------------------------------------------------------------- request
     def request(self, method: str, path: str, *, params: dict | None = None, json: Any = None) -> Any:
+        guard(method, path)
         url = f"{self.base_url}/{path.lstrip('/')}"
         attempt = 0
         relogged = False
         while True:
             try:
                 self._ensure_token()
-                resp = self.session.request(method, url, params=params, json=json, timeout=self.timeout)
+                resp = self.session.request(method, url, params=params, json=json, timeout=self.timeout,
+                                            allow_redirects=False)
+                _no_redirect(resp)
                 if resp.status_code == 401 and not relogged:
                     relogged = True
                     self._token = None
@@ -167,6 +211,16 @@ class FolioClient:
                 page = []
         if page:
             yield page
+
+    def iter_where_in(
+        self, path: str, key: str, field: str, values: list[str], batch: int = 50
+    ) -> Iterator[dict]:
+        """Yield records whose ``field`` is any of ``values``, ``batch`` values per CQL query (for previews)."""
+        values = [v for v in dict.fromkeys(values) if v]
+        for i in range(0, len(values), batch):
+            chunk = values[i : i + batch]
+            cql = f"{field}==(" + " or ".join(_cql_quote(v) for v in chunk) + ")"
+            yield from self.iter_records(path, key, cql, page_size=max(len(chunk) * 4, 100))
 
     def get_all(self, path: str, key: str, page_size: int = 1000) -> list[dict]:
         """Fetch a small reference-data collection in full."""

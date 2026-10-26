@@ -1,4 +1,4 @@
-"""Alerts (RUN-2): a Slack or Teams incoming webhook, and email.
+"""Alerts (RUN-2): a chat webhook (Slack-style ``{"text"}``, or a Teams Workflows Adaptive Card), and email.
 
 Alerting never raises: a broken alert channel is logged, and the run's own status
 stands. Neither the webhook URL nor any password is ever logged or included in a
@@ -35,8 +35,21 @@ def _webhook(alerts: dict, account: str, text: str) -> bool:
         log.warning("Alert webhook is configured but its URL was not found (%s)",
                     credentials.source(alerts.get("webhook"), credentials.WEBHOOK_SERVICE, account))
         return False
+    if alerts.get("webhook_format") == "teams":
+        # Teams Workflows ("When a Teams webhook request is received") take an Adaptive Card.
+        lines = text.split("\n", 1)
+        body = [{"type": "TextBlock", "text": lines[0], "weight": "Bolder", "wrap": True}]
+        if len(lines) > 1:
+            body.append({"type": "TextBlock", "text": lines[1], "wrap": True})
+        payload = {"type": "message", "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard",
+                        "version": "1.4", "body": body},
+        }]}
+    else:
+        payload = {"text": text}
     try:
-        resp = requests.post(url, json={"text": text}, timeout=30)
+        resp = requests.post(url, json=payload, timeout=30)
     except requests.RequestException as exc:
         log.warning("Alert webhook failed: %s", type(exc).__name__)
         return False
@@ -62,9 +75,16 @@ def _email(email: dict, subject: str, text: str) -> bool:
                         credentials.source(email.get("secret"), credentials.SMTP_SERVICE, account))
             return False
     try:
-        with smtplib.SMTP(email["smtp_host"], int(email.get("smtp_port") or 587), timeout=60) as smtp:
-            if email.get("starttls", True):
-                smtp.starttls(context=ssl.create_default_context())
+        port = int(email.get("smtp_port") or 587)
+        ctx = ssl.create_default_context()
+        smtp_cls = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+        kwargs = {"context": ctx} if port == 465 else {}
+        with smtp_cls(email["smtp_host"], port, timeout=60, **kwargs) as smtp:
+            if port != 465 and email.get("starttls", True):
+                smtp.starttls(context=ctx)
+            elif port != 465 and user:
+                log.warning("Alert email: refusing to log in without STARTTLS")
+                return False
             if user:
                 smtp.login(user, password)
             smtp.send_message(msg)

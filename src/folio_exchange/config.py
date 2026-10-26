@@ -39,12 +39,29 @@ SITE_DEFAULTS: dict[str, Any] = {
     "sync": {"mode": "auto", "full_refresh_days": 30},
     "paths": {"data": "data", "out": "out", "logs": "logs", "feeds": "feeds", "recipes": ["recipes"]},
     "runs": {"keep_local_runs": 5, "history_months": 12, "max_attempts_per_slot": 3, "timezone": None},
-    "alerts": {"on": "failure", "webhook": None, "email": None},
+    "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None},
 }
 
 EMAIL_DEFAULTS: dict[str, Any] = {
     "to": [], "from": "", "smtp_host": "", "smtp_port": 587, "starttls": True, "username": None, "secret": "keyring",
 }
+
+class _Loader(yaml.SafeLoader):
+    """YAML with only true and false as booleans (as in YAML 1.2), so a setting called ``on`` and codes
+    such as NO, ON, Y or OFF stay text."""
+
+
+_Loader.yaml_implicit_resolvers = {
+    ch: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:bool"]
+    for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_Loader.add_implicit_resolver("tag:yaml.org,2002:bool", re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+                              list("tTfF"))
+
+
+def load_yaml_text(text: str):
+    return yaml.load(text, Loader=_Loader)  # noqa: S506 - a SafeLoader subclass
+
 
 _ENV = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -150,7 +167,7 @@ def read_yaml(path: Path, where: str | None = None) -> dict:
     except FileNotFoundError:
         raise ConfigError(f"{where}: file not found") from None
     try:
-        data = yaml.safe_load(text)
+        data = load_yaml_text(text)
     except yaml.YAMLError as exc:
         mark = getattr(exc, "problem_mark", None)
         at = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
@@ -233,8 +250,12 @@ def validate_site(cfg: dict) -> list[str]:
         if not str(f.get(key) or "").strip():
             p.append(f"folio.{key}: required (run `folio-exchange init`, or set FOLIO_{key.split('_')[-1].upper()})")
     url = str(f.get("base_url") or "")
-    if url and not url.startswith(("https://", "http://")):
-        p.append("folio.base_url: must start with https://")
+    host = url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
+    if url and not url.startswith("https://") and not (
+        url.startswith("http://") and host in ("localhost", "127.0.0.1", "[::1]")
+    ):
+        p.append("folio.base_url: must start with https:// (the password would otherwise cross the network "
+                 "unencrypted)")
     if "@" in url.split("//", 1)[-1].split("/", 1)[0]:
         p.append("folio.base_url: must not contain a user name or password")
     if not credentials.is_secret_ref(f.get("secret")):
@@ -275,6 +296,8 @@ def validate_site(cfg: dict) -> list[str]:
     a = cfg["alerts"]
     if a.get("on") not in {"failure", "always", "never"}:
         p.append("alerts.on: must be failure, always or never")
+    if a.get("webhook_format") not in {"slack", "teams"}:
+        p.append("alerts.webhook_format: must be slack (Slack, Mattermost, Google Chat) or teams (Teams Workflows)")
     if a.get("webhook") is not None and not credentials.is_secret_ref(a["webhook"]):
         p.append("alerts.webhook: must be keyring or env:NAME (the URL itself is a secret)")
     email = a.get("email")
@@ -296,6 +319,9 @@ def validate_site(cfg: dict) -> list[str]:
                 p.append("alerts.email.smtp_port: a port number")
             if not isinstance(email.get("starttls"), bool):
                 p.append("alerts.email.starttls: must be true or false")
+            if email.get("username") and not email.get("starttls") and int(email.get("smtp_port") or 0) != 465:
+                p.append("alerts.email.starttls: must be true when logging in (or use port 465, SMTP over TLS), "
+                         "so the SMTP password is never sent unencrypted")
             if email.get("username") and not credentials.is_secret_ref(email.get("secret")):
                 p.append("alerts.email.secret: must be keyring or env:NAME")
     return p

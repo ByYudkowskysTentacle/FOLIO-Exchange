@@ -101,6 +101,18 @@ class Cache:
             ((pack(content) if content is not None else None, iid) for iid, content in pairs),
         )
 
+    def marc_source_without_marc(self) -> list[str]:
+        return [r[0] for r in self.db.execute(
+            "SELECT id FROM instances WHERE source IN ('MARC', 'CONSORTIUM-MARC') AND marc IS NULL")]
+
+    def sync_state(self, entity: str) -> str | None:
+        """Why ``entity`` cannot be built from yet (never synced, or a full sync did not finish), else None."""
+        if self.get_meta(f"{entity}.last_sync") is None:
+            return "never synced"
+        if self.get_meta(f"{entity}.incomplete") == "1":
+            return "the last full sync did not finish"
+        return None
+
     def upsert_holdings(self, rows: list[dict], gen: int) -> None:
         self.db.executemany(
             """INSERT INTO holdings(id, instance_id, data, gen) VALUES (?,?,?,?)

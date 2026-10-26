@@ -26,5 +26,13 @@ class HeldForRelease(FxError):
     """A feed's first delivery waits until a person releases it (exit code 2, status "held")."""
 
 
+class DeliveryError(FxError):
+    """A delivery stopped part way. ``sent`` lists what the vendor already has."""
+
+    def __init__(self, message: str, sent: list[str]) -> None:
+        super().__init__(message)
+        self.sent = sent
+
+
 class LockBusy(FxError):
     """Another run holds the site lock."""

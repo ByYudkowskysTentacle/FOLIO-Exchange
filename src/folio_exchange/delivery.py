@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 from . import credentials
-from .errors import ConfigError
+from .errors import ConfigError, DeliveryError
 
 log = logging.getLogger(__name__)
 
@@ -121,9 +121,9 @@ def check_delivery(d: dict) -> list[str] | None:
     return names
 
 
-def _deliver_sftp(files: list[Path], d: dict) -> list[str]:
+def _deliver_sftp(files: list[Path], d: dict, uploaded: list[str] | None = None) -> list[str]:
     client = _connect(d)
-    uploaded: list[str] = []
+    uploaded = [] if uploaded is None else uploaded
     try:
         sftp = client.open_sftp()
         remote_dir = _remote_dir(d)
@@ -180,10 +180,24 @@ def _deliver_local(files: list[Path], d: dict) -> list[str]:
 
 
 def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]:
-    """Send ``files`` by the feed's transport and return where each went."""
+    """Send ``files`` by the feed's transport and return where each went. DeliveryError when it stops part
+    way (its ``sent`` lists the files the vendor may already have)."""
     transport = delivery.get("transport")
     if transport == "sftp":
-        return _deliver_sftp(files, delivery)
+        sent: list[str] = []
+        try:
+            return _deliver_sftp(files, delivery, sent)
+        except ConfigError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - paramiko and sockets raise many types
+            if not sent and (delivery.get("upload_mode") or "staged") != "direct":
+                raise
+            done = ", ".join(s.rsplit("/", 1)[-1] for s in sent) or "none confirmed"
+            raise DeliveryError(
+                f"Delivery stopped part way ({type(exc).__name__}: {exc}). Files already at the vendor: {done}. "
+                "The vendor may hold a mixed or partial set; send the whole run again with "
+                f"`folio-exchange release {feed_name}` once the connection works.", sent,
+            ) from exc
     if transport == "local":
         return _deliver_local(files, delivery)
     if transport == "none":
@@ -192,13 +206,30 @@ def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]:
     raise ConfigError(f"delivery.transport {transport!r} is not supported (use sftp, local or none)")
 
 
-def prune_runs(feed_out_dir: Path, keep: int) -> None:
-    """Keep the newest ``keep`` run folders (and three previews) for one feed. 0 keeps everything."""
+def destination_key(d: dict) -> str:
+    """Where a feed delivers, as one string. A first delivery to a new destination is held for review."""
+    transport = d.get("transport") or "none"
+    if transport == "sftp":
+        return f"sftp://{d.get('username')}@{d.get('host')}:{int(d.get('port') or 22)}/{_remote_dir(d)}"
+    if transport == "local":
+        return Path(os.path.expanduser(d.get("directory") or "")).resolve().as_uri()
+    return transport
+
+
+def describe_destination(d: dict) -> str:
+    key = destination_key(d)
+    return "nowhere (transport none: files stay in the run folder)" if key == "none" else key
+
+
+def prune_runs(feed_out_dir: Path, keep: int, protect: set[Path] | None = None) -> None:
+    """Keep the newest ``keep`` run folders (and three previews) for one feed. 0 keeps everything.
+    Folders in ``protect`` (runs awaiting release, the last delivered run) are never removed."""
     if keep <= 0 or not feed_out_dir.is_dir():
         return
+    keep_safe = {Path(p).resolve() for p in (protect or set())}
     dirs = [p for p in feed_out_dir.iterdir() if p.is_dir()]
     runs = sorted((p for p in dirs if p.name[:1].isdigit()), key=lambda p: p.name)
     previews = sorted((p for p in dirs if p.name.startswith("preview-")), key=lambda p: p.name)
-    for old in runs[:-keep] + previews[:-3]:
+    for old in [p for p in runs[:-keep] if p.resolve() not in keep_safe] + previews[:-3]:
         shutil.rmtree(old, ignore_errors=True)
         log.info("Removed old run folder %s", old.name)

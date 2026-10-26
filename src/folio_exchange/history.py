@@ -19,12 +19,13 @@ CREATE TABLE IF NOT EXISTS runs (
     feed TEXT NOT NULL, recipe TEXT, recipe_version TEXT, trigger TEXT, run_dir TEXT,
     started TEXT NOT NULL, finished TEXT, status TEXT NOT NULL DEFAULT 'running',
     items INTEGER, bibs INTEGER, delivered INTEGER NOT NULL DEFAULT 0,
-    files TEXT, destinations TEXT, error TEXT, report TEXT, actor TEXT);
+    files TEXT, destinations TEXT, error TEXT, report TEXT, actor TEXT, destination TEXT);
 CREATE INDEX IF NOT EXISTS runs_feed ON runs(feed, started);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL, actor TEXT, feed TEXT, action TEXT NOT NULL, detail TEXT);
 CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 STATUSES = ("running", "success", "built", "blocked", "held", "failed", "preview")
@@ -83,13 +84,53 @@ class History:
         return [_row(cur, r) for r in cur.fetchall()]
 
     # ------------------------------------------------------------------ runs
-    def start_run(self, feed: str, recipe: str, recipe_version: str, trigger: str, run_dir: Path | None) -> int:
+    def start_run(self, feed: str, recipe: str, recipe_version: str, trigger: str, run_dir: Path | None,
+                  destination: str | None = None) -> int:
         cur = self.db.execute(
-            "INSERT INTO runs(feed, recipe, recipe_version, trigger, run_dir, started, actor) VALUES (?,?,?,?,?,?,?)",
-            (feed, recipe, recipe_version, trigger, str(run_dir) if run_dir else None, _now(), current_user()),
+            """INSERT INTO runs(feed, recipe, recipe_version, trigger, run_dir, started, actor, destination)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (feed, recipe, recipe_version, trigger, str(run_dir) if run_dir else None, _now(), current_user(),
+             destination),
         )
         self.db.commit()
         return int(cur.lastrowid)
+
+    def fail_stale(self) -> int:
+        """Mark runs left 'running' by a crashed process as failed. Call only while holding the run lock."""
+        n = self.db.execute(
+            "UPDATE runs SET status='failed', finished=?, error=? WHERE status='running'",
+            (_now(), "The run stopped without finishing (the computer restarted or the process was ended)."),
+        ).rowcount
+        self.db.commit()
+        return n
+
+    def mark_delivered(self, run_id: int, status: str, delivered: list[str], files: list[dict],
+                       report: dict | None = None) -> None:
+        """Record a later delivery of a run (release of a held, blocked or built run)."""
+        sets = "status=?, delivered=?, destinations=?, files=?"
+        params: list[Any] = [status, int(bool(delivered)), json.dumps(delivered), json.dumps(files)]
+        if report is not None:
+            sets += ", report=?"
+            params.append(json.dumps(report, default=str))
+        self.db.execute(f"UPDATE runs SET {sets} WHERE id=?", (*params, run_id))  # noqa: S608 (fixed columns)
+        self.db.commit()
+
+    def run_by_dir(self, run_dir: Path) -> dict | None:
+        rows = self._query("SELECT * FROM runs WHERE run_dir=? ORDER BY id DESC LIMIT 1", (str(run_dir),))
+        return rows[0] if rows else None
+
+    def get(self, run_id: int) -> dict | None:
+        rows = self._query("SELECT * FROM runs WHERE id=?", (run_id,))
+        return rows[0] if rows else None
+
+    # ------------------------------------------------------------------ meta
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str | None) -> None:
+        self.db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
+        self.db.commit()
 
     def finish_run(
         self,
@@ -115,9 +156,16 @@ class History:
         )
         self.db.commit()
 
-    def last_delivered(self, feed: str) -> dict | None:
-        """The latest run of ``feed`` that delivered files (the safety check's baseline)."""
-        rows = self._query("SELECT * FROM runs WHERE feed=? AND delivered=1 ORDER BY id DESC LIMIT 1", (feed,))
+    def last_delivered(self, feed: str, destination: str | None = None) -> dict | None:
+        """The latest run of ``feed`` that delivered files, to ``destination`` if given (the safety
+        check's baseline, and what decides the first-delivery hold)."""
+        if destination is None:
+            rows = self._query("SELECT * FROM runs WHERE feed=? AND delivered=1 ORDER BY id DESC LIMIT 1", (feed,))
+        else:
+            rows = self._query(
+                "SELECT * FROM runs WHERE feed=? AND delivered=1 AND destination=? ORDER BY id DESC LIMIT 1",
+                (feed, destination),
+            )
         return rows[0] if rows else None
 
     def runs(self, feed: str | None = None, limit: int = 20) -> list[dict]:

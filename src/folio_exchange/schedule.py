@@ -18,7 +18,9 @@ from .errors import ConfigError
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 DAY_NAMES = ("Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays")
 DEFAULT_TIME = (2, 0)
-# Statuses that settle a slot: the run happened, or it needs a person rather than a retry.
+# A scheduled run with one of these statuses settles its slot: it happened, or it needs a person rather
+# than a retry. A run started by hand settles the slot only if it delivered (status success); building,
+# previews and failures by hand never stop the scheduled delivery.
 SETTLED = {"success", "built", "blocked", "held"}
 
 FORMS = (
@@ -144,28 +146,51 @@ def _started(run: dict) -> datetime | None:
 
 
 def is_due(
-    s: Schedule, now: datetime, tz: ZoneInfo | None, runs: list[dict], max_attempts: int, created: datetime
+    s: Schedule, now: datetime, tz: ZoneInfo | None, runs: list[dict], max_attempts: int,
+    created: datetime | None,
 ) -> bool:
-    """True when the latest slot has passed, the feed existed by then, no run since has settled it,
-    and fewer than ``max_attempts`` runs have started since it (failed runs are retried)."""
+    """True when the latest slot has passed and no run since has settled it, and fewer than ``max_attempts``
+    scheduled runs have started since it (failed runs are retried).
+
+    ``runs`` are the feed's runs started at or after the slot. ``created`` is when the site first saw a feed
+    that has never run (its first slot must come after that); pass None once the feed has any run."""
     slot = last_slot(s, now, tz)
-    if slot is None or slot <= created:
+    if slot is None or (created is not None and slot <= created):
         return False
-    since = [r for r in runs if (_started(r) or slot) >= slot and _started(r) is not None]
-    if any(r.get("status") in SETTLED for r in since):
+    since = [r for r in runs if _started(r) is not None and _started(r) >= slot]
+    scheduled = [r for r in since if r.get("trigger") == "schedule"]
+    if any(r.get("status") in SETTLED for r in scheduled) or any(r.get("status") == "success" and
+                                                                  r.get("trigger") != "preview" for r in since):
         return False
-    return len(since) < max(1, max_attempts)
+    return len(scheduled) < max(1, max_attempts)
 
 
 # ------------------------------------------------------------- OS scheduler
-def os_command(site_root: Path, executable: str, system: str) -> str:
-    """The command that registers an hourly ``run --due`` with the OS scheduler. Shown, never run."""
-    site = str(Path(site_root))
+def task_name(site_root: Path) -> str:
+    return f"FOLIO-Exchange ({Path(site_root).name})".replace('"', "")
+
+
+def os_command(site_root: Path, executable: str, system: str, user: str | None = None) -> str:
+    """The command that registers an hourly ``run --due`` with the OS scheduler. Shown, never run.
+
+    On Windows the task runs as ``user`` whether or not anyone is logged on (schtasks asks for that
+    user's Windows password), because secrets in Credential Manager belong to the user who stored them."""
+    site = str(Path(site_root).resolve())
+    exe = executable or "folio-exchange"
     if system.lower().startswith("win"):
-        exe = executable.replace('"', "")
-        name = f"FOLIO-Exchange ({Path(site).name})".replace('"', "")
+        exe = exe.replace('"', "")
         action = f'\\"{exe}\\" --site \\"{site}\\" run --due'
-        return f'schtasks /Create /TN "{name}" /SC HOURLY /MO 1 /TR "{action}" /F'
+        who = f' /RU "{user}" /RP' if user else ""
+        return f'schtasks /Create /TN "{task_name(site)}" /SC HOURLY /MO 1 /ST 00:07 /TR "{action}"{who} /F'
     q = lambda v: "'" + v.replace("'", "'\"'\"'") + "'"
     log = str(Path(site) / "logs" / "cron.log")
-    return f"7 * * * * {q(executable)} --site {q(site)} run --due >> {q(log)} 2>&1"
+    return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"
+
+
+def os_helpers(site_root: Path, system: str) -> dict[str, str]:
+    """Commands to run the task now, see its last result, and remove it (Windows); empty elsewhere."""
+    if not system.lower().startswith("win"):
+        return {"list": "crontab -l", "edit": "crontab -e"}
+    name = task_name(site_root)
+    return {"run now": f'schtasks /Run /TN "{name}"', "last result": f'schtasks /Query /TN "{name}" /V /FO LIST',
+            "remove": f'schtasks /Delete /TN "{name}" /F'}

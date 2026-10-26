@@ -1,0 +1,44 @@
+# FOLIO-Exchange site settings: one folder per FOLIO tenant.
+# `folio-exchange init` writes this for you; this copy shows every setting with its default.
+# No passwords live here. Each `secret:` says where one is kept: keyring (the system
+# credential store) or env:NAME (an environment variable). See `folio-exchange secret status`.
+# Editors that read JSON Schema can check this file against
+# src/folio_exchange/schemas/site.schema.json.
+
+folio:
+  base_url: https://folio-kong.example.edu   # the Kong gateway URL on Eureka (or the Okapi URL)
+  tenant: example
+  username: fx_reader                        # a read-only service account
+  secret: keyring                            # FOLIO_PASSWORD, when set, always wins
+  page_size: 500
+  srs_batch_size: 200
+  timeout_seconds: 120
+  max_retries: 5
+  verify_tls: true
+  srs_include_shared: false                  # true for member tenants in an ECS consortium
+
+sync:
+  mode: auto                                 # auto | full | delta
+  full_refresh_days: 30
+
+paths: {data: data, out: out, logs: logs, feeds: feeds, recipes: [recipes]}
+
+runs:
+  keep_local_runs: 5                         # run folders kept per feed (held and blocked runs are always kept)
+  history_months: 12
+  max_attempts_per_slot: 3                   # scheduled retries of a failed run
+  timezone: null                             # schedules use this zone; null = this computer's time
+
+alerts:
+  on: failure                                # failure | always | never
+  webhook: null                              # keyring or env:NAME: the webhook URL is itself a secret
+  webhook_format: slack                      # slack, or teams for a Teams "webhook request" workflow
+  email: null
+  # email:
+  #   to: [systems@library.example.edu]
+  #   from: folio-exchange@library.example.edu
+  #   smtp_host: smtp.example.edu
+  #   smtp_port: 587
+  #   starttls: true
+  #   username: null                         # set it to log in; the password goes in the keyring
+  #   secret: keyring

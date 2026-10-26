@@ -1,6 +1,7 @@
 # Secrets and local settings – never commit
 config.yaml
 site.yaml
+!examples/site.yaml
 feeds/
 !examples/feeds/
 local/

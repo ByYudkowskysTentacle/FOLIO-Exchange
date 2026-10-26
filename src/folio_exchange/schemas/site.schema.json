@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://folio-exchange.invalid/schemas/site.schema.json",
+  "title": "FOLIO-Exchange site",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "folio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "pattern": "^https?://"
+        },
+        "tenant": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "string",
+          "pattern": "^(keyring|env:[A-Za-z_][A-Za-z0-9_]*)$",
+          "description": "Where the secret lives: keyring, or env:NAME. Never the secret itself."
+        },
+        "page_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "srs_batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout_seconds": {
+          "type": "number"
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verify_tls": {
+          "type": "boolean"
+        },
+        "srs_include_shared": {
+          "type": "boolean"
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "auto",
+            "full",
+            "delta"
+          ]
+        },
+        "full_refresh_days": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "out": {
+          "type": "string"
+        },
+        "logs": {
+          "type": "string"
+        },
+        "feeds": {
+          "type": "string"
+        },
+        "recipes": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "runs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keep_local_runs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "history_months": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts_per_slot": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timezone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "alerts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "on": {
+          "enum": [
+            "failure",
+            "always",
+            "never"
+          ]
+        },
+        "webhook": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(keyring|env:[A-Za-z_][A-Za-z0-9_]*)$",
+              "description": "Where the secret lives: keyring, or env:NAME. Never the secret itself."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "webhook_format": {
+          "enum": [
+            "slack",
+            "teams"
+          ]
+        },
+        "email": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "to": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "from": {
+                  "type": "string"
+                },
+                "smtp_host": {
+                  "type": "string"
+                },
+                "smtp_port": {
+                  "type": "integer"
+                },
+                "starttls": {
+                  "type": "boolean"
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "secret": {
+                  "type": "string",
+                  "pattern": "^(keyring|env:[A-Za-z_][A-Za-z0-9_]*)$",
+                  "description": "Where the secret lives: keyring, or env:NAME. Never the secret itself."
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "description": "FOLIO-Exchange site settings: site.yaml"
+}

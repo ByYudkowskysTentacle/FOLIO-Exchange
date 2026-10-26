@@ -1,7 +1,9 @@
 """A small in-process fake FOLIO used by the tests.
 
 It implements just enough of the FOLIO APIs (login, CQL id-keyset paging,
-updatedDate filters, SRS lookup by instance id) to exercise the tool end to end.
+updatedDate filters, ``field==("a" or "b")`` lookups, SRS lookup by instance id) to
+exercise the tool end to end. Loans carry a userId, as FOLIO's do, so tests can prove
+it is dropped.
 """
 from __future__ import annotations
 
@@ -109,9 +111,9 @@ def default_data() -> dict:
         item(28, U(11), "B0008", discoverySuppress=True),
     ]
     loans = [
-        {"id": U(41), "itemId": U(21), "loanDate": "2023-09-01T10:00:00Z", "returnDate": "2023-09-20T10:00:00Z", "status": {"name": "Closed"}, "metadata": meta()},
+        {"id": U(41), "itemId": U(21), "userId": U(901), "proxyUserId": U(902), "loanDate": "2023-09-01T10:00:00Z", "returnDate": "2023-09-20T10:00:00Z", "status": {"name": "Closed"}, "metadata": meta()},
         {"id": U(42), "itemId": U(21), "loanDate": "RECENT", "returnDate": "RECENT_RETURN", "status": {"name": "Closed"}, "renewalCount": 2, "metadata": meta()},
-        {"id": U(43), "itemId": U(22), "loanDate": "RECENT", "dueDate": "2099-01-01T04:59:59Z", "status": {"name": "Open"}, "metadata": meta()},
+        {"id": U(43), "itemId": U(22), "userId": U(903), "loanDate": "RECENT", "dueDate": "2099-01-01T04:59:59Z", "status": {"name": "Open"}, "metadata": meta()},
         {"id": U(44), "itemId": U(23), "loanDate": "2020-01-05T10:00:00Z", "returnDate": "2020-01-25T10:00:00Z", "status": {"name": "Closed"}, "metadata": meta()},
     ]
     srs = {
@@ -165,6 +167,10 @@ class MockFolio:
         if m:
             since = m.group(1).replace(".000Z", "")
             out = [r for r in out if (r.get("metadata") or {}).get("updatedDate", "")[:19] >= since[:19]]
+        m = re.search(r'(\w+)==\(([^)]*)\)', body)
+        if m:
+            wanted = set(re.findall(r'"([^"]*)"', m.group(2)))
+            out = [r for r in out if r.get(m.group(1)) in wanted]
         if sort.strip() == "id":
             out.sort(key=lambda r: r["id"])
         return out
