@@ -1,5 +1,8 @@
 # Secrets and local settings – never commit
 config.yaml
+site.yaml
+feeds/
+!examples/feeds/
 local/
 .env
 .env.*
@@ -7,11 +10,15 @@ local/
 *secret*.txt
 *.pem
 *.key
+id_rsa*
+id_ed25519*
 
 # Runtime data
 data/
 out/
+logs/
 *.sqlite*
+run.lock
 
 # Python
 __pycache__/

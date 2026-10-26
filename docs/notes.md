@@ -12,6 +12,27 @@ _Last updated: 26 October 2026, when this repo was started. Read with `docs/spec
   - The cHQ SFTP login is verified.
   - It has **not** yet run against the library's own tenant, and nothing has been uploaded to cHQ.
 - **The first library's tenant is on Eureka.**
+- **The v1 build has started** (26 Oct 2026, paused at a checkpoint): see "Build checkpoint" below and `docs/design.md`.
+
+## Build checkpoint (26 Oct 2026)
+
+The plan is `docs/design.md`: the site folder, recipe and feed formats, every module's contract and the CLI. This is the sanctioned "in parallel" work from Next steps (recipe schema, splitting FOLIOHQ's core); FOLIOHQ stays the path to gate 1.
+
+**Done**
+- Scaffold: `pyproject.toml` (package and command `folio-exchange`, Python 3.10+, `keyring` as a core dependency), `src/` layout, `NOTICE.md` (MIT notice for code adapted from FOLIOHQ), `.gitignore` for site files, `tests/conftest.py` (real keyring and env secrets blocked; `folio` and `site` fixtures) and `tests/sitekit.py`.
+- Written and smoke-tested by hand, **no unit tests yet:** `errors`, `credentials` (secret references, keyring), `config` (`site.yaml`, rejects secrets), `reads` (read registry, path allowlist, patron denylist), `fields` (registry with what each field needs), `lock`, `history` (runs and audit), `schedule` (slots, due runs, OS scheduler command), `notify` (webhook, email), `delivery` (pinned-key SFTP, local folder).
+- Recipe `chq-academic` 1.0.0: same 20 columns, headers, delimiter, empty value, date format and 949 settings as FOLIOHQ's `config.example.yaml` (checked by script).
+
+**Copied from FOLIOHQ, not yet adapted** (the package does not import cleanly until they are): `client.py` (needs the allowlist guard and `iter_where_in`), `sync.py` (driven by reads and `Site`; `sample()` for previews), `marc.py`, `build.py` (still on FOLIOHQ's config dict), `tests/mock_folio.py` (needs `field==("a" or "b")` queries).
+
+**Not started:** `recipe.py`, `delimited.py`, `checks.py`, `runner.py`, `cli.py`, `wizard.py`, JSON Schemas, example site and feed files, all tests, CI, and README and CLAUDE.md updates.
+
+**To resume**
+1. Re-run the design critique (three reviewers: spec coverage, safety and correctness, operator UX and FOLIOHQ parity) and fold its findings into `docs/design.md`.
+2. Build in parallel against the contract: recipe loader and schemas; client and sync; build and checks; tests for the modules already written. Then runner and CLI, the setup wizard, and docs and CI.
+3. Review the whole build adversarially, fix, and run `pytest` and `ruff check .` clean.
+
+Dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -e ".[dev]"`.
 
 ## Decisions
 

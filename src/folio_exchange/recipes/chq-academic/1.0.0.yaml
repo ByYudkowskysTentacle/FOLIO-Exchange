@@ -1,0 +1,90 @@
+# collectionHQ Academic: MARC bibs plus a pipe-delimited item file, over SFTP.
+# Ported from folio-chq-extract's config.example.yaml, which reproduces the layout
+# collectionHQ's implementation team gave in Oct 2026 (the Library of Michigan layout).
+recipe: chq-academic
+version: 1.0.0
+vendor: collectionHQ
+title: collectionHQ Academic – bibs and items
+description: >
+  Full MARC 21 bibliographic records and one pipe-delimited row per item, with loan
+  and renewal counts. collectionHQ links each item to its bib through the FOLIO
+  instance UUID: MARC 999 ff $i and the "Bib record ID" column.
+spec_source: collectionHQ implementation team, Oct 2026 (Library of Michigan layout)
+changelog:
+  - version: 1.0.0
+    date: "2026-10-26"
+    changes: First recipe, ported from folio-chq-extract's collectionHQ Academic layout.
+
+reads: [instances, holdings, items, loans, marc]
+patron_data: none
+link: {bib_field: "999 ff $i", item_column: "Bib record ID", value: instance_id}
+file_prefix: chq
+
+selection:
+  include_suppressed_instances: false
+  include_suppressed_items: false
+  include_items_without_barcode: true
+  bibs_without_items: false
+  exclude_item_statuses: []
+  include_location_codes: []
+  exclude_location_codes: []
+
+options:
+  last_circ_date_from: checkout    # cHQ's sample: Last_circ_date is the checkout date
+  loan_window_months: 12
+  timezone: UTC
+
+outputs:
+  - name: bibs
+    format: marc21
+    file_name: "{prefix}_bibs_{date}"
+    split_every: 0
+    # cHQ's sample bib has no item fields, so none are embedded.
+    embed_items: false
+    item_field:
+      tag: "949"
+      strip_existing: true
+      max_per_record: 500
+      subfields: {a: barcode, b: item_hrid, c: call_number, l: location_code, t: material_type, s: status}
+
+  - name: items
+    format: delimited
+    file_name: "{prefix}_items_{date}"
+    extension: psv
+    delimiter: "|"
+    header: true
+    empty_value: "None"
+    date_format: "%Y-%m-%d %H:%M:%S"
+    columns:
+      - {header: Bib record ID, field: instance_id, required: true}
+      - {header: Item record ID, field: item_id}
+      - {header: Item record HRID, field: item_hrid}
+      - {header: Item identifier, field: item_identifier}
+      - {header: Barcode, field: barcode, required: true}
+      - {header: Enumeration, field: enumeration}
+      - {header: Chronology, field: chronology}
+      # The effective call number (item, else holdings), so items whose call
+      # number lives on the holdings record are not left blank.
+      - {header: Item_level_call_number, field: call_number}
+      - {header: Volume, field: volume}
+      - {header: Created_date, field: created_date}
+      - {header: Status, field: status, required: true}
+      - {header: Location, field: location_name_code}
+      - {header: Material_type, field: material_type, required: true}
+      - {header: Number_of_pieces, field: number_of_pieces}
+      - {header: Copy_number, field: copy_number}
+      - {header: Loan_name, field: loan_type}
+      - {header: Last_circ_date, field: last_circ_date}
+      - {header: Loan_return_date, field: last_return_date}
+      - {header: Number of loans, field: loans_total}
+      - {header: Number of renewals, field: renewals_total}
+
+checks:
+  min_item_ratio: 0.9
+  must_be_filled: [instance_id, status, material_type]
+
+delivery:
+  transport: sftp
+  upload_mode: direct              # cHQ's US account is described as upload-only
+
+default_schedule: weekly
