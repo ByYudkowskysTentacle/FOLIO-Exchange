@@ -70,7 +70,8 @@ def _delimited_shape(path: Path, delimiter: str) -> tuple[list[str], int]:
     return header, max(widths | {len(header)})
 
 
-def conformance(feed: Feed, run_dir: Path, samples: dict[str, Path]) -> list[str]:
+def conformance(feed: Feed, run_dir: Path, samples: dict[str, Path],
+                files: dict[str, list[str]] | None = None) -> list[str]:
     """Compare a run's files with vendor samples, by output name (VAL-2).
 
     Delimited: the same header row, column count and delimiter. MARC: both parse as binary MARC."""
@@ -79,7 +80,10 @@ def conformance(feed: Feed, run_dir: Path, samples: dict[str, Path]) -> list[str
         sample = samples.get(out["name"])
         if sample is None:
             continue
-        built = sorted(Path(run_dir).glob(f"*.{'mrc' if out['format'] == 'marc21' else out['extension']}"))
+        if files is not None:
+            built = [Path(run_dir) / n for n in files.get(out["name"], [])]
+        else:
+            built = sorted(Path(run_dir).glob(f"*.{'mrc' if out['format'] == 'marc21' else out['extension']}"))
         if not built:
             problems.append(f"{out['name']}: no file was built to compare with {sample.name}")
             continue

@@ -107,7 +107,7 @@ class History:
     def mark_delivered(self, run_id: int, status: str, delivered: list[str], files: list[dict],
                        report: dict | None = None) -> None:
         """Record a later delivery of a run (release of a held, blocked or built run)."""
-        sets = "status=?, delivered=?, destinations=?, files=?"
+        sets = "status=?, delivered=?, destinations=?, files=?, error=NULL"
         params: list[Any] = [status, int(bool(delivered)), json.dumps(delivered), json.dumps(files)]
         if report is not None:
             sets += ", report=?"

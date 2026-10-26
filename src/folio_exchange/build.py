@@ -79,8 +79,9 @@ def file_base(template: str, prefix: str, stamp: str) -> str:
 
 
 def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = None,
-          stamp: str | None = None) -> BuildReport:
-    """Write every output of ``feed`` into ``run_dir``. ``limit_bibs`` stops early (previews)."""
+          stamp: str | None = None, name_prefix: str = "") -> BuildReport:
+    """Write every output of ``feed`` into ``run_dir``. ``limit_bibs`` stops early and ``name_prefix`` is put
+    before every file name (previews)."""
     run_dir.mkdir(parents=True, exist_ok=True)
     sel, opts = feed.selection, feed.options
     stamp = stamp or now_utc().strftime("%Y%m%d")
@@ -96,7 +97,7 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
     if marc_out:
         mfmt = marc_out["date_format"]
         marc_builder = MarcBuilder(marc_out, lambda name, v: fmt(v, mfmt, tz) if name in DATE_FIELDS else v)
-        marc_sink = _MarcSink(run_dir, file_base(marc_out["file_name"], feed.file_prefix, stamp),
+        marc_sink = _MarcSink(run_dir, name_prefix + file_base(marc_out["file_name"], feed.file_prefix, stamp),
                               int(marc_out["split_every"] or 0))
     writers: list[tuple[dict, DelimitedWriter]] = []
     must_fill = list(feed.checks.get("must_be_filled") or [])
@@ -186,7 +187,7 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
     try:
         for o in feed.outputs:
             if o["format"] == "delimited":
-                path = run_dir / f"{file_base(o['file_name'], feed.file_prefix, stamp)}.{o['extension']}"
+                path = run_dir / f"{name_prefix}{file_base(o['file_name'], feed.file_prefix, stamp)}.{o['extension']}"
                 writers.append((o, DelimitedWriter(o, path, tz)))
         current_id = None
         current_inst = None

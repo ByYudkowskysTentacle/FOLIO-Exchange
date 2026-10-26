@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import __version__, checks, delivery, notify, schedule
+from . import __version__, checks, credentials, delivery, notify, schedule
 from .build import BuildReport, build
 from .cache import Cache
 from .client import FolioClient
@@ -146,6 +146,20 @@ def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) ->
 
 
 # --------------------------------------------------------- settings audit
+def redact(data, key: str = ""):
+    """A copy of settings that is safe to store: secret-looking keys, and secret references that hold
+    something other than a reference (someone typed the secret itself), are masked."""
+    if isinstance(data, dict):
+        return {k: redact(v, str(k)) for k, v in data.items()}
+    if isinstance(data, list):
+        return [redact(v, key) for v in data]
+    if key.lower() in credentials.SECRET_KEYS:
+        return "[removed: secrets never go in files]"
+    if key in ("secret", "webhook") and data is not None and not credentials.is_secret_ref(data):
+        return "[removed: not keyring or env:NAME]"
+    return data
+
+
 def _flatten(data, prefix: str = "") -> dict[str, object]:
     out: dict[str, object] = {}
     if isinstance(data, dict):
@@ -163,7 +177,7 @@ def audit_settings(site: Site, hist: History) -> list[str]:
         rel = path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
         key = f"settings:{rel}"
         try:
-            current = read_yaml(path)
+            current = redact(read_yaml(path))
         except ConfigError:
             continue
         stored = hist.get_meta(key)
@@ -330,8 +344,13 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
         hist.prune(int(site.runs["history_months"]))
         for name, err in (bad_feeds or {}).items():
             log.error("Feed %s was not run: %s", name, err)
-            alert(site, name, "failed", f"Feed {name} was not run because its file has a problem:\n{err}")
+            if hist.get_meta(f"problem:{name}") != err:      # alert once per new problem, not every hour
+                hist.set_meta(f"problem:{name}", err)
+                alert(site, name, "failed", f"Feed {name} was not run because its file has a problem:\n{err}")
             results.append(RunResult(name, "failed", 1, None, {"error": err}))
+        for f in all_feeds or feeds:
+            if hist.get_meta(f"problem:{f.name}") is not None:
+                hist.set_meta(f"problem:{f.name}", None)
         if not feeds:
             return results
         sync_report = None
@@ -357,6 +376,20 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
     return results
 
 
+def active_problems(site: Site, errors: dict[str, str]) -> dict[str, str]:
+    """Problems with feed files that are not paused (a paused file with a problem is shown by `feeds` and
+    `check`, but does not fail scheduled runs)."""
+    out = {}
+    for name, err in errors.items():
+        try:
+            raw = read_yaml(site.feeds_dir / f"{name}.yaml")
+        except ConfigError:
+            raw = {}
+        if raw.get("enabled") is not False:
+            out[name] = err
+    return out
+
+
 def due_feeds(site: Site, feeds: list[Feed], now: datetime, hist: History) -> list[Feed]:
     out = []
     for f in feeds:
@@ -365,8 +398,8 @@ def due_feeds(site: Site, feeds: list[Feed], now: datetime, hist: History) -> li
         s = schedule.parse(f.schedule)
         slot = schedule.last_slot(s, now, site.timezone)
         runs = hist.runs_since(f.name, slot) if slot else []
-        created = None if hist.last_run(f.name) else feed_created(hist, f)
-        if schedule.is_due(s, now, site.timezone, runs, int(site.runs["max_attempts_per_slot"]), created):
+        if schedule.is_due(s, now, site.timezone, runs, int(site.runs["max_attempts_per_slot"]),
+                           feed_created(hist, f)):
             out.append(f)
     return out
 
@@ -394,7 +427,7 @@ def overdue(site: Site, feed: Feed, hist: History, now: datetime) -> str | None:
 def releasable_run(hist: History, feed: Feed, run_dir: Path | None) -> dict:
     if run_dir is not None:
         row = hist.run_by_dir(Path(run_dir).resolve()) or hist.run_by_dir(Path(run_dir))
-        if row is None:
+        if row is None or row.get("feed") != feed.name:
             raise FxError(f"{run_dir} is not a run of feed {feed.name} in this site's history.")
     else:
         rows = [r for r in hist.runs(feed.name, 200) if r.get("status") in RELEASABLE | {"success", "failed"}]
@@ -458,6 +491,8 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
         report.update({"status": "success", "delivered": sent, "released_by": actor or current_user(),
                        "released": now_utc().isoformat()})
         report.pop("next", None)
+        if report.get("error"):
+            report["released_after"] = report.pop("error")
         _write_report(rdir, report)
         hist.mark_delivered(row["id"], "success", sent, files, report)
         if not row.get("destination"):
@@ -476,7 +511,6 @@ def preview(site: Site, feed: Feed, instances: int = 10) -> RunResult:
     temp = site.cache_path.with_name("preview-cache.sqlite")
     for p in (temp, temp.with_name(temp.name + "-wal"), temp.with_name(temp.name + "-shm")):
         p.unlink(missing_ok=True)
-    pfeed = dataclasses.replace(feed, file_prefix=f"PREVIEW_{feed.file_prefix}")
     report: dict = {"version": __version__, "feed": feed.name, "recipe": feed.recipe.id,
                     "recipe_version": feed.recipe.version_str, "trigger": "preview", "run_dir": str(run_dir),
                     "started": now_utc().isoformat()}
@@ -484,12 +518,12 @@ def preview(site: Site, feed: Feed, instances: int = 10) -> RunResult:
     cache = Cache(temp)
     try:
         report["sync"] = as_dict(Syncer(client_for(site), cache, site).sample(feed.reads, instances))
-        rep = build(cache, pfeed, run_dir, limit_bibs=instances)
+        rep = build(cache, feed, run_dir, limit_bibs=instances, name_prefix="PREVIEW_")
         report["build"] = as_dict(rep)
         report["files"] = [file_digest(run_dir / n) for n in rep.files]
         samples = checks.sample_files(feed)
         if samples:
-            report["conformance"] = checks.conformance(pfeed, run_dir, samples)
+            report["conformance"] = checks.conformance(feed, run_dir, samples, rep.outputs)
         try:
             checks.required_fields(feed, rep)
         except SafetyCheckFailed as exc:

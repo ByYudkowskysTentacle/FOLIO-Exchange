@@ -186,7 +186,7 @@ default_schedule: weekly         # used when the feed sets no schedule; else man
 - Every `field` (columns, item subfields, `link.value`, `must_be_filled`) exists in the field registry, and its `needs` are within `reads`.
 - `reads` names exist in the reads registry. `patron_data` is `none`.
 - `link`: `bib_field` is `"999 ff $i"` (value `instance_id`) or `"001"` (value `instance_hrid`); `item_column` is the header of a column in a delimited output whose field equals `value`. Required when a recipe has both a `marc21` and a `delimited` output.
-- At most one `marc21` output in v1. Delimiter is one character. Extension is alphanumeric and not `mrc`. Headers are unique within an output. Item field tag is a 3-digit data field tag (010–999). `date_format` is a valid `strftime` pattern that renders a sample date. File names use only letters, digits, `.`, `-`, `_` and the two placeholders.
+- At most one `marc21` output in v1. Delimiter is one character. Extension is alphanumeric and not `mrc`. Headers are unique within an output, and every output writes its own file name. Item field tag is a 3-digit data field tag (010–999). `date_format` is a valid `strftime` pattern that renders a sample date. File names use only letters, digits, `.`, `-`, `_` and the two placeholders.
 - `delivery.transport` is `sftp`, `local` or `none` (`ftp` gets its own message: plain FTP is never offered). `upload_mode` is `staged` or `direct`.
 - `must_be_filled: [barcode]` with `include_items_without_barcode: true` is refused (every run would be blocked).
 - Lists of codes and statuses must be text (a hint says to quote them).
@@ -242,7 +242,8 @@ Times are wall-clock times in `runs.timezone` (or local time). On the spring cha
 A feed is **due** when its latest slot at or before now has passed and nothing since has settled it:
 - A run started by the scheduler (`trigger: schedule`) settles the slot when it ends `success`, `built`, `blocked` or `held`. A failed one is retried at the next hourly start, up to `runs.max_attempts_per_slot` scheduled attempts.
 - A run started by hand settles the slot only if it delivered (`success`). Building, previews and failures by hand never cancel the scheduled delivery.
-- A feed that has never run is due at its first slot after the site first saw it (recorded in history the first time a run, `check` or the wizard sees the file). Editing the feed file later does not move that.
+- Slots before the site first saw the feed (recorded in history the first time a run, `check` or the wizard sees the file) are never due, so a new feed waits for its first slot even after a manual run or preview. Editing the feed file later does not move that.
+- Weekday names may be abbreviated to three or more letters (`Mon`, `Thurs`, `Monday`); other words are errors, so `monthly 03:30` is never read as Mondays.
 
 `feeds` and `check` show, and every `run --due` logs, a scheduled feed as **overdue** when its last success is older than the slot before the latest one: the hourly task may have stopped, or the PC is off at the scheduled time.
 
@@ -408,16 +409,17 @@ class DelimitedWriter:
 @dataclass class BuildReport: FOLIOHQ's fields (files, bibs_written, items_written, items_skipped, ...), plus
     outputs: dict[str, list[str]] (output name -> file names) and unfilled: Counter (must_be_filled field -> rows)
 def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = None,
-          stamp: str | None = None) -> BuildReport
+          stamp: str | None = None, name_prefix: str = "") -> BuildReport
 ```
-One SQL pass, as in FOLIOHQ. Selection filters apply once, before any output sees a row. `limit_bibs` stops after that many bibs (previews). `stamp` overrides `{date}` (tests). Loan statistics are left empty for a feed without the `loans` read, even if another feed synced loans.
+One SQL pass, as in FOLIOHQ. Selection filters apply once, before any output sees a row. `limit_bibs` stops after that many bibs and `name_prefix` (`PREVIEW_`) goes before every file name (previews). `stamp` overrides `{date}` (tests). Loan statistics are left empty for a feed without the `loans` read, even if another feed synced loans.
 
 **checks.py**
 ```python
 def required_fields(feed: Feed, report: BuildReport) -> None           # SafetyCheckFailed listing field: count
 def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> None   # SafetyCheckFailed
 def check_marc_file(path: Path) -> list[str]   # binary MARC parses; spots text-converted MARC (no 0x1D/0x1E)
-def conformance(feed: Feed, run_dir: Path, samples: dict[str, Path]) -> list[str]   # VAL-2: per output name,
+def conformance(feed, run_dir, samples: dict[str, Path], files: dict[str, list[str]] | None = None) -> list[str]
+    # VAL-2: per output name (files: BuildReport.outputs, so each output is compared with its own file),
     # delimited = same header row, column count and delimiter; marc21 = both files parse as binary MARC
 def sample_files(feed: Feed) -> dict[str, Path]   # <recipe folder>/samples/<output name>.<ext>
 ```
@@ -429,8 +431,9 @@ def sha256_fingerprint(key) -> str
 def host_key_fingerprint(host: str, port: int = 22, timeout: float = 30) -> str   # reads the server key; no login
 def destination_key(d: dict) -> str          # "sftp://user@host:port/dir", a file: URI, or "none"
 def describe_destination(d: dict) -> str
-def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]     # destinations; DeliveryError
-    # (with .sent) when an SFTP delivery stops after files reached the vendor
+def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]     # destinations. FxError when it
+    # fails before anything reached the destination (a login or host-key failure); DeliveryError (with .sent)
+    # once the destination's copy may have changed (a direct upload started, a rename or local move done)
 def check_delivery(delivery: dict) -> list[str] | None   # sftp: login + list (None when listing is refused);
                                                           # local: folder exists and is writable; uploads nothing
 def prune_runs(feed_out_dir: Path, keep: int, protect: set[Path] | None = None) -> None
@@ -473,7 +476,7 @@ def parse(text: str) -> Schedule                    # ConfigError with the accep
 def last_slot(s, now, tz) -> datetime | None; def next_slot(s, now, tz) -> datetime | None   # aware UTC
 def describe(s: Schedule) -> str                    # "Sundays at 03:30"
 def is_due(s, now, tz, runs: list[dict], max_attempts: int, created: datetime | None) -> bool
-    # runs: the feed's runs since the slot; created: when the site first saw a feed that has never run, else None
+    # runs: the feed's runs since the slot; created: when the site first saw the feed (earlier slots never due)
 def os_command(site_root, executable, system, user=None) -> str   # schtasks /SC HOURLY ... /RU user /RP (Windows),
                                                                     # crontab line at minute 7 (Linux, macOS)
 def os_helpers(site_root, system) -> dict[str, str]   # run now, last result, remove (Windows)
@@ -493,7 +496,7 @@ def audit_settings(site, hist) -> list[str]; def alert(site, feed, status, text,
 def worst_code(results) -> int                      # 1 if any failed, else 2 if any blocked or held, else 0
 ```
 
-`run_many`: take the lock → mark stale `running` rows failed (and alert) → audit hand edits → prune history → report bad feed files as failed (and alert) while good feeds still run → one sync of the union of reads → `run_feed` for each feed. A failed sync fails every feed once, with one alert.
+`run_many`: take the lock → mark stale `running` rows failed (and alert) → audit hand edits → prune history → report problem feed files that are not paused as failed (alerting once per distinct problem) while good feeds still run; one unreadable file never stops the others → one sync of the union of reads → `run_feed` for each feed. A failed sync fails every feed once, with one alert.
 
 `run_feed`: history start → sync (unless `skip_sync` or a `sync_report` was passed) → refuse if the cache is not ready for the feed's reads → build → required fields → item ratio against `last_delivered(feed, destination)` (unless `force`, which is audited) → `--no-deliver` ends `built`; transport `none` ends `success` → **hold** → deliver → history finish → prune → alert. Checks run before every status, so a `built` run has passed them too.
 
@@ -501,11 +504,11 @@ def worst_code(results) -> int                      # 1 if any failed, else 2 if
 
 **Release.** `release FEED [RUN_DIR]` (also `deliver`) takes the lock and sends the latest held, blocked or built run (previews and failed runs never). It first shows the run, its counts against the last delivery, the reason it waited, the files and the destination, and asks for confirmation (`--yes` for scripts). It re-checks every file's SHA-256 against the run record (a file opened and saved in Excel is refused), refuses if the feed's destination changed since the build, and runs the item-ratio check for a `built` run unless `--force`. Releasing a held or blocked run is itself the person's approval. The release is recorded in history and the audit log with who did it.
 
-**Partial deliveries.** When an SFTP delivery stops after files reached the vendor (direct mode, or a failed rename in staged mode), the run fails with a message listing what the vendor already has, `partially_delivered` in the report, and an audit entry. A partial delivery never becomes the ratio baseline.
+**Partial deliveries.** When a delivery stops after the vendor's copy may have changed (a direct upload started, a staged rename, or a local move done), the run fails with a message listing what the vendor already has, `partially_delivered` in the report, and an audit entry. A partial delivery never becomes the ratio baseline.
 
 **Alerts.** The text names the site, feed, recipe version, status, counts, the error, the run folder and the next command, and never a secret. With `on: failure`, a successful run after a failed or blocked one sends a "recovered" message. `run --due` exits 0 without alerting when another run holds the lock (the next hourly start catches up); a manual run reports the lock and exits 1.
 
-**Settings audit.** Every run and `check` compares `site.yaml` and each feed file with the snapshot kept in history; a change is written to the audit log as a key-level diff (`checks.min_item_ratio: 0.9 -> 0.5`), so hand edits are audited, not only wizard changes. Files never hold secrets, so the diff never does.
+**Settings audit.** Every run and `check` compares `site.yaml` and each feed file with the snapshot kept in history; a change is written to the audit log as a key-level diff (`checks.min_item_ratio: 0.9 -> 0.5`), so hand edits are audited, not only wizard changes. Snapshots are redacted first: a secret-looking key, or a `secret` or `webhook` value that is not a reference (someone typed the secret itself), is masked, so a mistake in a file never copies a secret into history.
 
 `run-report.json` is written in every run folder: FOLIOHQ's keys (`version`, `started`, `finished`, `run_dir`, `sync`, `build`, `delivered`, `status`, `error`) plus `feed`, `recipe`, `recipe_version`, `trigger`, `destination`, `files` (digests), `last_delivered_items`, and when relevant `held`, `next`, `partially_delivered`, `released_by`. It never holds a secret.
 
@@ -530,7 +533,7 @@ def worst_code(results) -> int                      # 1 if any failed, else 2 if
 | `secret set {folio\|smtp\|webhook\|FEED}` and `secret status` | Store a secret in the keyring; show where each comes from. |
 | `schedule` | Next slot per feed, the exact command to register the hourly `run --due` with the OS, and commands to run it now, see its last result or remove it. Registers nothing. |
 
-Exit codes: 0 success, built or nothing due; 1 failed (or a usage or settings problem); 2 blocked, held, or a release that was not confirmed.
+Exit codes: 0 success, built or nothing due; 1 failed (or a usage or settings problem, including a mistyped command); 2 blocked, held, or a release that was not confirmed. `release` refuses a run folder that belongs to another feed, and a released blocked run keeps its block reason as `released_after`, not as an error.
 
 **wizard.py**
 ```python
@@ -573,6 +576,7 @@ FOLIO-Exchange reads none of FOLIOHQ's files; a library moving over runs `init` 
 - Everything runs offline against `tests/mock_folio.py` (login, keyset paging, `updatedDate` deltas, `field==("a" or "b")` lookups, SRS by instance id; its loans carry a `userId` so tests can prove it is dropped). SFTP is mocked; the keyring is blocked by an autouse fixture.
 - `tests/sitekit.py` writes site and feed files; `conftest.py` gives `folio` (a running mock) and `site` (a site folder with a `chq` feed delivering to a local folder).
 - FOLIOHQ's tests are ported (`test_end_to_end.py`, `test_units.py`), including its regression tests: fields over 9,999 bytes, refusing to deliver a partial or failed run, login retry, the legacy date off-by-one, stale MARC after a source change, the atomic SFTP pair, direct mode, upload-only listing, credentials.
+- Regression tests for the build review's findings (`test_regressions.py`).
 - New: recipes and overlay (`test_recipe.py`), patron and read-only guards, redirects, TLS and secrets (`test_safety.py`), schedules across daylight saving and the due rules (`test_schedule.py`), holds, release, scheduled runs, alerts, audit and crash recovery (`test_runner.py`), the wizard (`test_wizard.py`), schemas (`test_schemas.py`).
 - Every bundled recipe has a fixture test against the mock (`test_chq_academic_psv_layout`).
 - Byte parity with FOLIOHQ is checked by running both tools on the mock data; repeat it when the builders change.

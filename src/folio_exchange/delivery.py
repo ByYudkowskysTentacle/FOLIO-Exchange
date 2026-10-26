@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 from . import credentials
-from .errors import ConfigError, DeliveryError
+from .errors import ConfigError, DeliveryError, FxError
 
 log = logging.getLogger(__name__)
 
@@ -121,9 +121,10 @@ def check_delivery(d: dict) -> list[str] | None:
     return names
 
 
-def _deliver_sftp(files: list[Path], d: dict, uploaded: list[str] | None = None) -> list[str]:
+def _deliver_sftp(files: list[Path], d: dict, sent: list[str], touched: list[str]) -> list[str]:
+    """Upload ``files``. ``touched`` gets each file name once the vendor's copy may have changed (a direct
+    upload started, or a staged rename); ``sent`` gets each destination once it is complete."""
     client = _connect(d)
-    uploaded = [] if uploaded is None else uploaded
     try:
         sftp = client.open_sftp()
         remote_dir = _remote_dir(d)
@@ -133,10 +134,11 @@ def _deliver_sftp(files: list[Path], d: dict, uploaded: list[str] | None = None)
             for f in files:
                 final = f"{remote_dir}/{f.name}"
                 log.info("Uploading %s (%s bytes) to %s:%s", f.name, f.stat().st_size, d["host"], final)
+                touched.append(f.name)
                 sftp.put(str(f), final, confirm=False)
-                uploaded.append(_where(d, f.name))
+                sent.append(_where(d, f.name))
             sftp.close()
-            return uploaded
+            return sent
         # Phase 1: upload everything as .part, so a dropped connection never
         # leaves new bibs next to an old items file (or vice versa).
         staged = []
@@ -148,6 +150,7 @@ def _deliver_sftp(files: list[Path], d: dict, uploaded: list[str] | None = None)
             staged.append((tmp, final, f.name))
         # Phase 2: all uploads succeeded; rename them into place.
         for tmp, final, name in staged:
+            touched.append(name)
             try:
                 sftp.posix_rename(tmp, final)
             except OSError:  # server without posix-rename extension
@@ -156,54 +159,70 @@ def _deliver_sftp(files: list[Path], d: dict, uploaded: list[str] | None = None)
                 except OSError:
                     pass
                 sftp.rename(tmp, final)
-            uploaded.append(_where(d, name))
+            sent.append(_where(d, name))
         sftp.close()
     finally:
         client.close()
-    return uploaded
+    return sent
 
 
-def _deliver_local(files: list[Path], d: dict) -> list[str]:
+def _deliver_local(files: list[Path], d: dict, sent: list[str], touched: list[str]) -> list[str]:
     folder = Path(os.path.expanduser(d.get("directory") or ""))
     if not d.get("directory"):
         raise ConfigError("delivery.directory is not set (needed for transport: local)")
     folder.mkdir(parents=True, exist_ok=True)
     staged = []
-    for f in files:  # copy everything first, then move into place, as SFTP staged mode does
-        tmp = folder / (f.name + ".part")
-        shutil.copyfile(f, tmp)
-        staged.append((tmp, folder / f.name))
-    for tmp, final in staged:
-        os.replace(tmp, final)
-        log.info("Copied %s to %s", final.name, folder)
-    return [final.resolve().as_uri() for _tmp, final in staged]
+    try:
+        for f in files:  # copy everything first, then move into place, as SFTP staged mode does
+            tmp = folder / (f.name + ".part")
+            staged.append((tmp, folder / f.name))
+            shutil.copyfile(f, tmp)
+        for tmp, final in staged:
+            touched.append(final.name)
+            os.replace(tmp, final)
+            sent.append(final.resolve().as_uri())
+            log.info("Copied %s to %s", final.name, folder)
+    finally:
+        for tmp, _final in staged:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+    return sent
 
 
 def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]:
-    """Send ``files`` by the feed's transport and return where each went. DeliveryError when it stops part
-    way (its ``sent`` lists the files the vendor may already have)."""
+    """Send ``files`` by the feed's transport and return where each went.
+
+    Raises DeliveryError (with ``sent``) when it stops after the vendor's copy may have changed, and FxError
+    when it fails before anything reached the vendor. ConfigError for settings problems."""
     transport = delivery.get("transport")
-    if transport == "sftp":
-        sent: list[str] = []
-        try:
-            return _deliver_sftp(files, delivery, sent)
-        except ConfigError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - paramiko and sockets raise many types
-            if not sent and (delivery.get("upload_mode") or "staged") != "direct":
-                raise
-            done = ", ".join(s.rsplit("/", 1)[-1] for s in sent) or "none confirmed"
-            raise DeliveryError(
-                f"Delivery stopped part way ({type(exc).__name__}: {exc}). Files already at the vendor: {done}. "
-                "The vendor may hold a mixed or partial set; send the whole run again with "
-                f"`folio-exchange release {feed_name}` once the connection works.", sent,
-            ) from exc
-    if transport == "local":
-        return _deliver_local(files, delivery)
     if transport == "none":
         log.info("Feed %s has transport none; files stay in the run folder", feed_name)
         return []
-    raise ConfigError(f"delivery.transport {transport!r} is not supported (use sftp, local or none)")
+    if transport not in ("sftp", "local"):
+        raise ConfigError(f"delivery.transport {transport!r} is not supported (use sftp, local or none)")
+    sent: list[str] = []
+    touched: list[str] = []
+    try:
+        if transport == "sftp":
+            return _deliver_sftp(files, delivery, sent, touched)
+        return _deliver_local(files, delivery, sent, touched)
+    except FxError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - paramiko, sockets and file systems raise many types
+        reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        if not touched:
+            raise FxError(f"Delivery failed before any file reached the destination ({reason}). Nothing was "
+                          f"changed there; fix the problem and send the run with `folio-exchange release "
+                          f"{feed_name}`.") from exc
+        done = ", ".join(s.rsplit("/", 1)[-1] for s in sent) or "none complete"
+        raise DeliveryError(
+            f"Delivery stopped part way ({reason}). Files already at the vendor: {done}; {touched[-1]} may be "
+            "incomplete. The vendor may hold a mixed or partial set; send the whole run again with "
+            f"`folio-exchange release {feed_name}` once the problem is fixed.", sent,
+        ) from exc
 
 
 def destination_key(d: dict) -> str:

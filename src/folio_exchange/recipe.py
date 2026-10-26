@@ -210,6 +210,9 @@ class _Checker:
         return value
 
     def field(self, name: object, path: str, reads: set[str]) -> None:
+        if not isinstance(name, str):
+            self.add(path, f"must be one field name, got {_type_name(name)}")
+            return
         if name not in FIELDS:
             near = suggest(str(name))
             self.add(path, f"unknown field {name!r}" + (f" (did you mean {near!r}?)" if near else
@@ -326,6 +329,7 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
     names: list[str] = []
     formats: list[str] = []
     delimited: list[dict] = []
+    file_names: dict[str, str] = {}
     if not isinstance(outputs, list) or not outputs:
         if shared or outputs is not None:
             c.add("outputs", "list one or more outputs")
@@ -340,9 +344,15 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
             c.add(f"{label}.name", "used twice; output names must be unique")
         names.append(str(name))
         fmt = o.get("format")
-        if fmt not in OUTPUT_DEFAULTS:
+        if not isinstance(fmt, str) or fmt not in OUTPUT_DEFAULTS:
             c.add(f"{label}.format", f"must be marc21 or delimited, got {fmt!r}")
             continue
+        base = str(o.get("file_name", OUTPUT_DEFAULTS[fmt]["file_name"]))
+        final = f"{base}.{'mrc' if fmt == 'marc21' else o.get('extension', 'csv')}"
+        if final in file_names:
+            c.add(f"{label}.file_name", f"{final} is also the file name of output {file_names[final]!r}; "
+                                        "each output needs its own file name")
+        file_names.setdefault(final, str(name))
         formats.append(fmt)
         c.keys(o, OUTPUT_DEFAULTS[fmt], label)
         if "file_name" in o:
@@ -408,7 +418,7 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
         lk = c.mapping(link, "link")
         c.keys(lk, ("bib_field", "item_column", "value"), "link")
         bib_field, value = lk.get("bib_field"), lk.get("value")
-        if bib_field not in LINKS:
+        if not isinstance(bib_field, str) or bib_field not in LINKS:
             c.add("link.bib_field", f"must be one of {', '.join(repr(k) for k in LINKS)}")
         elif value != LINKS[bib_field]:
             c.add("link.value", f"for bib_field {bib_field!r} the value is {LINKS[bib_field]!r}")
@@ -594,7 +604,7 @@ def _overlay_outputs(recipe_outputs: list[dict], local: object, c: _Checker) -> 
                 continue
             if key == "columns":
                 cols = value if isinstance(value, list) else []
-                have = {col.get("field") for col in cols if isinstance(col, dict)}
+                have = {col.get("field") for col in cols if isinstance(col, dict) and isinstance(col.get("field"), str)}
                 for col in target.get("columns") or []:
                     if col.get("required") and col.get("field") not in have:
                         c.add(f"outputs.{name}.columns",
@@ -750,6 +760,9 @@ def load_all(site: Site, library: RecipeLibrary | None = None) -> tuple[list[Fee
             feeds.append(load_feed(path, library, site.root))
         except ConfigError as exc:
             errors[feed_name(path)] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - one odd file must never stop the other feeds
+            errors[feed_name(path)] = (f"{path.parent.name}/{path.name}: could not be read "
+                                       f"({type(exc).__name__}: {exc}); check it against examples/feeds/chq.yaml")
     return feeds, errors
 
 

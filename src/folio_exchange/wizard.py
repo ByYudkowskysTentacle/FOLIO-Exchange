@@ -169,6 +169,12 @@ def _schedule_problem(text: str) -> str | None:
     return None
 
 
+def _in_site(root: Path, folder: str) -> Path:
+    """A folder as the feed will see it: relative paths are taken from the site folder."""
+    p = Path(os.path.expanduser(folder))
+    return p if p.is_absolute() else Path(root) / p
+
+
 def _load_raw(path: Path) -> dict:
     try:
         return read_yaml(path)
@@ -352,7 +358,7 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
     if transport == "local":
         d = {"transport": "local", "directory": p.ask("Folder to copy the files into", d.get("directory"),
                                                       _required)}
-        Path(os.path.expanduser(d["directory"])).mkdir(parents=True, exist_ok=True)
+        _in_site(root, d["directory"]).mkdir(parents=True, exist_ok=True)
     elif transport == "sftp":
         d["host"] = p.ask("SFTP server name (from the vendor)", d.get("host"), _required)
         d["port"] = int(p.ask("Port", str(d.get("port") or 22),
@@ -403,7 +409,10 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
             d.pop("upload_mode", None)
         p.say("Testing the destination (nothing is uploaded) ...")
         try:
-            listing = delivery.check_delivery(load_feed_defaults(d))
+            test = load_feed_defaults(d)
+            if test.get("directory"):
+                test["directory"] = str(_in_site(root, test["directory"]))
+            listing = delivery.check_delivery(test)
             p.say("  OK" + ("" if listing is None else f": {len(listing)} entries in the folder"))
         except Exception as exc:  # noqa: BLE001 - report every failure the same way
             p.say(f"  FAILED  {type(exc).__name__}: {str(exc)[:200]}")

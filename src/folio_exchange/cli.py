@@ -264,7 +264,7 @@ def cmd_run(args) -> int:
                              force=args.force, trigger="schedule" if args.due else "manual")
     bad: dict[str, str] = {}
     if args.due:
-        bad = errors
+        bad = runner.active_problems(site, errors)
         with History(site.history_path) as hist:
             runner.audit_settings(site, hist)
             now = datetime.now(timezone.utc)
@@ -278,7 +278,7 @@ def cmd_run(args) -> int:
             return 0
     elif args.all:
         chosen = [f for f in feeds if f.enabled]
-        bad = errors
+        bad = runner.active_problems(site, errors)
     elif args.feeds:
         chosen = _pick(site, args.feeds)
     else:
@@ -702,8 +702,17 @@ def cmd_init(args) -> int:
 
 
 # ------------------------------------------------------------------ main
+class _Parser(argparse.ArgumentParser):
+    """Usage mistakes exit 1: exit code 2 means a blocked or held run, and a scheduler must not mistake one
+    for the other."""
+
+    def error(self, message: str):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="folio-exchange",
+    p = _Parser(prog="folio-exchange",
                                 description="Scheduled, recipe-driven exports from FOLIO to vendors.")
     p.add_argument("-s", "--site", help="the site folder (default: FOLIO_EXCHANGE_SITE, else the current folder)")
     p.add_argument("-v", "--verbose", action="store_true")

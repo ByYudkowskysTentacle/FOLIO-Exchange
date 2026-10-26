@@ -45,10 +45,12 @@ def _hhmm(text: str, original: str) -> tuple[int, int]:
 
 
 def _day(token: str, original: str) -> int:
-    t = token.strip().lower()[:3]
-    if t not in DAYS:
-        raise ConfigError(f"schedule {original!r}: {token!r} is not a weekday (Mon to Sun). Use {FORMS}")
-    return DAYS.index(t)
+    t = token.strip().lower()
+    full = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    for i, name in enumerate(full):
+        if len(t) >= 3 and name.startswith(t):
+            return i
+    raise ConfigError(f"schedule {original!r}: {token!r} is not a weekday (Mon to Sun). Use {FORMS}")
 
 
 def parse(text: str) -> Schedule:
@@ -152,8 +154,8 @@ def is_due(
     """True when the latest slot has passed and no run since has settled it, and fewer than ``max_attempts``
     scheduled runs have started since it (failed runs are retried).
 
-    ``runs`` are the feed's runs started at or after the slot. ``created`` is when the site first saw a feed
-    that has never run (its first slot must come after that); pass None once the feed has any run."""
+    ``runs`` are the feed's runs started at or after the slot. ``created`` is when the site first saw the
+    feed: slots before it are never due (None: no such rule)."""
     slot = last_slot(s, now, tz)
     if slot is None or (created is not None and slot <= created):
         return False

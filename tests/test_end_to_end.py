@@ -81,7 +81,8 @@ def test_full_run_outputs(site, folio):
 
     b1 = bcs["B0001"]
     assert b1["Number of loans"] == "2" and b1["Number of renewals"] == "2"
-    assert b1["Last_circ_date"] == recent(30).replace("T", " ").rstrip("Z")[:16] + b1["Last_circ_date"][16:]
+    recent_loan = next(loan for loan in folio.data["loans"] if loan["id"] == U(42))
+    assert b1["Last_circ_date"] == recent_loan["loanDate"].replace("T", " ").rstrip("Z")
     assert b1["Material_type"] == "book" and b1["Location"] == "Main Stacks [MAIN-STACKS]"
     b3 = bcs["B0003"]
     assert b3["Number of loans"] == "43"                            # 1 FOLIO loan + 42 legacy
@@ -217,7 +218,7 @@ def test_chq_academic_psv_layout(site, folio, monkeypatch):
                               "host_key_fingerprint": "SHA256:" + "A" * 43, "directory": None})
     sent = []
     monkeypatch.setattr("folio_exchange.delivery._deliver_sftp",
-                        lambda files, _d, uploaded=None: sent.extend(p.name for p in files) or sent)
+                        lambda files, _d, out, _touched: sent.extend(p.name for p in files) or list(sent))
     deliver_once(site)
     run = runs(site)[-1]
     psv = next(run.glob("*.psv"))

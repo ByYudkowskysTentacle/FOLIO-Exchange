@@ -10,7 +10,7 @@ from pymarc import Field, Indicators, MARCReader, Record, Subfield
 
 from folio_exchange import credentials, delivery
 from folio_exchange.dates import fmt, norm
-from folio_exchange.errors import ConfigError, DeliveryError
+from folio_exchange.errors import ConfigError, DeliveryError, FxError
 from folio_exchange.marc import MarcBuilder, _set_instance_link
 
 PIN = {"host": "h", "username": "u", "host_key_fingerprint": "SHA256:x"}
@@ -97,9 +97,45 @@ def test_sftp_renames_only_after_all_uploads(tmp_path, monkeypatch):
     with mock.patch("paramiko.SSHClient") as ssh:
         sftp = ssh.return_value.open_sftp.return_value
         sftp.put.side_effect = [None, OSError("connection lost")]
-        with pytest.raises(OSError):
+        with pytest.raises(FxError, match="before any file reached") as err:
             delivery.deliver([a, b], {**PIN, "transport": "sftp", "secret": "env:SFTP_PW"}, "x")
     sftp.posix_rename.assert_not_called()
+    assert not isinstance(err.value, DeliveryError)
+
+
+def test_direct_mode_login_failure_is_not_a_partial_delivery(tmp_path, monkeypatch):
+    import paramiko
+
+    monkeypatch.setenv("SFTP_PW", "pw")
+    (tmp_path / "a.mrc").write_text("a")
+    with mock.patch("paramiko.SSHClient") as ssh:
+        ssh.return_value.connect.side_effect = paramiko.SSHException("Host key for h is SHA256:y, expected x")
+        with pytest.raises(FxError, match="before any file reached") as err:
+            delivery.deliver([tmp_path / "a.mrc"], {**PIN, "transport": "sftp", "upload_mode": "direct",
+                                                    "secret": "env:SFTP_PW"}, "x")
+    assert not isinstance(err.value, DeliveryError)
+
+
+def test_local_delivery_stopping_part_way_is_a_partial_delivery(tmp_path, monkeypatch):
+    src = tmp_path / "run"
+    src.mkdir()
+    for n in ("a.mrc", "b.psv"):
+        (src / n).write_text(n)
+    real = __import__("os").replace
+    calls = []
+
+    def flaky(a, b):
+        calls.append(b)
+        if len(calls) == 2:
+            raise PermissionError("in use")
+        return real(a, b)
+
+    monkeypatch.setattr("folio_exchange.delivery.os.replace", flaky)
+    with pytest.raises(DeliveryError) as err:
+        delivery.deliver([src / "a.mrc", src / "b.psv"], {"transport": "local", "directory": str(tmp_path / "d")},
+                         "f")
+    assert len(err.value.sent) == 1 and err.value.sent[0].endswith("a.mrc")
+    assert not list((tmp_path / "d").glob("*.part"))
 
 
 def test_sftp_direct_mode_uploads_to_final_names_without_stat_or_rename(tmp_path, monkeypatch):
