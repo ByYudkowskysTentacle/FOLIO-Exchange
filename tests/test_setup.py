@@ -17,7 +17,7 @@ from folio_exchange.errors import ConfigError, FxError
 from folio_exchange.history import History
 from folio_exchange.recipe import RecipeLibrary
 
-SFTP_PASSWORD = "Vendor-Pa55-zq81"
+SFTP_PASSWORD = "Vendor-Pa55-zq81"  # gitleaks:allow - made up; the tests prove it never reaches a file or response
 KEYS = {"sha256": "SHA256:AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/abcde", "md5": "0f:1e:2d:3c:4b:5a:69:78:87:96:a5:b4:c3:d2:e1:f0"}
 
 
