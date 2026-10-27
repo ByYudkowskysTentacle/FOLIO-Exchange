@@ -98,6 +98,31 @@ function sameList(a, b) {
   return x.length === y.length && x.every((v, i) => v === y[i]);
 }
 const listText = (v) => (v && v.length ? v.join(", ") : "none");
+
+// How a chosen value missing from FOLIO's own list is labelled. Locations come from the tenant; item statuses are
+// every status FOLIO defines, so a status outside that list is not one FOLIO knows at all.
+const MISSING_LOCATION = "not a location in this FOLIO";
+const MISSING_STATUS = "not a FOLIO item status";
+
+// The three list filters as a recipe sets them by default (GET /api/recipes: each recipe's "selection").
+function recipeLists(selection) {
+  const s = selection || {};
+  return { exclude_location_codes: [...(s.exclude_location_codes || [])], exclude_item_statuses: [...(s.exclude_item_statuses || [])],
+           include_location_codes: [...(s.include_location_codes || [])] };
+}
+
+// A list for the wizard's summary, saying when it is simply the recipe's default.
+function leftOutText(list, def) {
+  return listText(list) + (def && def.length && sameList(list, def) ? " (the recipe's default)" : "");
+}
+
+// A settings form's values laid over settings: the person's changes, kept, on top of the file as it is now.
+function overlaid(base, values) {
+  const out = JSON.parse(JSON.stringify(base));
+  for (const k of ["title", "schedule", "file_prefix"]) if (values && k in values) out[k] = values[k];
+  for (const k of ["filters", "checks", "legacy"]) Object.assign(out[k], (values && values[k]) || {});
+  return out;
+}
 const yesNo = (v) => (v ? "yes" : "no");
 const pct = (r) => (r ? `${+(r * 100).toFixed(1)}% of the last one` : "off");
 
@@ -298,9 +323,39 @@ function textInput(id, value, attrs) {
   return h("input", { class: "input", type: "text", id, value: value ?? "", spellcheck: "false", autocomplete: "off", ...attrs });
 }
 
-// The one place a secret field is made: a password field that browsers neither fill in nor offer to remember.
+// The one place a secret field is made: a password field with autocomplete "new-password", which asks browsers
+// not to fill in a saved password. (Some may still offer to save or suggest one; the page never keeps the value.)
 function secretInput(id) {
   return h("input", { class: "input", type: "password", id, autocomplete: "new-password", spellcheck: "false" });
+}
+
+// Empty every secret field (passwords, passphrases, key files) under `root`. Called when the view or the feed
+// tab changes, so a typed but unsent secret does not stay behind in a form the page keeps for later.
+function clearSecrets(root) {
+  for (const el of (root || document).querySelectorAll('input[type="password"], input[type="file"]')) el.value = "";
+  for (const form of (root || document).querySelectorAll("form[data-dirty]")) delete form.dataset.dirty;
+}
+
+// A form's submit handler that runs once at a time: the guard is set (and the submit buttons disabled) before
+// anything is awaited, so a second Enter or click cannot send the same thing twice.
+function guarded(handler) {
+  return async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    if (form.dataset.busy) return;
+    form.dataset.busy = "1";
+    const focused = document.activeElement;
+    const buttons = [...form.querySelectorAll('button[type="submit"]')].filter((b) => !b.disabled);
+    for (const b of buttons) b.disabled = true;
+    try {
+      await handler(e, form);
+    } finally {
+      delete form.dataset.busy;
+      for (const b of buttons) b.disabled = false;
+      const a = document.activeElement;
+      if (focused && focused.isConnected && (!a || a === document.body)) focused.focus();
+    }
+  };
 }
 
 function help(id, text) {
@@ -418,18 +473,19 @@ function schedulePicker(prefix, current) {
 }
 
 // A list of checkboxes (with a filter box when it is long). With no options (the tenant's list could not be
-// read) it is a text field taking codes separated by commas.
-function codePicker(id, legend, options, selected, helpText) {
+// read) it is a text field taking codes separated by commas. A chosen value missing from the options is still
+// listed (and kept), labelled with `missing`, e.g. "not a location in this FOLIO".
+function codePicker(id, legend, options, selected, helpText, missing) {
   const chosen = new Set(selected || []);
   if (!options) {
     const input = textInput(id, [...chosen].join(", "));
     return {
-      el: field(input, legend, `${helpText ? `${helpText} ` : ""}Separate codes with commas.`),
+      el: field(input, legend, `${helpText ? `${helpText} ` : ""}Separate them with commas.`),
       value: () => input.value.split(",").map((s) => s.trim()).filter(Boolean),
     };
   }
   const all = [...options];
-  for (const v of chosen) if (!all.some((o) => o.value === v)) all.push({ value: v, label: `${v} (not found in FOLIO)` });
+  for (const v of chosen) if (!all.some((o) => o.value === v)) all.push({ value: v, label: `${v} (${missing || "not in FOLIO's list"})` });
   const boxes = all.map((o, i) => {
     const cb = h("input", { type: "checkbox", id: `${id}-${i}`, value: o.value, checked: chosen.has(o.value) });
     return { o, cb, row: checkField(cb, o.label) };
@@ -617,6 +673,10 @@ async function openFolder(id) {
 // ------------------------------------------------------------ routing
 function go(view) {
   if (S.site && S.site.setup) return;              // nothing but the first-run card until FOLIO is connected
+  if (!S.view || S.view.type !== view.type || S.view.name !== view.name) {
+    clearSecrets(document);                       // a secret typed but not sent does not outlive the view
+    if (S.connForm) clearSecrets(S.connForm);     // (the kept connection form, too, when it is not on show)
+  }
   S.view = view;
   S.nav += 1;
   const hash = view.type === "feed" ? `#feed/${view.name}` : view.type === "home" ? "" : `#${view.type}`;
@@ -704,6 +764,8 @@ function renderSidebar() {
 }
 
 function showProblem(name, problem) {
+  clearSecrets(document);
+  if (S.connForm) clearSecrets(S.connForm);
   S.view = { type: "problem", name };
   renderSidebar();
   $("main").replaceChildren(h("div", { class: "pane" },
@@ -738,9 +800,8 @@ function connectionForm({ folio, first, keyring, problem, synced, root, done, ca
   const btn = h("button", { class: "btn btn-primary", type: "submit", id: "cx-save" }, "Test and save");
   const form = h("form", {
     class: first ? "setup-card" : "edit-box", id: "cx-form", "data-form": "open", "data-first": first ? "1" : null,
-    novalidate: true, "aria-labelledby": "cx-heading",
-    onsubmit: async (e) => {
-      e.preventDefault();
+    novalidate: true, autocomplete: "off", "aria-labelledby": "cx-heading",
+    onsubmit: guarded(async () => {
       clearErrors(form);
       const values = { base_url: url.value.trim(), tenant: tenant.value.trim(), username: user.value.trim() };
       const bad = urlProblem(values.base_url);
@@ -756,12 +817,13 @@ function connectionForm({ folio, first, keyring, problem, synced, root, done, ca
         res = await working(btn, "Logging in…", () => api("/api/setup/connection", { ...values, password: secret }));
       } catch (err) {
         formError(form, err.message, btn);
-        return;
+        return undefined;
       } finally {
         secret = null;
       }
       await done(res);
-    },
+      return undefined;
+    }),
   },
   first ? h("h1", { id: "cx-heading", tabindex: "-1", text: "Connect to FOLIO" })
     : h("h2", { id: "cx-heading", tabindex: "-1", text: "Change connection or password" }),
@@ -877,7 +939,11 @@ function renderFeed() {
         runMenu())),
     tablist("tabs", "feed", FEED_TABS, S.tab, "Feed sections",
       (t) => [label(t), t === "history" ? h("span", { class: "count", text: S.runs.length }) : null],
-      (t) => { S.tab = t; renderFeed(); }));
+      (t) => {
+        if (t !== S.tab) clearSecrets($("feed-panel"));      // leaving the Delivery tab drops a typed, unsent password
+        S.tab = t;
+        renderFeed();
+      }));
 
   const grow = S.tab === "settings" || S.tab === "delivery";
   const top = h("div", { class: `pane pane-top${grow ? " pane-grow" : ""}`, role: "tabpanel", id: "feed-panel",
@@ -1031,26 +1097,29 @@ function closeSettings(name, focus) {
   if (onFeedTab(name, "settings")) renderFeed();
 }
 
-function settingsForm(name, st, ch, message) {
+// The settings form. Its inputs start from the feed's settings, or (opts.overlay) from the person's own changes
+// laid over the file as it is now; changes are always worked out against the file the form holds the version of.
+function settingsForm(name, st, ch, opts) {
+  const { overlay = null, notice = null } = opts || {};
   const c = ch && ch.data;
-  const base = { title: st.title || "", schedule: st.schedule || "", file_prefix: st.file_prefix || "",
-                 filters: st.filters || {}, checks: st.checks || {}, legacy: st.legacy || {} };
+  const base = settingsBase(st);
+  const start = overlay ? overlaid(base, overlay) : base;
   const defaults = st.filter_defaults || {};
-  const title = textInput("set-title", base.title, { maxlength: "200" });
-  const sched = schedulePicker("set-sched", base.schedule);
-  const prefix = textInput("set-prefix", base.file_prefix);
-  const exLoc = codePicker("set-exloc", "Locations to leave out", locationOptions(c), base.filters.exclude_location_codes,
-    "Items in these locations are not sent.");
-  const exSt = codePicker("set-exstatus", "Item statuses to leave out", statusOptions(c), base.filters.exclude_item_statuses,
-    "Items with these statuses are not sent, for example withdrawn or lost items.");
-  const inLoc = codePicker("set-inloc", "Only these locations", locationOptions(c), base.filters.include_location_codes,
-    "When any are chosen, only items in those locations are sent. Choose none to send every location.");
+  const title = textInput("set-title", start.title, { maxlength: "200" });
+  const sched = schedulePicker("set-sched", start.schedule);
+  const prefix = textInput("set-prefix", start.file_prefix);
+  const exLoc = codePicker("set-exloc", "Locations to leave out", locationOptions(c), start.filters.exclude_location_codes,
+    "Items in these locations are not sent.", MISSING_LOCATION);
+  const exSt = codePicker("set-exstatus", "Item statuses to leave out", statusOptions(c), start.filters.exclude_item_statuses,
+    "Items with these statuses are not sent, for example withdrawn or lost items.", MISSING_STATUS);
+  const inLoc = codePicker("set-inloc", "Only these locations", locationOptions(c), start.filters.include_location_codes,
+    "When any are chosen, only items in those locations are sent. Choose none to send every location.", MISSING_LOCATION);
   const flags = Object.fromEntries(FILTER_FLAGS.map((k) => [k, h("input", { type: "checkbox", id: `set-${k.replace(/_/g, "-")}`,
-    checked: !!base.filters[k] })]));
-  const pctText = base.checks.min_item_ratio ? String(+(base.checks.min_item_ratio * 100).toFixed(1)) : "";
+    checked: !!start.filters[k] })]));
+  const pctText = start.checks.min_item_ratio ? String(+(start.checks.min_item_ratio * 100).toFixed(1)) : "";
   const ratio = h("input", { class: "input input-narrow", type: "number", id: "set-ratio", min: "0", max: "100", step: "1",
     inputmode: "decimal", value: pctText, "aria-describedby": "set-ratio-unit set-ratio-help" });
-  const legacy = legacyFields("set", base.legacy, c ? c.note_types : null);
+  const legacy = legacyFields("set", start.legacy, c ? c.note_types : null);
   const fields = h("fieldset", { class: "plain", id: "set-fields" },
     h("legend", { class: "sr-only", text: "Settings" }),
     field(title, "Title", "How the feed is shown on this page and in alerts."),
@@ -1075,7 +1144,7 @@ function settingsForm(name, st, ch, message) {
 
   const read = () => {
     const t = ratio.value.trim();
-    const r = t === pctText ? (base.checks.min_item_ratio || 0) : t === "" ? 0 : Number(t) / 100;
+    const r = t === pctText ? (start.checks.min_item_ratio || 0) : t === "" ? 0 : Number(t) / 100;
     return {
       title: title.value.trim(), schedule: sched.value(), file_prefix: prefix.value.trim(),
       filters: { exclude_location_codes: exLoc.value(), exclude_item_statuses: exSt.value(), include_location_codes: inLoc.value(),
@@ -1090,62 +1159,93 @@ function settingsForm(name, st, ch, message) {
     actions.hidden = false;
   };
 
+  const changeList = (changes) => h("ul", { class: "changes" }, changes.map((x) => h("li", {}, h("b", { text: `${x.what}: ` }),
+    h("span", { class: "before", text: x.before }), " → ", h("span", { class: "after", text: x.after }))));
+  const back = () => h("button", { class: "btn", type: "button", id: "set-back", onclick: () => {
+    backToEditing();
+    reviewBtn.focus();
+  } }, "Back to editing");
+
+  // Check the form and show what would change (the "Review changes" step).
+  const showReview = () => {
+    clearErrors(form);
+    const t = ratio.value.trim();
+    const n = Number(t);
+    if (t && (!Number.isFinite(n) || n < 0 || n > 100)) {
+      return fieldError(ratio, "Enter a percentage from 0 to 100, or leave it empty to switch the check off.");
+    }
+    const values = read();
+    if (!values.schedule) return fieldError(sched.custom, "Enter a schedule, or choose one above.");
+    const { values: send, changes } = settingsChanges(base, values);
+    fields.disabled = true;
+    actions.hidden = true;
+    const save = h("button", { class: "btn btn-primary", type: "button", id: "set-save",
+      onclick: () => saveSettings(name, form, send, save) }, "Save");
+    put(review,
+      h("h3", { id: "set-review-heading", tabindex: "-1", text: changes.length ? "Review changes" : "Nothing has changed" }),
+      changes.length ? changeList(changes) : h("p", { class: "muted", text: "The form is the same as the saved settings." }),
+      changes.length ? h("p", { class: "help", text: "Use Preview after saving to see the effect before the next delivery." }) : null,
+      h("div", { class: "form-actions" }, changes.length ? save : null, back(),
+        changes.length ? null : h("button", { class: "btn", type: "button", onclick: () => closeSettings(name) }, "Close")));
+    review.hidden = false;
+    $("set-review-heading").focus();
+    return undefined;
+  };
+
   const form = h("form", {
     class: "edit-box", id: "set-form", "data-form": "open", novalidate: true, "aria-labelledby": "set-heading",
-    onsubmit: (e) => {
-      e.preventDefault();
-      clearErrors(form);
-      const t = ratio.value.trim();
-      const n = Number(t);
-      if (t && (!Number.isFinite(n) || n < 0 || n > 100)) {
-        return fieldError(ratio, "Enter a percentage from 0 to 100, or leave it empty to switch the check off.");
-      }
-      const values = read();
-      if (!values.schedule) return fieldError(sched.custom, "Enter a schedule, or choose one above.");
-      const { values: send, changes } = settingsChanges(base, values);
-      fields.disabled = true;
-      actions.hidden = true;
-      const save = h("button", { class: "btn btn-primary", type: "button", id: "set-save",
-        onclick: () => saveSettings(name, form, st, send, save, backToEditing) }, "Save");
-      const back = h("button", { class: "btn", type: "button", id: "set-back", onclick: () => {
-        backToEditing();
-        reviewBtn.focus();
-      } }, "Back to editing");
-      put(review,
-        h("h3", { id: "set-review-heading", tabindex: "-1", text: changes.length ? "Review changes" : "Nothing has changed" }),
-        changes.length ? h("ul", { class: "changes" }, changes.map((ch2) => h("li", {}, h("b", { text: `${ch2.what}: ` }),
-          h("span", { class: "before", text: ch2.before }), " → ", h("span", { class: "after", text: ch2.after }))))
-          : h("p", { class: "muted", text: "The form is the same as the saved settings." }),
-        changes.length ? h("p", { class: "help", text: "Use Preview after saving to see the effect before the next delivery." }) : null,
-        h("div", { class: "form-actions" }, changes.length ? save : null, back,
-          changes.length ? null : h("button", { class: "btn", type: "button", onclick: () => closeSettings(name) }, "Close")));
-      review.hidden = false;
-      $("set-review-heading").focus();
-      return undefined;
-    },
+    onsubmit: guarded(async () => showReview()),
   },
   h("h2", { class: "tab-heading", id: "set-heading", tabindex: "-1", text: "Edit settings" }),
-  message ? h("div", { class: "notice notice-held" }, h("p", { text: `${message} The form now shows the file as it is.` })) : null,
+  notice ? h("div", { class: "notice notice-held" }, h("p", { text: notice })) : null,
   fields, formErrorBox("set-form"), actions, review);
+  form.version = st.version;            // moved on by the page's own writes to this feed (noteWrite)
+  form.showReview = showReview;
+  form.backToEditing = backToEditing;
+  // The file changed underneath (by hand, or in another window): nothing was saved and everything typed stays.
+  // Offer to lay the same changes over the file as it is now and review them again.
+  form.conflict = (message, send) => {
+    const apply = h("button", { class: "btn btn-primary", type: "button", id: "set-reapply",
+      onclick: () => reapplySettings(name, send, apply) }, "Apply my changes to the file as it is now");
+    put(review,
+      h("h3", { id: "set-review-heading", tabindex: "-1", text: "Not saved: the file changed" }),
+      h("p", { class: "form-error", id: "set-conflict", text: `${firstSentence(message)} Nothing was saved, and what you ` +
+        "entered is still here." }),
+      h("div", { class: "form-actions" }, apply, back()));
+    review.hidden = false;
+    $("set-review-heading").focus();
+    announce(`Not saved: ${firstSentence(message)} What you entered is still here.`);
+  };
   return form;
 }
 
-async function saveSettings(name, form, st, values, btn, backToEditing) {
+function settingsBase(st) {
+  return { title: st.title || "", schedule: st.schedule || "", file_prefix: st.file_prefix || "",
+           filters: { ...(st.filters || {}) }, checks: { ...(st.checks || {}) }, legacy: { ...(st.legacy || {}) } };
+}
+
+function firstSentence(text) {
+  const s = String(text || "");
+  const m = s.match(/^.*?\.(?=\s|$)/s);
+  return m ? m[0] : s;
+}
+
+async function saveSettings(name, form, values, btn) {
   let res;
   try {
-    res = await working(btn, "Saving…", () => api(`/api/feeds/${name}/settings`, { version: st.version, values }));
+    res = await working(btn, "Saving…", () => api(`/api/feeds/${name}/settings`, { version: form.version, values }));
   } catch (e) {
     if (/changed since this form was opened/.test(e.message)) {
-      await reloadForm(name, "settings", e.message);
+      form.conflict(e.message, values);
       return;
     }
-    backToEditing();
+    form.backToEditing();
     formError(form, e.message, $("set-review-btn"));
     $("set-review-btn").focus();
     return;
   }
   const { changed, ...settings } = res;
-  S.settings[name] = settings;
+  noteWrite(name, settings);
   S.forms[name].settings = null;
   const words = changed.length ? "Settings saved. Use Preview to see the effect." : "Nothing needed saving.";
   toast(words);
@@ -1157,21 +1257,40 @@ async function saveSettings(name, form, st, values, btn, backToEditing) {
   if (S.view && S.view.type === "feed" && S.view.name === name) await openFeed(name);
 }
 
-// The feed file changed underneath an open form: say so, and show the form again with the file as it is now.
-async function reloadForm(name, which, message) {
-  const st = await loadSettings(name, true);
-  const F = S.forms[name] || (S.forms[name] = {});
+// Lay the person's changes over the feed file as it is now, show the form that way and review the result.
+async function reapplySettings(name, values, btn) {
+  let st, ch;
+  await working(btn, "Reading the file…", async () => {
+    st = await loadSettings(name, true);
+    ch = await getChoices();
+  });
   if (st.error) {
-    F[which] = null;
-    toast(st.error);
-  } else if (which === "settings") {
-    F.settings = settingsForm(name, st, await getChoices(), message);
-  } else {
-    F.delivery = deliveryForm(name, st, message);
+    formError($("set-form"), st.error, btn);
+    return;
   }
-  announce(message);
-  S.focus = which === "settings" ? "set-heading" : "dl-form-heading";
+  const F = S.forms[name] || (S.forms[name] = {});
+  F.settings = settingsForm(name, st, ch, { overlay: values,
+    notice: "The form now shows the file as it is now, with your changes laid over it. Check them below, then save." });
   if (S.view && S.view.type === "feed" && S.view.name === name) await openFeed(name);
+  if (F.settings.isConnected) F.settings.showReview();
+}
+
+// After the page itself rewrote feeds/<name>.yaml (settings, delivery, a password or key, pause or resume): keep
+// the new settings and move every open form of that feed on to the file's new version, so the page's own write
+// is never mistaken for a change made underneath the form.
+function noteWrite(name, settings) {
+  if (!settings || !settings.version) return;
+  S.settings[name] = settings;
+  const F = S.forms[name];
+  if (!F) return;
+  for (const form of [F.settings, F.delivery]) if (form) form.version = settings.version;
+}
+
+// Pause and resume answer with the new state only: read the settings again for the file's new version.
+async function rereadSettings(name) {
+  try {
+    noteWrite(name, await api(`/api/feeds/${name}/settings`));
+  } catch (e) { /* a save then says the form is out of date, and offers to apply it again */ }
 }
 
 // ------------------------------------------------------------ delivery (the Delivery tab)
@@ -1233,9 +1352,10 @@ function deliveryTab(f) {
   } else {
     const unconfirmed = d.transport === "sftp" && !d.host_key_confirmed;
     out.push(h("div", { class: "form-actions" },
-      h("button", { class: "btn", type: "button", id: "btn-change-delivery", onclick: () => openDeliveryForm(name) }, "Change delivery"),
+      h("button", { class: "btn", type: "button", id: "btn-change-delivery", onclick: (e) => openDeliveryForm(name, e.currentTarget) },
+        "Change delivery"),
       d.transport !== "none" ? h("button", { class: "btn", type: "button", id: "btn-test-delivery", disabled: busy() || unconfirmed,
-        "aria-describedby": unconfirmed ? "dl-test-why" : null, onclick: () => testDelivery(name) }, "Test delivery") : null,
+        "aria-describedby": unconfirmed ? "dl-test-why" : null, onclick: (e) => testDelivery(name, e.currentTarget) }, "Test delivery") : null,
       unconfirmed ? h("span", { class: "help", id: "dl-test-why", text: "The test waits until the server key is confirmed." }) : null));
     out.push(testResult(D));
   }
@@ -1258,8 +1378,9 @@ function testResult(D) {
         : `The folder holds ${num(n)} ${n === 1 ? "entry" : "entries"}.`));
 }
 
-async function openDeliveryForm(name) {
-  const st = await loadSettings(name, true);
+async function openDeliveryForm(name, btn) {
+  let st;
+  await working(btn, "Opening…", async () => { st = await loadSettings(name, true); });
   if (st.error) {
     toast(st.error);
     return;
@@ -1275,8 +1396,9 @@ function closeDeliveryForm(name, focus) {
   if (onFeedTab(name, "delivery")) renderFeed();
 }
 
-function deliveryForm(name, st, message) {
+function deliveryForm(name, st) {
   const d = st.delivery;
+  const cur = { st };                   // the file the form is checked against; a re-apply moves it on
   const mode = ["sftp", "local", "none"].includes(d.transport) ? d.transport : "none";
   const choices = [["sftp", "The vendor's SFTP server"], ["local", "A folder on this computer or the network"],
                    ["none", "Not yet: keep it a dry run"]];
@@ -1286,7 +1408,8 @@ function deliveryForm(name, st, message) {
     value: String(d.port || 22) });
   const user = textInput("dl-user", d.username || "");
   const rdir = textInput("dl-rdir", d.remote_dir || ".");
-  const known = d.transport === "sftp" && d.host_key_confirmed && !!d.host_key_fingerprint;
+  const confirmed = (x) => x.transport === "sftp" && x.host_key_confirmed && !!x.host_key_fingerprint;
+  const known = confirmed(d);
   const fp = textInput("dl-fp", "", { placeholder: "SHA256:…" });
   const later = h("input", { type: "checkbox", id: "dl-later" });
   const dir = textInput("dl-dir", d.directory || "", { placeholder: "D:\\Exports\\vendor" });
@@ -1310,12 +1433,15 @@ function deliveryForm(name, st, message) {
   const show = (v) => { for (const [k, el] of Object.entries(boxes)) el.hidden = k !== v; };
   show(mode);
   const btn = h("button", { class: "btn btn-primary", type: "submit", id: "dl-save" }, "Save delivery");
+  const conflictBox = h("div", { class: "notice notice-held", id: "dl-conflict", hidden: true });
   const form = h("form", {
     class: "edit-box", id: "dl-form", "data-form": "open", novalidate: true, "aria-labelledby": "dl-form-heading",
     onchange: (e) => { if (e.target.name === "dl-transport") show(e.target.value); },
-    onsubmit: async (e) => {
-      e.preventDefault();
+    onsubmit: guarded(async () => {
       clearErrors(form);
+      conflictBox.hidden = true;
+      describe(btn, conflictBox.id, false);
+      const now = cur.st.delivery;
       const transport = (radios.find((r) => r.checked) || {}).value || "none";
       let body;
       if (transport === "sftp") {
@@ -1325,7 +1451,8 @@ function deliveryForm(name, st, message) {
         if (!user.value.trim()) return fieldError(user, "Enter the SFTP user name the vendor gave you.");
         const bad = fingerprintProblem(fp.value);
         if (bad) return fieldError(fp, bad);
-        const sameServer = known && host.value.trim().toLowerCase() === String(d.host || "").toLowerCase() && p === Number(d.port || 22);
+        const sameServer = confirmed(now) && host.value.trim().toLowerCase() === String(now.host || "").toLowerCase()
+          && p === Number(now.port || 22);
         if (!fp.value.trim() && !later.checked && !sameServer) {
           return fieldError(fp, "Enter the fingerprint the vendor gave you, or tick the box below to confirm it later.");
         }
@@ -1341,14 +1468,33 @@ function deliveryForm(name, st, message) {
       let res;
       try {
         res = await working(btn, transport === "sftp" ? "Reading the server's key…" : "Saving…",
-          () => api(`/api/feeds/${name}/delivery`, { version: st.version, form: body }));
+          () => api(`/api/feeds/${name}/delivery`, { version: form.version, form: body }));
       } catch (err) {
-        if (/changed since this form was opened/.test(err.message)) return reloadForm(name, "delivery", err.message);
+        if (/changed since this form was opened/.test(err.message)) {
+          // Changed underneath (by hand, or in another window): keep everything typed, and offer to save it again.
+          const again = h("button", { class: "btn btn-small", type: "button", id: "dl-reapply", onclick: async () => {
+            let fresh;
+            await working(again, "Reading the file…", async () => { fresh = await loadSettings(name, true); });
+            if (fresh.error) {
+              formError(form, fresh.error, btn);
+              return;
+            }
+            cur.st = fresh;
+            form.version = fresh.version;
+            form.requestSubmit(btn);
+          } }, "Save my choices on the file as it is now");
+          put(conflictBox, h("p", { text: `${firstSentence(err.message)} Nothing was saved, and what you entered is still here.` }), again);
+          conflictBox.hidden = false;
+          describe(btn, conflictBox.id, true);
+          conflictBox.scrollIntoView({ block: "nearest" });
+          announce(`Not saved: ${firstSentence(err.message)} What you entered is still here.`);
+          return undefined;
+        }
         formError(form, err.message, btn);
         return undefined;
       }
       const { server_key: serverKey, ...settings } = res;
-      S.settings[name] = settings;
+      noteWrite(name, settings);
       const D = deliv(name);
       D.serverKey = serverKey || null;
       D.test = null;
@@ -1365,16 +1511,16 @@ function deliveryForm(name, st, message) {
       } catch (e2) { /* caught up on the next refresh */ }
       if (S.view && S.view.type === "feed" && S.view.name === name) await openFeed(name);
       return undefined;
-    },
+    }),
   },
   h("h3", { id: "dl-form-heading", tabindex: "-1", text: "Change delivery" }),
-  message ? h("div", { class: "notice notice-held" }, h("p", { text: `${message} The form now shows the file as it is.` })) : null,
   h("fieldset", { class: "choices" }, h("legend", { text: "Where should the files go?" }),
     choices.map(([v, text], i) => checkField(radios[i], text))),
   boxes.sftp, boxes.local, boxes.none,
-  formErrorBox("dl-form"),
+  formErrorBox("dl-form"), conflictBox,
   h("div", { class: "form-actions" }, btn,
     h("button", { class: "btn", type: "button", id: "dl-cancel", onclick: () => closeDeliveryForm(name) }, "Cancel")));
+  form.version = st.version;            // moved on by the page's own writes to this feed (noteWrite)
   return form;
 }
 
@@ -1385,9 +1531,9 @@ function loginSection(f, st, D) {
   const pw = secretInput("dl-pw");
   const pwBtn = h("button", { class: "btn btn-primary", type: "submit", id: "dl-pw-save" }, "Save in Credential Manager");
   const pwForm = h("form", {
-    class: "subform", id: "dl-pw-form", "data-form": "idle", novalidate: true, hidden: mode !== "password", oninput: markDirty,
-    onsubmit: async (e) => {
-      e.preventDefault();
+    class: "subform", id: "dl-pw-form", "data-form": "idle", novalidate: true, autocomplete: "off", hidden: mode !== "password",
+    oninput: markDirty,
+    onsubmit: guarded(async () => {
       clearErrors(pwForm);
       let secret = pw.value;
       pw.value = "";
@@ -1402,7 +1548,7 @@ function loginSection(f, st, D) {
       } finally {
         secret = null;
       }
-      S.settings[name] = res;
+      noteWrite(name, res);
       D.loginMode = null;
       D.keyFp = null;
       toast("Password saved in Credential Manager.");
@@ -1410,7 +1556,7 @@ function loginSection(f, st, D) {
       S.focus = "dl-login-heading";
       if (onFeedTab(name, "delivery")) renderFeed();
       return undefined;
-    },
+    }),
   },
   field(pw, "SFTP password", "Sent once to folio-exchange on this computer and kept in Windows Credential Manager. It is never shown again or written to a file."),
   formErrorBox("dl-pw-form"),
@@ -1420,10 +1566,10 @@ function loginSection(f, st, D) {
   const pass = secretInput("dl-pass");
   const keyBtn = h("button", { class: "btn btn-primary", type: "submit", id: "dl-key-save" }, "Save key");
   const keyForm = h("form", {
-    class: "subform", id: "dl-key-form", "data-form": "idle", novalidate: true, hidden: mode !== "key", oninput: markDirty,
-    onchange: markDirty,
-    onsubmit: async (e) => {
-      e.preventDefault();
+    class: "subform", id: "dl-key-form", "data-form": "idle", novalidate: true, autocomplete: "off", hidden: mode !== "key",
+    oninput: markDirty, onchange: markDirty,
+    // guarded(): the guard is set before the file is read, so a second click cannot send the key twice.
+    onsubmit: guarded(async () => {
       clearErrors(keyForm);
       const file = keyFile.files && keyFile.files[0];
       let phrase = pass.value;
@@ -1455,7 +1601,7 @@ function loginSection(f, st, D) {
         phrase = null;
       }
       const { key, ...settings } = res;
-      S.settings[name] = settings;
+      noteWrite(name, settings);
       D.loginMode = null;
       D.keyFp = key;
       toast("Key saved.");
@@ -1463,7 +1609,7 @@ function loginSection(f, st, D) {
       S.focus = "dl-login-heading";
       if (onFeedTab(name, "delivery")) renderFeed();
       return undefined;
-    },
+    }),
   },
   field(keyFile, "Private key file", "The private key whose public half the vendor has (OpenSSH or PEM format). A PuTTY .ppk key needs " +
     "converting first; the message says how. It is kept in this site's keys folder, readable only by this Windows user."),
@@ -1503,13 +1649,16 @@ function resumeSection(f, st) {
     unconfirmed ? h("p", { class: "error-text", text: "The server key is not confirmed yet, so nothing is sent even when it runs. " +
       "Enter the vendor's fingerprint under Change delivery first." }) : null,
     h("div", { class: "form-actions" },
-      h("button", { class: "btn btn-primary", type: "button", id: "btn-resume", disabled: busy(), onclick: () => resumeFeed(f.name) }, "Resume feed")),
+      h("button", { class: "btn btn-primary", type: "button", id: "btn-resume", disabled: busy(),
+        onclick: (e) => resumeFeed(f.name, e.currentTarget) }, "Resume feed")),
   ];
 }
 
-async function resumeFeed(name) {
+async function resumeFeed(name, btn) {
+  if (btn) btn.disabled = true;                  // at once: a second click does nothing
   try {
     await api(`/api/feeds/${name}/resume`, {});
+    await rereadSettings(name);
     toast(`${name} resumed.`);
     announce(`${name} resumed. Its schedule runs it from now on.`);
   } catch (e) {
@@ -1521,11 +1670,13 @@ async function resumeFeed(name) {
   if (S.view && S.view.type === "feed" && S.view.name === name) await openFeed(name);
 }
 
-async function testDelivery(name) {
-  if (busy()) {
+async function testDelivery(name, btn) {
+  if (busy() || testDelivery.starting) {
     toast("Another action is running; wait for it to finish.");
     return;
   }
+  testDelivery.starting = true;                  // set before anything is awaited: one test per click
+  if (btn) btn.disabled = true;
   let job;
   try {
     job = await api(`/api/feeds/${name}/test-delivery`, {});
@@ -1534,6 +1685,8 @@ async function testDelivery(name) {
     if (e.status === 409) await loadSite();
     if (onFeedTab(name, "delivery")) redraw(renderFeed);
     return;
+  } finally {
+    testDelivery.starting = false;
   }
   await follow(job);
 }
@@ -1542,8 +1695,7 @@ async function testDelivery(name) {
 const STEPS = ["Recipe", "Name", "Records", "Schedule", "Add"];
 
 function newWizard() {
-  return { step: 0, recipe: null, name: "", title: "", perm: null, exclude_location_codes: [], exclude_item_statuses: [],
-           legacy: {}, schedule: SCHEDULES[0][0] };
+  return { step: 0, recipe: null, name: "", title: "", perm: null, ...recipeLists(null), legacy: {}, schedule: SCHEDULES[0][0] };
 }
 
 function startWizard() {
@@ -1579,11 +1731,10 @@ function stepForm(W, title, intro, nextText) {
   const content = h("div", { class: "step-body" });
   const form = h("form", {
     id: "wz-form", "data-form": "open", novalidate: true, "aria-labelledby": "wz-heading",
-    onsubmit: async (e) => {
-      e.preventDefault();
+    onsubmit: guarded(async () => {
       clearErrors(form);
-      if (form.next && nextBtn && !nextBtn.disabled) await form.next(nextBtn);
-    },
+      if (form.next && nextBtn && !form.loading) await form.next(nextBtn);
+    }),
   },
   h("h2", { id: "wz-heading", tabindex: "-1", text: `${W.step + 1}. ${title}` }),
   intro ? h("p", { class: "muted", text: intro }) : null,
@@ -1648,6 +1799,7 @@ function chooseRecipe(W, r) {
     W.name = freeName(r.default_name, takenNames());
     W.title = r.title;
     W.perm = null;
+    Object.assign(W, recipeLists(r.selection));      // the recipe's own defaults start ticked
   }
   moveTo(W, 1);
 }
@@ -1723,8 +1875,15 @@ function drawPerm(W) {
       h("ul", { class: "plain-list" }, r.failed.map((x) => h("li", {}, h("b", { text: x.name }), ` (${x.path}): ${x.error}`)))] : null);
 }
 
+// Help for a pick list in the wizard, naming the recipe's own default when it has one.
+function withDefault(text, def, what) {
+  return def && def.length ? `${text} The recipe ${what} ${def.join(", ")} by default, so ${def.length === 1 ? "it starts" : "they start"} ticked.`
+    : text;
+}
+
 async function stepRecords(body, W) {
   const form = stepForm(W, "Choose which records to send", "Leave out what the vendor should not get. All of this can be changed later on the feed's Settings tab.");
+  form.loading = true;
   form.nextBtn.disabled = true;
   const area = h("div", {}, loading("Reading locations and note types from FOLIO…"));
   form.content.append(area);
@@ -1732,9 +1891,15 @@ async function stepRecords(body, W) {
   const ch = await getChoices();
   if (!form.isConnected) return;
   const c = ch.data;
-  const loc = codePicker("wz-loc", "Locations to leave out", locationOptions(c), W.exclude_location_codes, "Items in these locations are not sent.");
+  const def = recipeLists(W.recipe.selection);
+  const loc = codePicker("wz-loc", "Locations to leave out", locationOptions(c), W.exclude_location_codes,
+    withDefault("Items in these locations are not sent.", def.exclude_location_codes, "leaves out"), MISSING_LOCATION);
   const st = codePicker("wz-status", "Item statuses to leave out", statusOptions(c), W.exclude_item_statuses,
-    "Items with these statuses are not sent, for example withdrawn or lost items.");
+    withDefault("Items with these statuses are not sent, for example withdrawn or lost items.", def.exclude_item_statuses, "leaves out"),
+    MISSING_STATUS);
+  const only = codePicker("wz-inloc", "Only these locations", locationOptions(c), W.include_location_codes,
+    withDefault("When any are chosen, only items in those locations are sent. Choose none to send every location.",
+      def.include_location_codes, "sends only"), MISSING_LOCATION);
   const legacy = legacyFields("wz", W.legacy, c ? c.note_types : null);
   put(area,
     ch.error ? h("div", { class: "notice notice-held" }, h("p", { text: `The lists could not be read from FOLIO (${ch.error}). ` +
@@ -1744,16 +1909,20 @@ async function stepRecords(body, W) {
       await getChoices(true);
       renderWizard();
     } }, "Try again")) : null,
-    loc.el, st.el, legacy.el);
+    loc.el, st.el,
+    h("details", { class: "more", open: W.include_location_codes.length > 0 }, h("summary", { text: "More options" }), only.el),
+    legacy.el);
   form.keep = () => {
     W.exclude_location_codes = loc.value();
     W.exclude_item_statuses = st.value();
+    W.include_location_codes = only.value();
     W.legacy = legacy.value();
   };
   form.next = async () => {
     form.keep();
     moveTo(W, 3);
   };
+  form.loading = false;
   form.nextBtn.disabled = false;
 }
 
@@ -1779,22 +1948,26 @@ function scheduleWords(text) {
 function stepAdd(body, W) {
   const form = stepForm(W, "Check and add", null, "Add feed");
   const legacy = LEGACY_KEYS.filter((k) => W.legacy[k]).map((k) => `${SETTING_NAMES[k]}: ${W.legacy[k]}`);
+  const def = recipeLists(W.recipe.selection);
   form.content.append(
     kv([["Recipe", `${W.recipe.title} (${W.recipe.default_uses})`], ["Name", h("span", { class: "mono", text: W.name })],
-      ["Title", W.title || W.name], ["Locations left out", listText(W.exclude_location_codes)],
-      ["Item statuses left out", listText(W.exclude_item_statuses)], ["Migrated values", legacy.length ? legacy.join("; ") : "none"],
+      ["Title", W.title || W.name],
+      ["Locations left out", leftOutText(W.exclude_location_codes, def.exclude_location_codes)],
+      ["Item statuses left out", leftOutText(W.exclude_item_statuses, def.exclude_item_statuses)],
+      ["Locations sent", W.include_location_codes.length ? `only ${leftOutText(W.include_location_codes, def.include_location_codes)}`
+        : "every location not left out"],
+      ["Migrated values", legacy.length ? legacy.join("; ") : "none"],
       ["Schedule", scheduleWords(W.schedule)],
       ["Permissions", !W.perm || !W.perm.result ? "not checked" : W.perm.result.ok ? "the account can read everything it needs"
         : h("span", { class: "error-text", text: "missing some: runs fail until the FOLIO administrator adds them" })]]),
     h("div", { class: "notice notice-info" }, h("p", { text: "The feed is saved paused and with nowhere to send files: a dry run. " +
       "You can preview and run it straight away, and nothing is sent to the vendor until you set up its delivery." })));
   form.next = async (btn) => {
-    const filters = {};
-    if (W.exclude_location_codes.length) filters.exclude_location_codes = W.exclude_location_codes;
-    if (W.exclude_item_statuses.length) filters.exclude_item_statuses = W.exclude_item_statuses;
+    // The full lists always go (the server drops a value equal to the recipe's default, so nothing extra is written).
+    const filters = { exclude_location_codes: W.exclude_location_codes, exclude_item_statuses: W.exclude_item_statuses,
+                      include_location_codes: W.include_location_codes };
     const legacyValues = Object.fromEntries(LEGACY_KEYS.filter((k) => W.legacy[k]).map((k) => [k, W.legacy[k]]));
-    const values = { title: W.title, schedule: W.schedule };
-    if (Object.keys(filters).length) values.filters = filters;
+    const values = { title: W.title, schedule: W.schedule, filters };
     if (Object.keys(legacyValues).length) values.legacy = legacyValues;
     let res;
     try {
@@ -2102,8 +2275,10 @@ async function startRun(kind, body) {
 
 async function togglePause() {
   const f = S.feed;
+  if ($("btn-pause")) $("btn-pause").disabled = true;   // at once: a second click does nothing
   try {
     await api(`/api/feeds/${f.name}/${f.enabled ? "pause" : "resume"}`, {});
+    await rereadSettings(f.name);              // the file changed: open forms of this feed move on to its new version
     toast(f.enabled ? `${f.name} paused.` : `${f.name} resumed.`);
   } catch (e) {
     toast(e.message);

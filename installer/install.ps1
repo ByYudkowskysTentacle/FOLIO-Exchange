@@ -5,7 +5,8 @@ Installs or updates FOLIO-Exchange for one library on this Windows computer.
 .DESCRIPTION
 A short wizard for library staff. It:
 
-  1. finds Python 3.10 or newer, and offers to install Python 3.12 with winget if there is none;
+  1. finds Python 3.10 or newer, and offers to install Python 3.12 with winget if there is none
+     (for this Windows user only, so no administrator rights are needed);
   2. asks for the install folder and a short name for this library's site;
   3. installs FOLIO-Exchange in <install folder>\program, or updates it if it is already there;
   4. makes a launcher, "FOLIO-Exchange (<name>).cmd", on the desktop: double-click it to open the page;
@@ -47,7 +48,8 @@ Do not set up scheduled runs, and do not ask about them.
 .PARAMETER Yes
 Accept every default without asking. That includes setting up scheduled runs, for which Windows still
 asks for the Windows password, unless -NoSchedule is given too. Without -Yes, when nobody can answer
-(no console), questions take their suggestion and yes/no questions are answered no.
+(no console, or PowerShell started with -NonInteractive), questions take their suggestion and yes/no
+questions are answered no.
 
 .EXAMPLE
 .\install.ps1
@@ -141,7 +143,11 @@ function Show-Output([string[]]$Lines) {
 
 function Read-Answer([string]$Prompt) {
     if ($script:InputClosed) { return $null }
-    $answer = Read-Host $Prompt
+    try {
+        $answer = Read-Host $Prompt
+    } catch [System.Management.Automation.PSInvalidOperationException], [System.Management.Automation.Host.HostException] {
+        $answer = $null      # PowerShell was started with -NonInteractive, as deployment tools do: nobody can answer
+    }
     if ($null -eq $answer) {
         # No more input (for example, input from a file): text questions take their suggestion, and yes/no
         # questions are answered no.
@@ -157,6 +163,10 @@ function Read-Text([string]$Question, [string]$Default) {
         return $Default
     }
     $answer = Read-Answer ('{0} [{1}]' -f $Question, $Default)
+    if ($script:InputClosed) {
+        Write-Host ('{0} [{1}]: {1} (no answer was given)' -f $Question, $Default)
+        return $Default
+    }
     if ([string]::IsNullOrEmpty($answer)) { return $Default }
     return $answer
 }
@@ -273,7 +283,8 @@ function Test-Synced([string]$Path) {
 function Get-PythonInfo([string]$FilePath, [string[]]$PrefixArgs) {
     $arguments = @()
     if ($PrefixArgs) { $arguments += $PrefixArgs }
-    $arguments += @('-I', '-c', 'import sys;print(sys.version_info[0]);print(sys.version_info[1]);print(sys.executable)')
+    # -X utf8: print in UTF-8, which is how the output is read (a path such as C:\Users\Zoe-with-diaeresis\...)
+    $arguments += @('-I', '-X', 'utf8', '-c', 'import sys;print(sys.version_info[0]);print(sys.version_info[1]);print(sys.executable)')
     try {
         $r = Invoke-Captured $FilePath $arguments
     } catch {
@@ -288,9 +299,19 @@ function Get-PythonInfo([string]$FilePath, [string[]]$PrefixArgs) {
     if (-not [int]::TryParse($lines[$n - 3].Trim(), [ref]$major)) { return $null }
     if (-not [int]::TryParse($lines[$n - 2].Trim(), [ref]$minor)) { return $null }
     $exe = $lines[$n - 1].Trim()
+    # Run Python by its own path from now on. Should that path not have come back intact, run it the way that
+    # just worked instead.
+    $runPath = $exe
+    $runPrefix = @()
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        $runPath = $FilePath
+        if ($PrefixArgs) { $runPrefix = $PrefixArgs }
+    }
     return [pscustomobject]@{
         Version    = '{0}.{1}' -f $major, $minor
         Executable = $exe
+        RunPath    = $runPath
+        RunPrefix  = $runPrefix
         NewEnough  = ($major -gt 3) -or ($major -eq 3 -and $minor -ge 10)
         FromStore  = ($exe -match '\\WindowsApps\\')
     }
@@ -436,21 +457,21 @@ function Get-RunningCopies([string]$Folder) {
 }
 
 function Get-TaskAction([string]$TaskName) {
-    # The program and arguments of an existing Windows scheduled task, or $null if there is no such task.
-    $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
-    if (-not (Test-Path -LiteralPath $schtasks -PathType Leaf)) { return $null }
-    $r = Invoke-Captured $schtasks @('/Query', '/TN', $TaskName, '/XML')
-    if ($r.ExitCode -ne 0) { return $null }
+    # The program and arguments of an existing Windows scheduled task, or $null if there is no such task (or
+    # it cannot be looked up, in which case the person is simply asked). Read through the ScheduledTasks
+    # module that comes with Windows, so paths arrive intact rather than as text in a console code page.
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Select-Object -First 1
+    } catch {
+        return $null
+    }
+    if (-not $task) { return $null }
     $command = ''
     $arguments = ''
     try {
-        $xml = [xml]($r.StdOut -join "`n")
-        $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
-        $ns.AddNamespace('t', 'http://schemas.microsoft.com/windows/2004/02/mit/task')
-        $c = $xml.SelectSingleNode('//t:Actions/t:Exec/t:Command', $ns)
-        $a = $xml.SelectSingleNode('//t:Actions/t:Exec/t:Arguments', $ns)
-        if ($c) { $command = $c.InnerText.Trim().Trim('"') }
-        if ($a) { $arguments = $a.InnerText }
+        $action = @($task.Actions)[0]
+        if ($action.Execute) { $command = [Environment]::ExpandEnvironmentVariables(([string]$action.Execute).Trim().Trim('"')) }
+        if ($action.Arguments) { $arguments = [string]$action.Arguments }
     } catch {
         $command = ''
     }
@@ -459,7 +480,20 @@ function Get-TaskAction([string]$TaskName) {
 
 # ---------------------------------------------------------------- the installer
 
+# Read what programs print as UTF-8 (Python is run with -X utf8, and FOLIO-Exchange prints UTF-8), so that
+# paths such as C:\Users\Jose-with-accent\Desktop arrive intact. The old settings come back at the end.
+$Utf8 = New-Object System.Text.UTF8Encoding $false
+$savedConsoleEncoding = $null
+$savedOutputEncoding = $OutputEncoding
 try {
+    try {
+        $savedConsoleEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = $Utf8
+    } catch {
+        $savedConsoleEncoding = $null
+    }
+    $OutputEncoding = $Utf8
+
     if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         Write-Host 'This installer is for Windows. On other systems, follow the install steps in the FOLIO-Exchange README.'
         exit 1
@@ -518,9 +552,11 @@ try {
         if ($winget) {
             Write-Text 'Windows can install Python 3.12 for you with winget, the Windows Package Manager. It downloads Python from python.org.'
             if (Read-YesNo 'Install Python 3.12 now?' $true) {
+                # --scope user: installed for this Windows user only, so no administrator rights are needed
+                $wingetArgs = @('install', '-e', '--id', $WingetPython, '--scope', 'user')
                 Write-Host ''
-                Write-Host ('Running: winget install -e --id {0}' -f $WingetPython)
-                Invoke-Interactive $winget.Path @('install', '-e', '--id', $WingetPython)
+                Write-Host ('Running: winget {0}' -f ($wingetArgs -join ' '))
+                Invoke-Interactive $winget.Path $wingetArgs
                 $code = $global:LASTEXITCODE
                 Write-Host ''
                 if ($code -ne 0) { Write-Warn ('winget ended with code {0}. Checking for Python again anyway.' -f $code) }
@@ -590,17 +626,19 @@ try {
     if ($makeVenv) {
         Write-Host ('Making the program folder with Python {0}.' -f $python.Version)
         [void][System.IO.Directory]::CreateDirectory($installRoot)
-        $venvArgs = @('-I', '-m', 'venv')
+        $venvArgs = @()
+        if ($python.RunPrefix) { $venvArgs += $python.RunPrefix }
+        $venvArgs += @('-I', '-X', 'utf8', '-m', 'venv')
         if ($clear) { $venvArgs += '--clear' }
         $venvArgs += $venv
-        $r = Invoke-Captured $python.Executable $venvArgs
+        $r = Invoke-Captured $python.RunPath $venvArgs
         if ($r.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
             Show-Output $r.Output
             Stop-Install ('The program folder {0} could not be made with Python {1}.' -f $venv, $python.Version)
         }
     }
 
-    $pip = @('-I', '-m', 'pip')
+    $pip = @('-I', '-X', 'utf8', '-m', 'pip')
     $pipQuiet = @('--no-input', '--disable-pip-version-check')
     if ($sourceUrl) {
         Write-Host ('Getting FOLIO-Exchange from {0}' -f $sourceUrl)
@@ -663,9 +701,13 @@ try {
     $r = Invoke-Captured $exe $launcherArgs
     if ($r.ExitCode -eq 0) {
         foreach ($line in $r.StdOut) {
-            if ($line -match '^Made (.+\.cmd)\s*$') { $launcherPath = $Matches[1].Trim() }
+            if ($line -match '^Made (.+\.cmd)\s*$') {
+                $made = $Matches[1].Trim()
+                if (Test-Path -LiteralPath $made -PathType Leaf) { $launcherPath = $made }
+            }
         }
         if (-not $launcherPath) {
+            # Not reported, or not readable: look where it should be.
             $where = $launcherDir
             if (-not $where) { $where = [Environment]::GetFolderPath('Desktop') }
             $guess = Join-Path $where ('FOLIO-Exchange ({0}).cmd' -f $siteName)
@@ -801,4 +843,9 @@ try {
         Write-Host ('(install.ps1, line {0})' -f $_.InvocationInfo.ScriptLineNumber)
     }
     exit 1
+} finally {
+    if ($savedConsoleEncoding) {
+        try { [Console]::OutputEncoding = $savedConsoleEncoding } catch { $savedConsoleEncoding = $null }
+    }
+    $OutputEncoding = $savedOutputEncoding
 }

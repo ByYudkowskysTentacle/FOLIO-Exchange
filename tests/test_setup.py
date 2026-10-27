@@ -465,3 +465,124 @@ def test_the_registered_action_survives_windows_quoting(tmp_path):
     got = json.loads(subprocess.run([sys.executable, str(printer), *argv[1:]], capture_output=True, text=True)
                      .stdout)
     assert got == argv[1:]
+
+
+# ------------------------------------------------------------------ review findings
+def test_connect_refuses_credentials_in_the_address_and_a_site_file_that_would_not_load(tmp_path, folio, keyring):
+    with pytest.raises(ConfigError, match="Leave the user name and password out"):
+        setupops.connect(tmp_path, "https://admin:pw@folio.example.org", "diku", "fx_reader", "x")
+    (tmp_path / "site.yaml").write_text("alerts: {on: sometimes}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="would not load"):
+        setupops.connect(tmp_path, folio.url, "diku", "fx_reader", FOLIO_TEST_PASSWORD)
+    assert keyring == {} and (tmp_path / "site.yaml").read_text(encoding="utf-8") == "alerts: {on: sometimes}\n"
+
+
+def test_a_change_made_while_the_server_key_is_read_is_not_overwritten(site):
+    s = load_site(site)
+    path = site / "feeds" / "chq.yaml"
+    v = setupops.feed_settings(s, lib(s), "chq")["version"]
+
+    def slow_read(h, p):                     # another window saves the title meanwhile
+        setupops.save_feed(s, lib(s), "chq", {"title": "Saved meanwhile"}, version=v)
+        return KEYS
+
+    with pytest.raises(ConfigError, match="changed while this was being saved"):
+        setupops.save_delivery(s, lib(s), "chq", sftp_form(vendor_fingerprint=KEYS["sha256"]), version=v,
+                               read_keys=slow_read)
+    assert read_yaml(path)["title"] == "Saved meanwhile" and read_yaml(path)["delivery"]["transport"] == "local"
+
+
+def _break_by_hand(site):
+    path = site / "feeds" / "chq.yaml"
+    raw = read_yaml(path)
+    raw["filters"]["no_such_filter"] = True
+    from folio_exchange.config import write_yaml
+
+    write_yaml(path, raw)
+
+
+def test_a_secret_is_not_stored_when_the_feed_would_not_load(site, keyring):
+    s = _with_sftp(site)
+    text, _key = _key_text("pp")
+    setupops.store_private_key(s, lib(s), "chq", text, "pp")
+    keyring.clear()
+    _break_by_hand(site)
+    with pytest.raises(ConfigError, match="would not load"):
+        setupops.store_sftp_password(s, lib(s), "chq", SFTP_PASSWORD)
+    assert keyring == {} and read_yaml(site / "feeds" / "chq.yaml")["delivery"]["private_key"] == "keys/chq.key"
+    with pytest.raises(ConfigError, match="would not load"):
+        setupops.store_private_key(s, lib(s), "chq", _key_text("other")[0], "other")
+    assert keyring == {} and not list((site / "keys").glob(".chq.*.tmp"))
+
+
+def test_two_feeds_on_one_account_must_log_in_the_same_way(site, keyring):
+    s = _with_sftp(site)
+    setupops.store_sftp_password(s, lib(s), "chq", SFTP_PASSWORD)
+    setupops.add_feed(s, lib(s), "chq-2", "chq-academic")
+    v = setupops.feed_settings(s, lib(s), "chq-2")["version"]
+    setupops.save_delivery(s, lib(s), "chq-2", sftp_form(vendor_fingerprint=KEYS["sha256"]), version=v,
+                           read_keys=lambda h, p: KEYS)
+    with pytest.raises(ConfigError, match="Feed chq logs in to the same account .* with a password"):
+        setupops.store_private_key(s, lib(s), "chq-2", _key_text("pp")[0], "pp")
+    assert keyring[("folio-exchange/sftp", "lib1@sftp.vendor.example")] == SFTP_PASSWORD
+
+
+def test_switching_away_from_sftp_removes_the_saved_key(site, keyring):
+    s = _with_sftp(site)
+    setupops.store_private_key(s, lib(s), "chq", _key_text()[0])
+    assert (site / "keys" / "chq.key").exists()
+    v = setupops.feed_settings(s, lib(s), "chq")["version"]
+    setupops.save_delivery(s, lib(s), "chq", {"transport": "none"}, version=v)
+    assert not (site / "keys" / "chq.key").exists()
+
+
+def _ed25519_openssh(password: bytes | None = None) -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    enc = serialization.BestAvailableEncryption(password) if password else serialization.NoEncryption()
+    return Ed25519PrivateKey.generate().private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+                                                      enc).decode()
+
+
+def test_a_damaged_key_or_a_very_slow_passphrase_is_a_plain_refusal(site, keyring):
+    import base64
+
+    s = _with_sftp(site)
+    good = _ed25519_openssh()
+    body = "".join(good.splitlines()[1:-1])
+    blob = bytearray(base64.b64decode(body))
+    blob[-40:-20] = bytes(20)                                  # damage the private part
+    damaged = good.splitlines()[0] + "\n" + base64.b64encode(bytes(blob)).decode() + "\n" + good.splitlines()[-1]
+    with pytest.raises(ConfigError, match="could not be read"):
+        setupops.store_private_key(s, lib(s), "chq", damaged)
+    slow = _ed25519_openssh(b"pp")
+    blob = bytearray(base64.b64decode("".join(slow.splitlines()[1:-1])))
+    assert setupops._kdf_rounds(slow) == 16
+    i = blob.index(b"bcrypt") + len(b"bcrypt") + 4               # the options string: salt, then rounds
+    salt = int.from_bytes(blob[i:i + 4], "big")
+    blob[i + 4 + salt:i + 8 + salt] = (2 ** 31).to_bytes(4, "big")
+    slow = slow.splitlines()[0] + "\n" + base64.b64encode(bytes(blob)).decode() + "\n" + slow.splitlines()[-1]
+    with pytest.raises(ConfigError, match="2,147,483,648 rounds"):
+        setupops.store_private_key(s, lib(s), "chq", slow, "pp")
+    assert setupops.store_private_key(s, lib(s), "chq", _ed25519_openssh(b"pp"), "pp")["key"].startswith("ssh-ed25519")
+
+
+def test_resuming_a_feed_never_breaks_a_working_neighbour(site, capsys):
+    make_feed(site, name="copy", file_prefix="test", enabled=False)       # chq's prefix and folder, paused
+    assert main(["-s", str(site), "feeds", "resume", "copy"]) == 1
+    assert "would stop feed chq from loading" in capsys.readouterr().err
+    assert read_yaml(site / "feeds" / "copy.yaml")["enabled"] is False
+    from folio_exchange.recipe import load_all
+
+    s = load_site(site)
+    assert load_all(s, lib(s))[1] == {}                                   # chq still loads
+
+
+def test_an_existing_site_without_its_site_file_stays_an_error(site, tmp_path, capsys):
+    (site / "site.yaml").rename(site / "site.yaml.moved")
+    assert main(["-s", str(site), "run", "--due"]) == 1
+    capsys.readouterr()
+    assert main(["-s", str(tmp_path / "no" / "such" / "place"), "ui", "--no-browser"]) == 1
+    assert "does not exist" in capsys.readouterr().err
+    assert not (tmp_path / "no").exists()

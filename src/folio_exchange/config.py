@@ -229,6 +229,8 @@ def load_site(root: str | os.PathLike) -> Site:
     problems = unknown_keys(raw, SITE_DEFAULTS, "site")
     for section, defaults in SITE_DEFAULTS.items():
         if isinstance(defaults, list):
+            if section in raw and raw[section] is None:
+                raw[section] = []                      # every entry commented out
             if raw.get(section) is not None and not isinstance(raw[section], list):
                 problems.append(f"{section}: expected a list")
         elif isinstance(raw.get(section), dict):

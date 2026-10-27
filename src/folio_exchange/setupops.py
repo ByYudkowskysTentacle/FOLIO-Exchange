@@ -12,12 +12,15 @@ the site's ``keys`` folder that only this Windows user can read, with its passph
 """
 from __future__ import annotations
 
+import base64
 import getpass
 import hashlib
 import io
 import os
 import re
 import subprocess
+import tempfile
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -35,10 +38,15 @@ SITE_HEADER = """FOLIO-Exchange site settings, written by `folio-exchange init`.
 No passwords live here: see `folio-exchange secret status`."""
 FEED_HEADER = """FOLIO-Exchange feed: this library's settings over a shared recipe.
 Edit by hand or re-run `folio-exchange init`; `folio-exchange check` validates it."""
-STATUSES = ["Withdrawn", "Lost and paid", "Declared lost", "Missing", "Long missing", "Claimed returned",
-            "Unavailable", "Unknown", "In process", "On order", "Order closed"]
+# Every item status FOLIO defines (the item schema's enum), the ones libraries usually leave out first.
+STATUSES = ["Withdrawn", "Lost and paid", "Declared lost", "Aged to lost", "Missing", "Long missing",
+            "Claimed returned", "Unavailable", "Unknown", "In process", "In process (non-requestable)", "On order",
+            "Order closed", "Restricted", "Intellectual item", "In transit", "Awaiting pickup", "Awaiting delivery",
+            "Paged", "Checked out", "Available"]
 KEYS_DIR = "keys"
 MAX_KEY_BYTES = 16 * 1024
+MAX_KDF_ROUNDS = 1000          # ssh-keygen's default is 16; far more only stalls the page
+_SAVE = threading.Lock()       # one settings write at a time from this process
 
 FILTER_KEYS: dict[str, type] = {
     "include_suppressed_instances": bool, "include_suppressed_items": bool, "include_suppressed_holdings": bool,
@@ -51,6 +59,8 @@ EDITABLE = ("title", "schedule", "file_prefix", "filters", "checks", "legacy")
 
 # ------------------------------------------------------------------ checks shared with init
 def url_problem(url: str) -> str | None:
+    if "@" in url.split("//", 1)[-1].split("/", 1)[0]:
+        return "Leave the user name and password out of the address; they have fields of their own."
     host = url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
     if url.startswith("https://") and len(url) > 9:
         return None
@@ -147,6 +157,10 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
                               "it aside to start afresh), then try again.") from None
     folio = dict(raw.get("folio") or {})
     folio.update(base_url=base_url, tenant=tenant, username=username)
+    if password:
+        folio["secret"] = "keyring"
+    folio.setdefault("secret", "keyring")
+    _site_would_load({**raw, "folio": folio})
     account = credentials.folio_account(username, tenant)
     if password:
         if not credentials.keyring_available():
@@ -166,8 +180,6 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
         raise FxError(f"Could not log in: {exc}\nNothing was saved.") from None
     if password:
         credentials.store(credentials.FOLIO_SERVICE, account, password)
-        folio["secret"] = "keyring"
-    folio.setdefault("secret", "keyring")
     changed = not path.exists() or raw.get("folio") != folio
     if changed:
         raw["folio"] = folio
@@ -180,6 +192,17 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
         _audit(site, None, "secret stored", {"what": "FOLIO password", "service": credentials.FOLIO_SERVICE,
                                              "account": account, "from": via})
     return site_state(root)
+
+
+def _site_would_load(raw: dict) -> None:
+    """Refuse, before anything is stored or written, a site.yaml that would not load."""
+    with tempfile.TemporaryDirectory(prefix="fx-site-") as tmp:
+        try:
+            write_yaml(Path(tmp) / SITE_FILE, raw, SITE_HEADER)
+            load_site(tmp)
+        except ConfigError as exc:
+            text = str(exc).replace(str(Path(tmp).resolve() / SITE_FILE), SITE_FILE).replace(str(tmp), "")
+            raise ConfigError(f"Nothing was saved, because site.yaml would not load:\n{text}") from None
 
 
 def tenant_choices(site: Site) -> dict:
@@ -364,19 +387,27 @@ def _apply(raw: dict, values: dict, recipe: Recipe | None) -> list[str]:
 
 def _save_checked(site: Site, library: RecipeLibrary, name: str, path: Path, raw: dict, old: bytes | None) -> None:
     """Write the feed, then load every feed; if this one (or a neighbour it now clashes with) does not load,
-    put the old file back and refuse."""
-    before = {n for n in load_all(site, library)[1] if n != name}   # feeds that were already broken
-    backup = write_settings(path, raw, FEED_HEADER)
-    try:
-        _feeds, errors = load_all(site, library)
-    except Exception:
-        _restore(path, old, backup)
-        raise
-    broken = {n: e for n, e in errors.items() if n == name or n not in before}
-    if broken:
-        _restore(path, old, backup)
-        problem = broken.get(name) or next(iter(broken.values()))
-        raise ConfigError(f"Not saved, because the feed would not load:\n{problem}")
+    put the old file back and refuse. The file must still be as it was read (``old``; None: not there), so a
+    save that waited on the network never overwrites a change made meanwhile."""
+    with _SAVE:
+        now = path.read_bytes() if path.exists() else None
+        if now != old:
+            if old is None:
+                raise ConfigError(f"There is already a feed called {name}; choose another name.")
+            raise ConfigError(f"feeds/{name}.yaml changed while this was being saved (by hand, or in another "
+                              "window). Nothing was saved: reload the feed and make the change again.")
+        before = {n for n in load_all(site, library)[1] if n != name}   # feeds that were already broken
+        backup = write_settings(path, raw, FEED_HEADER)
+        try:
+            _feeds, errors = load_all(site, library)
+        except Exception:
+            _restore(path, old, backup)
+            raise
+        broken = {n: e for n, e in errors.items() if n == name or n not in before}
+        if broken:
+            _restore(path, old, backup)
+            problem = broken.get(name) or next(iter(broken.values()))
+            raise ConfigError(f"Not saved, because the feed would not load:\n{problem}")
 
 
 def _restore(path: Path, old: bytes | None, backup: Path | None) -> None:
@@ -498,9 +529,11 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
                  and old_d.get("host_key_confirmed", True) is not False)
         if vendor_value:
             if not fingerprint_matches(vendor_value, keys):
-                raise ConfigError(f"The server's key is {keys['sha256']} (MD5 {keys['md5']}), which is not the "
+                kind = f"{keys['type']} " if keys.get("type") else ""
+                raise ConfigError(f"The server's {kind}key is {keys['sha256']} (MD5 {keys['md5']}), which is not the "
                                   "fingerprint you entered. A different key can mean the wrong server, so nothing "
-                                  "was saved. Check the value with the vendor.")
+                                  "was saved. Check the value with the vendor (if they gave a fingerprint for "
+                                  f"another kind of key, ask them for the {kind or 'matching '}one).")
             confirmed = True
         elif known:
             confirmed = True
@@ -521,6 +554,8 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
     if pause:
         raw["enabled"] = False
     _save_checked(site, library, name, path, raw, old)
+    if old_d.get("private_key") and not d.get("private_key"):
+        _drop_our_key(site, name, old_d["private_key"])
     host_key = None if keys is None else ("not confirmed" if pause else "confirmed")
     _audit(site, name, "feed delivery set from the page", {"file": f"feeds/{name}.yaml", "transport": transport,
                                                           "host_key": host_key, "from": via})
@@ -537,21 +572,52 @@ def _sftp_delivery(raw: dict, name: str) -> dict:
     return d
 
 
+def _drop_our_key(site: Site, name: str, key: str) -> None:
+    """Remove the key file the page saved for this feed, once nothing uses it."""
+    if Path(key).as_posix() == f"{KEYS_DIR}/{name}.key":
+        (site.root / KEYS_DIR / f"{name}.key").unlink(missing_ok=True)
+
+
+def _account_clash(site: Site, name: str, d: dict, key: bool) -> None:
+    """Credential Manager keeps one secret per SFTP account (user@host): the password, or a key's passphrase.
+    Two feeds on one account must therefore log in the same way."""
+    for q in sorted(site.feeds_dir.glob("*.yaml")):
+        other = _quiet(q).get("delivery") if q.stem != name else None
+        if not isinstance(other, dict) or other.get("transport") != "sftp":
+            continue
+        same = (str(other.get("host") or "").lower() == str(d["host"]).lower()
+                and other.get("username") == d["username"])
+        if same and bool(other.get("private_key")) != key:
+            how = "a private key" if other.get("private_key") else "a password"
+            raise ConfigError(f"Feed {q.stem} logs in to the same account ({d['username']}@{d['host']}) with {how}. "
+                              "Credential Manager keeps one secret per account, so both feeds must log in the same "
+                              f"way: change {q.stem} too, or use {how} here.")
+
+
 def store_sftp_password(site: Site, library: RecipeLibrary, name: str, password: str, *, via: str = "ui") -> dict:
-    """Store the vendor's SFTP password in the keyring, and log in with it from now on (instead of a key)."""
+    """Store the vendor's SFTP password in the keyring, and log in with it from now on (instead of a key). The
+    feed is saved first, so a feed that would not load leaves the keyring as it was."""
     if not password:
         raise ConfigError("Enter the password.")
     path, raw, old = _open_feed(site, name, None)
     d = _sftp_delivery(raw, name)
+    _account_clash(site, name, d, key=False)
     account = credentials.sftp_account(d["username"], d["host"])
-    credentials.store(credentials.SFTP_SERVICE, account, password)
-    if d.get("secret") != "keyring" or d.get("private_key"):
-        key = d.pop("private_key", None)
+    key = d.get("private_key")
+    if d.get("secret") != "keyring" or key:
+        d.pop("private_key", None)
         d["secret"] = "keyring"
         raw["delivery"] = d
         _save_checked(site, library, name, path, raw, old)
-        if key and Path(key).as_posix() == f"{KEYS_DIR}/{name}.key":
-            (site.root / KEYS_DIR / f"{name}.key").unlink(missing_ok=True)   # our copy; no longer used
+        try:
+            credentials.store(credentials.SFTP_SERVICE, account, password)
+        except Exception:
+            _restore(path, old, None)
+            raise
+        if key:
+            _drop_our_key(site, name, key)
+    else:
+        credentials.store(credentials.SFTP_SERVICE, account, password)
     _audit(site, name, "secret stored", {"what": "SFTP password", "service": credentials.SFTP_SERVICE,
                                          "account": account, "from": via})
     return feed_settings(site, library, name)
@@ -566,28 +632,59 @@ def _read_private_key(text: str, passphrase: str | None):
     if "PRIVATE KEY" not in text:
         raise ConfigError("That file is not a private key. (The public key, ending .pub, is the one the vendor "
                           "gets.)")
+    rounds = _kdf_rounds(text)
+    if rounds is not None and rounds > MAX_KDF_ROUNDS:
+        raise ConfigError(f"This key's passphrase is stretched with {rounds:,} rounds, which would take too long to "
+                          f"open. Save it again with fewer (ssh-keygen -p -a 100 -f <file>), at most {MAX_KDF_ROUNDS}.")
     for cls in (paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.RSAKey):
         try:
             return cls.from_private_key(io.StringIO(text), password=passphrase or None)
         except paramiko.PasswordRequiredException:
             raise ConfigError("This key is protected by a passphrase: enter it too.") from None
-        except (paramiko.SSHException, ValueError, TypeError, IndexError):
+        except Exception:  # noqa: BLE001 - a damaged key fails in many ways inside paramiko
             continue
     raise ConfigError("The key could not be read: the passphrase is wrong, or it is a kind of key FOLIO-Exchange "
                       "cannot use (it reads OpenSSH and PEM keys: Ed25519, ECDSA and RSA).")
 
 
-def _owner_only(path: Path) -> None:
-    """Let only this user read the file: no inherited access on Windows, mode 600 elsewhere."""
+def _kdf_rounds(text: str) -> int | None:
+    """The bcrypt round count of an encrypted OpenSSH key (None for anything else)."""
+    m = re.search(r"-----BEGIN OPENSSH PRIVATE KEY-----(.*?)-----END OPENSSH PRIVATE KEY-----", text, re.S)
+    if not m:
+        return None
+    try:
+        blob = base64.b64decode("".join(m.group(1).split()), validate=True)
+    except ValueError:
+        return None
+    magic = b"openssh-key-v1\0"
+    if not blob.startswith(magic):
+        return None
+    pos = len(magic)
+    fields = []
+    for _ in range(3):                             # cipher name, KDF name, KDF options
+        n = int.from_bytes(blob[pos:pos + 4], "big")
+        fields.append(blob[pos + 4:pos + 4 + n])
+        pos += 4 + n
+    kdf, opts = fields[1], fields[2]
+    if kdf != b"bcrypt" or len(opts) < 8:
+        return None
+    salt = int.from_bytes(opts[:4], "big")
+    return int.from_bytes(opts[4 + salt:8 + salt], "big")
+
+
+def _owner_only(path: Path, *, folder: bool = False) -> None:
+    """Let only this user open the file (or, for a folder, anything made in it): no inherited access on
+    Windows, mode 600 (700) elsewhere."""
     if os.name != "nt":
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o700 if folder else 0o600)
         return
     domain = os.environ.get("USERDOMAIN")
     who = f"{domain}\\{getpass.getuser()}" if domain else getpass.getuser()
-    done = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:F"],
-                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    grant = f"{who}:(OI)(CI)F" if folder else f"{who}:F"
+    done = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", grant], capture_output=True,
+                          encoding="oem", errors="replace", stdin=subprocess.DEVNULL)
     if done.returncode != 0:
-        raise FxError(f"Could not limit who can read {path.name} ({(done.stdout or done.stderr).strip()}).")
+        raise FxError(f"Could not limit who can read {path.name} ({(done.stdout or done.stderr or '').strip()}).")
 
 
 def store_private_key(site: Site, library: RecipeLibrary, name: str, key_text: str, passphrase: str | None = None,
@@ -600,23 +697,30 @@ def store_private_key(site: Site, library: RecipeLibrary, name: str, key_text: s
     pkey = _read_private_key(key_text, passphrase)
     path, raw, old = _open_feed(site, name, None)
     d = _sftp_delivery(raw, name)
+    _account_clash(site, name, d, key=True)
     folder = site.root / KEYS_DIR
     folder.mkdir(exist_ok=True)
-    final, tmp = folder / f"{name}.key", folder / f".{name}.key.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(key_text)
+    _owner_only(folder, folder=True)               # before any key is written into it
+    final = folder / f"{name}.key"
+    fd, tmp_name = tempfile.mkstemp(dir=folder, prefix=f".{name}.", suffix=".tmp")   # a new file of its own (O_EXCL)
+    tmp = Path(tmp_name)
     try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(key_text)
         _owner_only(tmp)
+        d.update(private_key=f"{KEYS_DIR}/{name}.key", secret="keyring")
+        raw["delivery"] = d
+        _save_checked(site, library, name, path, raw, old)       # refused (and put back) if the feed would not load
+        if passphrase:
+            try:
+                credentials.store(credentials.SFTP_SERVICE, credentials.sftp_account(d["username"], d["host"]),
+                                  passphrase)
+            except Exception:
+                _restore(path, old, None)
+                raise
         os.replace(tmp, final)
     finally:
         tmp.unlink(missing_ok=True)
-    account = credentials.sftp_account(d["username"], d["host"])
-    if passphrase:
-        credentials.store(credentials.SFTP_SERVICE, account, passphrase)
-    d.update(private_key=f"{KEYS_DIR}/{name}.key", secret="keyring")
-    raw["delivery"] = d
-    _save_checked(site, library, name, path, raw, old)
     public = f"{pkey.get_name()} {delivery.sha256_fingerprint(pkey)}"
     _audit(site, name, "SFTP private key stored", {"file": f"{KEYS_DIR}/{name}.key", "key": public,
                                                    "passphrase": bool(passphrase), "from": via})

@@ -32,7 +32,7 @@ class FakeGitHub:
     def __init__(self, files: dict[str, bytes], sha: str = SHA, truncated: bool = False):
         self.files, self.sha, self.truncated, self.urls = files, sha, truncated, []
 
-    def get(self, url, timeout=None, headers=None):
+    def get(self, url, timeout=None, headers=None, allow_redirects=True):
         self.urls.append(url)
         if url == f"{sources.API}/repos/{REPO}/commits/main":
             return self._json({"sha": self.sha})
@@ -48,9 +48,9 @@ class FakeGitHub:
         return self._resp(200, json.dumps(data).encode(), "https://api.github.com/x")
 
     @staticmethod
-    def _resp(status, content, url):
+    def _resp(status, content, url, headers=None):
         return types.SimpleNamespace(status_code=status, content=content, text=content.decode("utf-8", "replace"),
-                                     url=url, json=lambda: json.loads(content))
+                                     headers=headers or {}, url=url, json=lambda: json.loads(content))
 
 
 @pytest.fixture
@@ -129,14 +129,14 @@ def test_a_source_only_provides_its_own_recipes(site):
 
 def test_github_trouble_is_explained(site):
     class Down:
-        def get(self, url, timeout=None, headers=None):
+        def get(self, url, timeout=None, headers=None, allow_redirects=True):
             raise requests.ConnectionError("offline")
 
     with pytest.raises(FxError, match="internet connection"):
         sources.check(site, lib(site), "foliohq", http=Down())
 
     class Limited(FakeGitHub):
-        def get(self, url, timeout=None, headers=None):
+        def get(self, url, timeout=None, headers=None, allow_redirects=True):
             return self._resp(403, b'{"message": "API rate limit exceeded"}', url)
 
     with pytest.raises(FxError, match="Try again in an hour"):
@@ -145,8 +145,8 @@ def test_github_trouble_is_explained(site):
         sources.check(site, lib(site), "foliohq", http=FakeGitHub({}, truncated=True))
 
     class Elsewhere(FakeGitHub):
-        def get(self, url, timeout=None, headers=None):
-            r = super().get(url, timeout, headers)
+        def get(self, url, timeout=None, headers=None, allow_redirects=True):
+            r = super().get(url, timeout, headers, allow_redirects)
             r.url = "https://evil.example/x"
             return r
 
@@ -186,3 +186,59 @@ def test_the_command_line_reviews_then_installs(site, monkeypatch, capsys):
     assert "Installed: chq-academic@1.1.0" in capsys.readouterr().out
     assert main(["-s", str(site.root), "recipes", "sources"]) == 0
     assert f"downloaded at commit {SHA[:12]}" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ review findings
+def test_a_minor_version_that_changes_what_feeds_send_is_refused(site):
+    from sitekit import make_feed
+
+    make_feed(site.root)                                            # chq on chq-academic@^1.0
+    renamed = newer("1.1.0", "Fix a typo.").replace(b"{header: Item record ID,", b"{header: Item ID,", 1)
+    assert renamed != newer("1.1.0", "Fix a typo.")
+    result = sources.check(site, lib(site), "foliohq", http=FakeGitHub({"recipes/chq-academic/1.1.0.yaml": renamed}))
+    (item,) = result["recipes"]
+    assert item["status"] == "invalid" and "changes outputs" in item["problem"] and "2.0.0" in item["problem"]
+    assert result["new"] == []
+    wording = newer("1.1.0", "Clearer description.").replace(b"description: >", b"description: >\n  Clearer.", 1)
+    result = sources.check(site, lib(site), "foliohq", http=FakeGitHub({"recipes/chq-academic/1.1.0.yaml": wording}))
+    assert result["new"] == ["chq-academic@1.1.0"] and result["recipes"][0]["picked_up_by"] == ["chq"]
+
+
+def test_redirects_are_followed_only_within_github(site):
+    class Moved(FakeGitHub):
+        def get(self, url, timeout=None, headers=None, allow_redirects=True):
+            assert allow_redirects is False
+            if url.endswith("/commits/main") and "renamed" not in url:
+                return self._resp(301, b"", url, {"Location": url.replace("FOLIOHQ", "FOLIOHQ-renamed")})
+            return super().get(url.replace("FOLIOHQ-renamed", "FOLIOHQ"), timeout, headers, allow_redirects)
+
+    assert sources.check(site, lib(site), "foliohq", http=Moved({}))["commit"] == SHA
+
+    class Away(FakeGitHub):
+        def get(self, url, timeout=None, headers=None, allow_redirects=True):
+            return self._resp(302, b"", url, {"Location": "https://evil.example/recipes"})
+
+    with pytest.raises(FxError, match="Refused to download from evil.example"):
+        sources.check(site, lib(site), "foliohq", http=Away({}))
+
+
+def test_downloads_never_go_into_the_program_folder(tmp_path):
+    root = make_site(tmp_path / "s", "https://folio.example.org", paths={"recipes": []})
+    s = load_site(root)
+    with pytest.raises(ConfigError, match="this site's own recipes folder"):
+        sources.install(s, lib(s), "foliohq", SHA, http=FakeGitHub({"recipes/chq-academic/1.1.0.yaml": newer()}))
+    assert not (BUNDLED_RECIPES / "chq-academic" / "1.1.0.yaml").exists()
+    assert sources.provenance(s) == {}
+
+
+def test_odd_file_names_in_the_tree_are_ignored(site):
+    gh = FakeGitHub({"recipes/chq-academic/1.1.0.yaml": newer(), "recipes/chq-academic/1.1.0.yaml\n": newer()})
+    assert [r["path"] for r in sources.check(site, lib(site), "foliohq", http=gh)["recipes"]] == \
+        ["recipes/chq-academic/1.1.0.yaml"]
+
+
+def test_an_emptied_sources_list_is_just_empty(tmp_path):
+    root = make_site(tmp_path / "s", "https://folio.example.org")
+    (root / "site.yaml").write_text((root / "site.yaml").read_text(encoding="utf-8") + "recipe_sources:\n",
+                                    encoding="utf-8")
+    assert [s.id for s in sources.load_sources(load_site(root))] == ["foliohq"]

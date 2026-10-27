@@ -22,13 +22,13 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import requests
 import yaml
 
 from . import __version__
-from .config import Site
+from .config import BUNDLED_RECIPES, Site
 from .errors import ConfigError, FxError, RecipeError
 from .history import History
 from .recipe import ID_RE, RecipeLibrary, load_recipe_file, parse_uses, version_matches
@@ -46,6 +46,9 @@ _REPO = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$"
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 _FOLDER = re.compile(r"^[A-Za-z0-9._/-]*$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+# What a person reads about a recipe, not what it does: the only parts a minor or patch version may change for
+# feeds that already use it. (default_schedule only applies to new feeds.)
+_WORDING = {"version", "changelog", "description", "title", "spec_source", "default_schedule"}
 _FILE = re.compile(r"^([a-z0-9][a-z0-9-]*)/(\d+\.\d+\.\d+)\.yaml$")
 
 
@@ -128,11 +131,20 @@ def find_source(site: Site, source_id: str) -> Source:
 
 # ------------------------------------------------------------------ where installed versions came from
 def _recipes_dir(site: Site) -> Path:
-    return site.recipe_dirs[0]
+    """The site's own recipes folder (the first of ``paths.recipes``), never the program's bundled one."""
+    first = site.recipe_dirs[0].resolve() if site.recipe_dirs else None
+    if first is None or first == BUNDLED_RECIPES.resolve() or first == site.root.resolve():
+        raise ConfigError("Downloaded recipes go in this site's own recipes folder, but paths.recipes in site.yaml "
+                          "does not start with one (it is empty, or names the site folder itself). Set "
+                          "paths.recipes: recipes.")
+    return first
 
 
 def provenance(site: Site) -> dict:
-    path = _recipes_dir(site) / PROVENANCE_FILE
+    try:
+        path = _recipes_dir(site) / PROVENANCE_FILE
+    except ConfigError:
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -150,15 +162,23 @@ def _write_provenance(site: Site, data: dict) -> None:
 
 # ------------------------------------------------------------------ GitHub
 def _get(http: Any, url: str, what: str) -> Any:
-    """One GET to GitHub. Refuses any other host, before and after redirects."""
-    if urlparse(url).hostname not in HOSTS:
-        raise FxError(f"Refused to download from {urlparse(url).hostname}: only GitHub is used.")
-    try:
-        r = http.get(url, timeout=TIMEOUT, headers={"Accept": "application/vnd.github+json",
-                                                    "User-Agent": f"folio-exchange/{__version__}"})
-    except requests.RequestException as exc:
-        raise FxError(f"Could not reach GitHub for {what} ({type(exc).__name__}). Check this computer's internet "
-                      "connection, or its proxy settings.") from None
+    """One GET to GitHub over https. Redirects are followed by hand, and only within GitHub's hosts."""
+    for _hop in range(4):
+        parts = urlparse(url)
+        if parts.scheme != "https" or parts.hostname not in HOSTS:
+            raise FxError(f"Refused to download from {parts.hostname}: only GitHub is used.")
+        try:
+            r = http.get(url, timeout=TIMEOUT, allow_redirects=False,
+                         headers={"Accept": "application/vnd.github+json",
+                                  "User-Agent": f"folio-exchange/{__version__}"})
+        except requests.RequestException as exc:
+            raise FxError(f"Could not reach GitHub for {what} ({type(exc).__name__}). Check this computer's "
+                          "internet connection, or its proxy settings.") from None
+        if r.status_code not in (301, 302, 303, 307, 308):
+            break
+        url = urljoin(url, (getattr(r, "headers", None) or {}).get("Location") or "")
+    else:
+        raise FxError(f"GitHub redirected {what} too many times.")
     if urlparse(getattr(r, "url", url) or url).hostname not in HOSTS:
         raise FxError("GitHub redirected the download to another site, so it was refused.")
     if r.status_code in (403, 429) and "rate limit" in (r.text or "").lower():
@@ -191,16 +211,22 @@ def _status(library: RecipeLibrary, rid: str, version: tuple[int, int, int], con
     return "new"
 
 
-def _feeds_picking_up(site: Site, rid: str, version: tuple[int, int, int], library: RecipeLibrary) -> list[str]:
+def _feeds_picking_up(site: Site, rid: str, version: tuple[int, int, int], library: RecipeLibrary) -> list:
     """Feeds whose ``uses`` range would take this version from their next run."""
     from .recipe import load_all
 
-    names = []
+    takers = []
     for f in load_all(site, library)[0]:
         fid, spec = parse_uses(f.uses)
         if fid == rid and version_matches(version, spec) and version > f.recipe.version:
-            names.append(f.name)
-    return names
+            takers.append(f)
+    return takers
+
+
+def _changes_substance(new: dict, old: dict) -> list[str]:
+    """The parts of a recipe, other than its wording, that differ between two versions."""
+    keys = (set(new) | set(old)) - _WORDING
+    return sorted(k for k in keys if new.get(k) != old.get(k))
 
 
 def check(site: Site, library: RecipeLibrary, source_id: str, *, commit: str | None = None,
@@ -230,11 +256,13 @@ def _check(site: Site, library: RecipeLibrary, source_id: str, commit: str | Non
         path = str(entry.get("path") or "")
         if entry.get("type") != "blob" or not path.startswith(prefix):
             continue
-        m = _FILE.match(path[len(prefix):])
+        m = _FILE.fullmatch(path[len(prefix):])
         if not m:
             continue
         rid, ver = m.groups()
-        if rid not in src.recipes:
+        if any((rid, ver) == (f[0], f[1]) for f in found):
+            problems.append(f"{path}: a second file for {rid} {ver}; skipped")
+        elif rid not in src.recipes:
             problems.append(f"{path}: {src.id} may not provide recipe {rid!r}; skipped")
         elif int(entry.get("size") or 0) > MAX_FILE_BYTES:
             problems.append(f"{path}: larger than {MAX_FILE_BYTES // 1024} KB; skipped")
@@ -265,9 +293,17 @@ def _check(site: Site, library: RecipeLibrary, source_id: str, commit: str | Non
                 continue
             status = _status(library, rid, r.version, content)
             change = next((c for c in r.data.get("changelog") or [] if str(c.get("version")) == ver), {})
+            takers = _feeds_picking_up(site, rid, r.version, library) if status == "new" else []
             item.update(status=status, title=r.title, vendor=r.data.get("vendor"), reads=r.data.get("reads"),
                         patron_data=r.data.get("patron_data"), changes=change.get("changes"),
-                        picked_up_by=_feeds_picking_up(site, rid, r.version, library) if status == "new" else [])
+                        picked_up_by=[f.name for f in takers])
+            differs = sorted({k for f in takers for k in _changes_substance(r.data, f.recipe.data)})
+            if differs:
+                item.update(status="invalid", problem=(
+                    f"{rid} {ver} changes {', '.join(differs)} compared with the version that feeds "
+                    f"{', '.join(item['picked_up_by'])} use now. As a minor version those feeds would take it from "
+                    "their next run, without the review and held first delivery a new major version gets, so it "
+                    f"is refused. Ask the vendor to publish it as {r.version[0] + 1}.0.0."))
             if status == "conflict":
                 item["problem"] = (f"{rid} {ver} is already installed with different contents. A published version "
                                    "must not change, so this file is refused; ask the vendor to publish a new "
@@ -285,9 +321,9 @@ def install(site: Site, library: RecipeLibrary, source_id: str, commit: str, *, 
     """Install the new versions the source offers at ``commit`` (the one a person reviewed with ``check``)."""
     if not _SHA.match(commit or ""):
         raise ConfigError("Say which commit to install (from the check).")
+    folder = _recipes_dir(site)
     result, contents = _check(site, library, source_id, commit, http)
     src = result["source"]
-    folder = _recipes_dir(site)
     written = []
     for item in result["recipes"]:
         if item["status"] != "new":

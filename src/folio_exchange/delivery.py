@@ -31,15 +31,16 @@ def md5_fingerprint(key) -> str:
 
 
 def host_key_fingerprints(host: str, port: int = 22, timeout: float = 30) -> dict[str, str]:
-    """Read the server's host key without logging in: {"sha256": "SHA256:...", "md5": "aa:bb:..."}, for a person
-    to compare with the vendor's. Only the SHA-256 value is ever pinned."""
+    """Read the server's host key without logging in: {"sha256": "SHA256:...", "md5": "aa:bb:...", "type":
+    "ssh-ed25519"}, for a person to compare with the vendor's. Only the SHA-256 value is ever pinned. The key
+    type is the one a login negotiates, so it is the key the pin is later checked against."""
     import paramiko
 
     transport = paramiko.Transport((host, int(port or 22)))
     try:
         transport.start_client(timeout=timeout)
         key = transport.get_remote_server_key()
-        return {"sha256": sha256_fingerprint(key), "md5": md5_fingerprint(key)}
+        return {"sha256": sha256_fingerprint(key), "md5": md5_fingerprint(key), "type": key.get_name()}
     finally:
         transport.close()
 

@@ -260,6 +260,7 @@ def recipes_overview(site_root: Path) -> dict:
             "description": latest.data.get("description"), "reads": latest.data.get("reads"),
             "default_uses": f"{rid}@^{latest.version[0]}.{latest.version[1]}",
             "default_name": (latest.data.get("file_prefix") or rid.split("-")[0]).lower().replace("_", "-"),
+            "selection": {k: (latest.data.get("selection") or {}).get(k) for k in setupops.FILTER_KEYS},
             "versions": [{"version": r.version_str, "from": came_from(r)} for r in versions],
             "feeds": [f.name for f in feeds if f.recipe.id == rid],
         })

@@ -337,11 +337,16 @@ def test_setup_screens_build_the_page_safely():
 
 def test_secrets_typed_into_the_page_are_never_kept():
     js = _web("app.js")
-    # One place makes a secret field, and browsers neither fill it in nor offer to remember it.
+    # One place makes a secret field, asking browsers not to fill in a saved password (some may still offer to save
+    # one, so the page never says otherwise), and every form holding a secret field asks for no autofill too.
     assert js.count('type: "password"') == 1
     helper = js[js.index("function secretInput"):]
     helper = helper[:helper.index("\n}\n")]
     assert 'type: "password"' in helper and 'autocomplete: "new-password"' in helper
+    for form_id in ("cx-form", "dl-pw-form", "dl-key-form"):
+        start = js.index(f'id: "{form_id}"')
+        assert 'autocomplete: "off"' in js[start:start + 200], form_id
+    assert not re.search(r"(?i)browsers? (won't|will not|never|neither|do not|don't) (remember|save|keep)", js)
     # FOLIO password, SFTP password, passphrase and key file: emptied as they are sent, the reference dropped after.
     for cleared in ('pw.value = ""', 'pass.value = ""', 'keyFile.value = ""', "secret = null", "phrase = null",
                     "text = null"):
@@ -351,6 +356,49 @@ def test_secrets_typed_into_the_page_are_never_kept():
     assert not re.search(r"[?&](password|passphrase|key)=", js)
     for endpoint in ("/api/setup/connection", "/password`", "/private-key`"):
         assert endpoint in js, endpoint
+    # Regression: a FOLIO password typed into "Change connection or password" stayed in the kept form after
+    # leaving the view. Secret fields are emptied when the view or the feed tab changes.
+    clear = js[js.index("function clearSecrets"):]
+    clear = clear[:clear.index("\n}\n")]
+    assert 'input[type="password"], input[type="file"]' in clear
+    go = js[js.index("function go(view)"):]
+    go = go[:go.index("\n}\n")]
+    assert "clearSecrets(document)" in go and "clearSecrets(S.connForm)" in go
+    assert 'clearSecrets($("feed-panel"))' in js
+
+
+def test_every_setup_form_sends_once():
+    # Regression: "Save key" awaited reading the file before disabling its button, so a second click sent the key
+    # twice. Every form's submit handler is guarded, and the guard is set before anything is awaited.
+    js = _web("app.js")
+    handlers = re.findall(r"onsubmit: (\w+)", js)
+    assert handlers and set(handlers) == {"guarded"}, handlers
+    guard = js[js.index("function guarded"):]
+    guard = guard[:guard.index("\n}\n")]
+    assert guard.index('form.dataset.busy = "1"') < guard.index("b.disabled = true") < guard.index("await handler")
+    assert "if (form.dataset.busy) return;" in guard
+    # Buttons that start something outside a form are disabled (or flagged) before their first await.
+    for fn in ("async function testDelivery", "async function resumeFeed", "async function togglePause"):
+        body = js[js.index(fn):]
+        body = body[:body.index("await ")]
+        assert "disabled = true" in body or "starting = true" in body, fn
+
+
+def test_open_forms_follow_the_pages_own_writes():
+    # Regression: after a delivery save, a stored password or key, or pause/resume (each rewrites the feed file), an
+    # open Settings or Delivery form still held the old version, so its save was refused as "changed underneath".
+    js = _web("app.js")
+    assert js.count("version: form.version") == 2 and "version: st.version" not in js
+    for after in ("noteWrite(name, settings)", "noteWrite(name, res)"):
+        assert after in js, after
+    assert js.count("noteWrite(name, settings);") == 3                 # settings save, delivery save, key store
+    for fn in ("async function togglePause", "async function resumeFeed"):
+        body = js[js.index(fn):]
+        body = body[:body.index("\n}\n")]
+        assert "rereadSettings(" in body, fn
+    # A real change underneath keeps what was typed and offers to apply it again on the file as it is now.
+    assert "form.conflict(e.message, values)" in js and "Apply my changes to the file as it is now" in js
+    assert "Save my choices on the file as it is now" in js and "what you entered is still here" in js
 
 
 def test_the_refresh_leaves_setup_forms_alone():
@@ -414,6 +462,10 @@ console.log(JSON.stringify({
             secretWhere("NOT FOUND (nothing stored)"), secretWhere(null)],
   same: settingsChanges(base, same),
   edited: settingsChanges(base, edited),
+  lists: [recipeLists({ exclude_item_statuses: ["Withdrawn"], include_suppressed_items: false }), recipeLists(undefined)],
+  leftOut: [leftOutText(["B", "A"], ["A", "B"]), leftOutText(["A"], ["A", "B"]), leftOutText([], []), leftOutText([], ["A"])],
+  // the person's changes laid over a file that changed meanwhile: theirs win, the rest is the file's
+  over: overlaid({ ...base, schedule: "daily 05:00" }, settingsChanges(base, edited).values),
 }));
 """
     out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
@@ -438,3 +490,34 @@ console.log(JSON.stringify({
     assert changes["Item statuses left out"] == ("none", "Withdrawn")
     assert changes["Block a delivery if the item count falls below"] == ("90% of the last one", "off")
     assert changes["Loan count from the old system"] == ("Old count", "none")
+    # A recipe's default lists start the wizard's pickers, and its summary says when a list is just the default.
+    assert out["lists"][0] == {"exclude_location_codes": [], "exclude_item_statuses": ["Withdrawn"], "include_location_codes": []}
+    assert out["lists"][1] == {"exclude_location_codes": [], "exclude_item_statuses": [], "include_location_codes": []}
+    assert out["leftOut"] == ["B, A (the recipe's default)", "A", "none", "none"]
+    over = out["over"]
+    assert over["title"] == "CHQ weekly" and over["schedule"] == "daily 03:30"     # the person's own change wins
+    assert over["filters"]["exclude_location_codes"] == ["B", "A"]                 # untouched: the file's value
+    assert over["filters"]["include_suppressed_items"] is True and over["checks"]["min_item_ratio"] == 0
+    assert over["legacy"] == {"circ_count_note_type": None, "created_date_note_type": "Old date"}
+
+
+def test_add_feed_starts_from_the_recipes_defaults():
+    # Regression: the wizard's pick lists started empty and sent only non-empty lists, so a recipe's default
+    # filters were neither shown nor stated in the summary.
+    js = _web("app.js")
+    assert "Object.assign(W, recipeLists(r.selection))" in js
+    add = js[js.index("function stepAdd"):]
+    add = add[:add.index("\n}\n")]
+    assert "filters = { exclude_location_codes: W.exclude_location_codes, exclude_item_statuses: W.exclude_item_statuses," in add
+    assert "leftOutText(W.exclude_location_codes" in add and "leftOutText(W.exclude_item_statuses" in add
+    # A value outside FOLIO's list is named for what it is: statuses are every status FOLIO defines.
+    assert "not found in FOLIO" not in js
+    assert js.count("MISSING_STATUS)") == 2 and js.count("MISSING_LOCATION)") == 4
+
+
+def test_headers_wrap_in_narrow_windows():
+    css = _web("app.css")
+    title_row = css[css.index(".title-row {"):]
+    assert "flex-wrap: wrap" in title_row[:title_row.index("}")]
+    narrow = css[css.index("@media (max-width: 760px)"):]
+    assert ".tabs { flex-wrap: wrap; }" in narrow and "flex-wrap: wrap" in narrow[narrow.index(".topbar {"):]

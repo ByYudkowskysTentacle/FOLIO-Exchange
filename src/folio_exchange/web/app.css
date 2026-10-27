@@ -166,7 +166,8 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 .empty-title { font-size: 18px; color: var(--text); font-weight: 600; margin-bottom: 4px; }
 
 .feed-head { padding: 16px 20px 0; background: var(--panel); }
-.title-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.title-row { display: flex; align-items: center; gap: 8px 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.title-row h1 { min-width: 0; overflow-wrap: anywhere; }
 .title-row h1 { font-size: 17px; margin: 0; font-weight: 600; }
 .title-row .sub { color: var(--muted); font-size: 13px; }
 
@@ -515,6 +516,8 @@ details.more[open] > summary { margin-bottom: 8px; }
   .result-tabs { margin-left: 0; }
   th { position: static; }
   .tabs { flex-wrap: wrap; }
+  .topbar { height: auto; min-height: 48px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; row-gap: 6px; }
+  .brand span { white-space: nowrap; }
   .setup-wrap { padding: 16px; }
   .setup-card { padding: 16px; box-shadow: none; }
   .input, .pick-list { max-width: none; }

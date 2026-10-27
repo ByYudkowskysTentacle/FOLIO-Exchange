@@ -4,7 +4,7 @@ The installer sets up FOLIO-Exchange on a Windows 10 or 11 PC, or updates it. It
 
 ## What it does
 
-1. **Finds Python** 3.10 or newer. If there is none, it offers to install Python 3.12 with winget (the Windows Package Manager), or points you to python.org. The Microsoft Store version of Python is passed over, because Windows keeps the files it makes in a hidden private folder.
+1. **Finds Python** 3.10 or newer. If there is none, it offers to install Python 3.12 with winget (the Windows Package Manager), for your Windows user only, so that needs no administrator rights either. Without winget, it points you to python.org. The Microsoft Store version of Python is passed over, because Windows keeps the files it makes in a hidden private folder.
 2. **Asks two questions.** Press Enter to keep the suggestion in [brackets].
    - The install folder, by default `%LOCALAPPDATA%\FOLIO-Exchange` (for example `C:\Users\you\AppData\Local\FOLIO-Exchange`). It warns you if the folder is inside OneDrive or Dropbox: syncing breaks the cache and lock files that FOLIO-Exchange keeps while it works.
    - A short name for your library's site, by default `mylibrary`: letters, digits and hyphens.
@@ -25,7 +25,7 @@ At the end it lists where everything is, and anything still to do.
 
 ## Install
 
-You need a Windows 10 or 11 PC that can reach github.com and pypi.org (and, to use FOLIO-Exchange, your FOLIO API). You do not need administrator rights. Install it signed in to Windows as the person who will use FOLIO-Exchange: the program, the saved passwords and the scheduled task all belong to that Windows user.
+You need a Windows 10 or 11 PC that can reach github.com and pypi.org (and, to use FOLIO-Exchange, your FOLIO API). You do not need administrator rights, for FOLIO-Exchange or for the Python the installer can add. Install it signed in to Windows as the person who will use FOLIO-Exchange: the program, the saved passwords and the scheduled task all belong to that Windows user.
 
 1. Download the installer: either the two files `install.cmd` and `install.ps1` from this folder, into the same folder on your PC, or the whole repository as a zip (**Code > Download ZIP** on the repository's GitHub page).
 2. If you downloaded the zip, extract it (right-click it, then **Extract All**). `install.cmd` does not work from inside the zip.
@@ -40,7 +40,7 @@ The same script runs without questions:
 powershell -ExecutionPolicy Bypass -File install.ps1 -Yes -SiteName mylibrary
 ```
 
-`-Yes` accepts every default. That includes setting up scheduled runs, for which Windows still asks for the user's Windows password in the console. For a fully unattended install add `-NoSchedule -NoStart`, and set up the scheduled runs later, as the user, with the command the installer prints. Run the installer as the Windows user who will use FOLIO-Exchange, not as a separate administrator account.
+`-Yes` accepts every default. That includes setting up scheduled runs, for which Windows still asks for the user's Windows password in the console. For a fully unattended install add `-NoSchedule -NoStart`, and set up the scheduled runs later, as the user, with the command the installer prints. Run the installer as the Windows user who will use FOLIO-Exchange, not as a separate administrator account. Started with `-NonInteractive` and without `-Yes`, as some deployment tools do, it takes the suggested folder and name and answers no to every yes/no question, so it installs no Python and sets up no scheduled runs.
 
 Exit codes: `0` when everything is done; `1` when the installer stopped; `2` when FOLIO-Exchange is installed but a step is still to do (listed at the end of the output).
 

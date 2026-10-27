@@ -76,7 +76,17 @@ def _new_site_root(args) -> Path | None:
     root = Path(named).expanduser()
     if root.name == SITE_FILE:
         root = root.parent
-    return None if (root / SITE_FILE).is_file() else root.resolve()
+    if (root / SITE_FILE).is_file() or (root / "feeds").is_dir() or (root / "data" / "history.sqlite").is_file():
+        return None              # a site (or one whose site.yaml has gone missing: that stays an error)
+    return root.resolve()
+
+
+def _make_site_folder(root: Path) -> None:
+    """Create a new site's folder, but only inside a folder that exists, so a mistyped path is noticed."""
+    try:
+        root.mkdir(exist_ok=True)
+    except FileNotFoundError:
+        raise ConfigError(f"{root.parent} does not exist, so {root} was not created. Check the path.") from None
 
 
 def _library(site: Site | None) -> RecipeLibrary:
@@ -846,7 +856,8 @@ def cmd_ui(args) -> int:
 
     root = _new_site_root(args)
     if root is not None:
-        root.mkdir(parents=True, exist_ok=True)       # a new site: the page starts with the FOLIO connection
+        _make_site_folder(root)                        # a new site: the page starts with the FOLIO connection
+        print(f"New site at {root}: the page starts with the FOLIO connection.")
     serve(root or find_site(args.site), port=args.port, open_browser=not args.no_browser)
     return 0
 
@@ -856,7 +867,7 @@ def cmd_launcher(args) -> int:
 
     root = _new_site_root(args)
     if root is not None:
-        root.mkdir(parents=True, exist_ok=True)       # set up later, on the page the launcher opens
+        _make_site_folder(root)                        # set up later, on the page the launcher opens
     else:
         root = _site(args).root
     if args.folder:
