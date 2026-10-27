@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import credentials, schedule
 from .config import BUNDLED_RECIPES, merge, read_yaml, reject_secrets
+from .dates import legacy_format_problem
 from .errors import ConfigError, RecipeError
 from .fields import FIELDS, suggest
 from .reads import READS
@@ -58,6 +59,7 @@ SELECTION_DEFAULTS: dict[str, Any] = {
 OPTIONS_DEFAULTS: dict[str, Any] = {"last_circ_date_from": "checkout", "loan_window_months": 12, "timezone": "UTC"}
 LEGACY_DEFAULTS: dict[str, Any] = {
     "created_date_note_type": None, "circ_count_note_type": None, "last_circ_date_note_type": None,
+    "date_format": None,
 }
 CHECKS_DEFAULTS: dict[str, Any] = {"min_item_ratio": 0.9, "must_be_filled": []}
 DELIVERY_DEFAULTS: dict[str, Any] = {
@@ -727,7 +729,11 @@ def load_feed_data(raw: dict, path: Path, library: RecipeLibrary, root: Path | N
     legacy = c.mapping(raw.get("legacy"), "legacy")
     c.keys(legacy, LEGACY_DEFAULTS, "legacy")
     for key, value in legacy.items():
-        if value is not None and not isinstance(value, str):
+        if key == "date_format":
+            problem = legacy_format_problem(value) if value not in (None, "") else None
+            if problem:
+                c.add("legacy.date_format", problem)
+        elif value is not None and not isinstance(value, str):
             c.add(f"legacy.{key}", "must be an item note type name, or empty")
     checks = c.mapping(raw.get("checks"), "checks")
     c.keys(checks, CHECKS_DEFAULTS, "checks")
