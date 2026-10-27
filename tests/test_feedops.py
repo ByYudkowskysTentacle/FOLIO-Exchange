@@ -91,3 +91,11 @@ def test_the_page_shows_the_same_warnings_as_check(site):
         expected = feedops.site_warnings(s, library, feeds, errors, hist, datetime.now(timezone.utc))
     assert [w["code"] for w in data["warnings"]] == [w["code"] for w in expected]
     assert any(w["code"] == "no-alerts" for w in data["warnings"])
+
+
+def test_a_paused_dry_run_feed_is_not_told_to_test_a_delivery_it_lacks(site, capsys):
+    make_feed(site, enabled=False, delivery={"transport": "none", "directory": None})
+    main(["-s", str(site), "check"])
+    out = capsys.readouterr().out
+    assert "NOTE     chq: Paused: scheduled runs skip it. Resume it with `folio-exchange feeds resume chq`." in out
+    assert "check --delivery chq" not in out

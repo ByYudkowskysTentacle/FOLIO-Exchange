@@ -37,7 +37,7 @@ python -m venv .venv
 
 ## Setting up a library (once released)
 
-To try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md).
+To try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange.
 
 ```bash
 folio-exchange init C:\FOLIO-Exchange\mylibrary
@@ -49,7 +49,8 @@ The guided setup asks for the FOLIO API address, tenant and a read-only service 
 | --- | --- |
 | `folio-exchange run chq` | Sync, build and check; the first delivery is held for you |
 | `folio-exchange release chq` | Show the held run and send it once you confirm |
-| `folio-exchange schedule` | Print the one command that runs `run --due` every hour |
+| `folio-exchange schedule` | Print the command that runs `run --due` every hour, in a PowerShell and a Command Prompt form |
+| `folio-exchange secret set chq` | Store a password again (`folio`, `smtp`, `webhook` or a feed name); `secret status` shows where each comes from |
 | `folio-exchange feeds` | Each feed's recipe, schedule, last run and next step |
 | `folio-exchange check` | Test the login, permissions and record counts (`--delivery` tests the vendor login, `--alerts` sends a test alert) |
 | `folio-exchange preview chq` | Sample live data and show rows, without delivering |

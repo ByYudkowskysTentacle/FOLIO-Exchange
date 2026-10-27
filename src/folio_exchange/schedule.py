@@ -171,21 +171,41 @@ def is_due(
 
 # ------------------------------------------------------------- OS scheduler
 def task_name(site_root: Path) -> str:
-    return f"FOLIO-Exchange ({Path(site_root).name})".replace('"', "")
+    root = Path(site_root)
+    label = root.name or str(root).rstrip("\\/:") or "site"      # a drive root such as C:\ has no name
+    return f"FOLIO-Exchange ({label})".replace('"', "")
 
 
-def os_command(site_root: Path, executable: str, system: str, user: str | None = None) -> str:
+def _win_quote(arg: str) -> str:
+    """One argument in double quotes, escaped by the Windows C runtime rules: a quote becomes \\", and
+    backslashes are doubled where they come before a quote (so C:\\ stays C:\\ rather than escaping it)."""
+    out, slashes = "", 0
+    for c in arg:
+        if c == "\\":
+            slashes += 1
+            continue
+        out += "\\" * (slashes * 2 + 1) + c if c == '"' else "\\" * slashes + c
+        slashes = 0
+    return f'"{out}{chr(92) * slashes * 2}"'
+
+
+def os_command(site_root: Path, executable: str, system: str, user: str | None = None, *,
+               shell: str = "cmd") -> str:
     """The command that registers an hourly ``run --due`` with the OS scheduler. Shown, never run.
 
     On Windows the task runs as ``user`` whether or not anyone is logged on (schtasks asks for that
-    user's Windows password), because secrets in Credential Manager belong to the user who stored them."""
+    user's Windows password), because secrets in Credential Manager belong to the user who stored them.
+    ``shell="powershell"`` hands the line to Command Prompt with ``cmd --% /c``, which reaches schtasks
+    unchanged from Windows PowerShell 5.1 and PowerShell 7 alike. (``schtasks --% ...`` does not: since 7.3,
+    PowerShell re-quotes the text after ``--%`` for most programs, which breaks the escaped quotes in /TR.)"""
     site = str(Path(site_root).resolve())
     exe = executable or "folio-exchange"
     if system.lower().startswith("win"):
-        exe = exe.replace('"', "")
-        action = f'\\"{exe}\\" --site \\"{site}\\" run --due'
+        action = f"{_win_quote(exe.replace(chr(34), ''))} --site {_win_quote(site)} run --due"
         who = f' /RU "{user}" /RP' if user else ""
-        return f'schtasks /Create /TN "{task_name(site)}" /SC HOURLY /MO 1 /ST 00:07 /TR "{action}"{who} /F'
+        via = "cmd --% /c " if shell == "powershell" else ""
+        return (f'{via}schtasks /Create /TN "{task_name(site)}" /SC HOURLY /MO 1 /ST 00:07 '
+                f"/TR {_win_quote(action)}{who} /F")
     q = lambda v: "'" + v.replace("'", "'\"'\"'") + "'"
     log = str(Path(site) / "logs" / "cron.log")
     return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"

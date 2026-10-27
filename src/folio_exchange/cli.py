@@ -107,6 +107,11 @@ def _yes(prompt: str) -> bool:
         return False
 
 
+def _not_sent(row: dict) -> str:
+    """A marker for a successful run that sent nothing because its feed had no delivery (transport none)."""
+    return " (not sent: transport none)" if row.get("status") == "success" and row.get("destination") == "none" else ""
+
+
 def _when(iso: str | None) -> str:
     if not iso:
         return "never"
@@ -229,23 +234,31 @@ def cmd_check_delivery(args) -> int:
             print(f"  Connecting to {d['host']}:{d.get('port') or 22} as {d['username']}")
             print(f"  host key {pin}; {secret}")
         elif d["transport"] == "none":
-            print("  Nothing to test.")
+            print("  Nothing to test: this feed has no delivery set up (a dry run). When the vendor's details "
+                  "are ready, run `folio-exchange init` again and choose how the files are delivered.")
+            if not f.enabled:
+                print(f"  Paused: `folio-exchange feeds resume {f.name}` lets it run on its schedule again.")
             continue
         try:
             names = delivery.check_delivery(d)
         except Exception as exc:  # noqa: BLE001 - paramiko raises many types; report them all the same way
             print(f"  FAILED   {type(exc).__name__}: {str(exc)[:200]}")
+            if not f.enabled:
+                print("  Paused: leave it paused until this test passes.")
             worst = 1
             continue
         folder = d.get("directory") if d["transport"] == "local" else (d.get("remote_dir") or ".")
         if names is None:
             print(f"  OK       logged in; listing {folder} is not permitted (normal for upload-only accounts). "
                   "Nothing was uploaded.")
-            continue
-        print(f"  OK       {'logged in; ' if d['transport'] == 'sftp' else ''}{folder} has {len(names)} entries. "
-              "Nothing was uploaded.")
-        for name in names[:20]:
-            print(f"           {name}")
+        else:
+            print(f"  OK       {'logged in; ' if d['transport'] == 'sftp' else ''}{folder} has {len(names)} "
+                  "entries. Nothing was uploaded.")
+            for name in names[:20]:
+                print(f"           {name}")
+        if not f.enabled:
+            print(f"  Paused: the test passed. Resume it with `folio-exchange feeds resume {f.name}`. A first "
+                  "delivery to a new destination is still held for you to check.")
     return worst
 
 
@@ -423,17 +436,23 @@ def cmd_feeds(args) -> int:
                   + (f"; next {nxt.astimezone(site.timezone):%a %Y-%m-%d %H:%M}" if nxt and f.enabled else ""))
             print(f"  delivers  {delivery.describe_destination(f.delivery)}")
             if last:
-                print(f"  last run  {_when(last['started'])}: {last['status']}"
+                print(f"  last run  {_when(last['started'])}: {last['status']}{_not_sent(last)}"
                       + (f" ({Path(last['run_dir']).name})" if last.get("run_dir") else ""))
                 if last.get("error"):
                     print(f"            {_short(last['error'], 300)}")
-                if last["status"] in ("held", "blocked", "built", "failed"):
+                if last["status"] in ("held", "blocked", "built", "failed") or not f.delivers:
                     step = runner.next_step(f, last["status"], Path(last["run_dir"]) if last.get("run_dir") else None)
-                    print(f"  next      {step}")
+                    if step:
+                        print(f"  next      {step}")
             else:
                 print("  last run  never")
                 print(f"  next      folio-exchange run {f.name}"
-                      + ("   (the first delivery is held for you to check)" if f.delivers else ""))
+                      + ("   (the first delivery is held for you to check)" if f.delivers else
+                         " --no-deliver   (a dry run: the files stay in the run folder)"))
+            if not f.enabled:
+                test = f"test the delivery with `folio-exchange check --delivery {f.name}`, then " if f.delivers else ""
+                print(f"  paused    scheduled runs skip it; {test}resume it with "
+                      f"`folio-exchange feeds resume {f.name}`.")
             newer = library.newer_major(f.uses)
             if newer:
                 print(f"  update    {newer.ref} is available (held for review; see `folio-exchange upgrade`)")
@@ -599,7 +618,7 @@ def cmd_history(args) -> int:
                 raise ConfigError(f"No run {args.show!r} in the history.")
             print(f"Run {row['id']} of {row['feed']} ({row.get('recipe')}@{row.get('recipe_version')}), "
                   f"{row.get('trigger')}, started {_when(row['started'])}, finished {_when(row.get('finished'))}")
-            print(f"  status     {row['status']}")
+            print(f"  status     {row['status']}{_not_sent(row)}")
             if row.get("error"):
                 print(f"  problem    {row['error']}")
             rep = row.get("report") or {}
@@ -622,7 +641,7 @@ def cmd_history(args) -> int:
             folder = Path(r["run_dir"]).name if r.get("run_dir") else "-"
             print(f"{r['id']:>5}  {_when(r['started'])}  {r['feed']:<14} {r['status']:<8} "
                   f"items {r.get('items') if r.get('items') is not None else '-':>8}  {folder:<22} "
-                  f"{_short(r.get('error') or '', 80) if r.get('error') else ''}")
+                  f"{_short(r.get('error') or '', 80) if r.get('error') else _not_sent(r).strip()}")
         print("(Times are this computer's; run folder names are in UTC.)")
     return 0
 
@@ -709,12 +728,23 @@ def cmd_schedule(args) -> int:
     if note:
         print(f"\nWARNING  {note}")
     print("\nNothing runs until the computer's scheduler starts `run --due` every hour. Register it once with:\n")
-    print("  " + schedule.os_command(site.root, exe, system, user))
-    if system == "Windows":
-        print("\n  Run this in a Command Prompt as the user who stored the secrets. It asks for that user's "
-              "Windows password, so the task runs even when nobody is logged on.")
+    if system != "Windows":
+        print("  " + schedule.os_command(site.root, exe, system, user))
+    else:
+        print("  In PowerShell (cmd --% /c passes the quotes through unchanged):")
+        print("  " + schedule.os_command(site.root, exe, system, user, shell="powershell"))
+        print("\n  Or in Command Prompt (cmd.exe):")
+        print("  " + schedule.os_command(site.root, exe, system, user))
+        if any(c in exe + str(site.root) for c in "&^|<>%"):
+            print("\n  WARNING  The program or site path contains one of & ^ | < > %, which Command Prompt treats "
+                  "specially. Move the program or the site to a folder without them first.")
+        print("\n  Use one of the two, as the user who stored the secrets. It asks for that user's Windows "
+              "password, so the task runs even when nobody is logged on. These work in either window:\n")
     for label, cmd in schedule.os_helpers(site.root, system).items():
         print(f"  {label + ':':<13} {cmd}")
+    if system == "Windows":
+        print("\n  In the last result, \"Task To Run\" should show the folio-exchange.exe path and --site folder, "
+              "each in quotes.")
     return 0
 
 
@@ -795,7 +825,8 @@ def build_parser() -> argparse.ArgumentParser:
     rc = sub.add_parser("recipes", help="list recipes, show one, validate a file, or print a layout summary")
     rc.add_argument("action", nargs="?", choices=["list", "show", "validate", "summary"], default="list")
     rc.add_argument("target", nargs="?", help="recipe id (id@range), feed name, or a file to validate")
-    u = sub.add_parser("upgrade", help="move a feed to another recipe version, after showing what changes")
+    u = sub.add_parser("upgrade", help="move a feed to another recipe version, after showing what changes "
+                       "(not an update of FOLIO-Exchange itself)")
     u.add_argument("feed")
     u.add_argument("--to", help="the new range, e.g. chq-academic@^2.0 (default: the newest version)")
     u.add_argument("--yes", action="store_true")

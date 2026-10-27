@@ -275,6 +275,7 @@ Flat, small modules under `src/folio_exchange/`, as in FOLIOHQ. Copied FOLIOHQ c
 | `schedule.py` | Schedule text, due runs, OS scheduler commands. |
 | `runner.py` | The pipeline for one feed, `--due` runs, release, preview, settings audit, alerts. |
 | `cli.py` | `folio-exchange` commands. |
+| `feedops.py` | Feed operations shared by `cli.py` and `ui.py`: `set_enabled` (pause and resume by rewriting the `enabled:` line, even when the feed file does not load; audited with `from: cli` or `ui`) and `site_warnings` (check's problems, warnings and notes as `{level, code, text, feed}`). `ui.py` imports nothing from `cli.py`. |
 | `wizard.py` | `folio-exchange init`, the guided setup. |
 | `ui.py`, `web/` | `folio-exchange ui`: a small local page for looking at feeds and running them (see below). |
 
@@ -486,8 +487,9 @@ def last_slot(s, now, tz) -> datetime | None; def next_slot(s, now, tz) -> datet
 def describe(s: Schedule) -> str                    # "Sundays at 03:30"
 def is_due(s, now, tz, runs: list[dict], max_attempts: int, created: datetime | None) -> bool
     # runs: the feed's runs since the slot; created: when the site first saw the feed (earlier slots never due)
-def os_command(site_root, executable, system, user=None) -> str   # schtasks /SC HOURLY ... /RU user /RP (Windows),
-                                                                    # crontab line at minute 7 (Linux, macOS)
+def os_command(site_root, executable, system, user=None, *, shell="cmd") -> str
+    # schtasks /SC HOURLY ... /RU user /RP (Windows; shell="powershell" wraps it as `cmd --% /c ...`, since
+    # PowerShell re-quotes text after a bare `--%`), crontab line at minute 7 (Linux, macOS)
 def os_helpers(site_root, system) -> dict[str, str]   # run now, last result, remove (Windows)
 ```
 
@@ -568,7 +570,10 @@ Started early (26 Oct 2026), ahead of the phase 2 web UI, as a simple companion 
 - **No secrets.** The page is told where each secret comes from, never its value. It shows item rows only from files recorded for a run, and every value from FOLIO is set as text, never as HTML.
 - **One action at a time.** Check, preview, run, build and release run in a background thread; a second action while one runs is refused (HTTP 409) and shown as *busy*, not as a failure. The page polls `/api/jobs/<id>` for log lines and the result, updating only the result panel in place (scroll, selection and focus stay). `/api/site` names the running job, so a reload or a second tab reattaches to it. Results are kept per feed, and a late answer never draws over a newer view. Ctrl+Enter previews (it never sends) and is ignored while a dialog is open. Ctrl+C in the server window waits for a running job to finish (a second Ctrl+C stops anyway).
 - **Status means the last real run.** Previews show in History but never set a feed's label or "Last run".
-- **API** (JSON): `GET /api/site`, `/api/feeds/<name>`, `/api/feeds/<name>/runs`, `/api/runs/<id>`, `/api/runs/<id>/rows`, `/api/audit`, `/api/jobs/<id>`; `POST /api/check`, `/api/feeds/<name>/{preview,run,build,release-preview,release,pause,resume}`.
+- **API** (JSON): `GET /api/site`, `/api/feeds/<name>`, `/api/feeds/<name>/runs`, `/api/runs/<id>`, `/api/runs/<id>/rows`, `/api/audit`, `/api/jobs/<id>`; `POST /api/check`, `/api/feeds/<name>/{preview,run,build,release-preview,release,pause,resume}`, `/api/runs/<id>/open-folder` (opens a run folder inside `out/` in the file browser; never a shell). `/api/site` carries `warnings` from `feedops.site_warnings`; the page words them by `code` and drops a command line only where the page has its own button for that step.
+- **Keyboard and screen readers.** Tabs are ARIA tablists (arrow keys, Home, End), the Run menu is a menu button (arrow keys, Escape returns focus), and History rows are buttons. Text and badges meet WCAG 2.2 AA contrast in both schemes (a test checks the colour pairs).
+- **Fresh without a reload.** The sidebar and the open feed refresh every 45 seconds and when the tab becomes visible, skipping while hidden, while an action runs, or while a dialog, menu or drop-down is open; scroll and focus stay.
+- **Narrow windows** (under 760 px) scroll as one page instead of three nested panes.
 - **Not yet:** editing settings in the page (it points at the feed file), the setup wizard, storing secrets, alerts settings, and recipe upgrades. Those stay on the command line.
 
 ## From FOLIOHQ

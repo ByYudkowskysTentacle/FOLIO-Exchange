@@ -121,9 +121,10 @@ def next_step(feed: Feed, status: str, run_dir: Path | None) -> str:
                 f"folio-exchange release {feed.name}")
     if status == "failed":
         return f"Fix the problem above, then run: folio-exchange run {feed.name}"
-    if status == "built" and not feed.delivers:
-        return (f"The files are in{where}. This feed has no delivery set up yet; add one with "
-                "`folio-exchange init` before anything can be sent.")
+    if status in ("built", "success") and not feed.delivers:
+        return (f"Dry run: nothing was sent. The files are in{where}; `folio-exchange history {feed.name}` "
+                "lists the runs. This feed has no delivery set up yet: when the vendor's details are ready, run "
+                "`folio-exchange init` again and choose how the files are delivered.")
     if status == "built":
         return f"To send these files, run: folio-exchange release {feed.name}"
     return ""
@@ -545,7 +546,10 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
             confirm=None) -> RunResult:
     """Deliver a held, blocked or built run after a person has looked at it. ``confirm(summary) -> bool``
     is asked before anything is sent. Built runs still pass the checks unless ``force``; releasing a held
-    or blocked run is itself the person's approval."""
+    or blocked run is itself the person's approval. A feed with no delivery (transport none) is refused."""
+    if not feed.delivers:
+        raise FxError(f"Feed {feed.name} has no delivery set up, so there is nothing to send; its files stay in "
+                      "the run folder. Add a delivery with `folio-exchange init`.")
     with RunLock(site.lock_path), History(site.history_path) as hist:
         row = releasable_run(hist, feed, run_dir, force)
         rdir = Path(row["run_dir"])

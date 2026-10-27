@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -217,9 +218,11 @@ def site_summary(site_root: Path) -> dict:
         items = []
         for f in feeds:
             last = last_real_run(hist, f.name)
+            newer = library.newer_major(f.uses)
             items.append({"name": f.name, "title": f.title, "recipe": f.recipe.ref, "enabled": f.enabled,
                           "last_status": last["status"] if last else None,
-                          "last_started": last["started"] if last else None})
+                          "last_started": last["started"] if last else None,
+                          "newer_recipe": newer.ref if newer else None})
         warnings = feedops.site_warnings(site, library, feeds, errors, hist, datetime.now(timezone.utc))
     return {
         "warnings": warnings,
@@ -271,6 +274,29 @@ def read_rows(site: Site, feed: Feed, row: dict, output: str | None, limit: int 
                 rows.append(r)
     return {"output": o["name"], "outputs": [d["name"] for d in delimited], "file": name, "header": header,
             "rows": rows, "total": total}
+
+
+def run_folder(site: Site, row: dict) -> Path:
+    """A run's own folder, only when it is a folder inside the site's output folder."""
+    if not row.get("run_dir"):
+        raise ConfigError("This run has no folder.")
+    out = site.out_dir.resolve()
+    path = Path(row["run_dir"]).resolve()
+    if path == out or not path.is_relative_to(out):
+        raise ConfigError("That folder is outside the site's output folder, so the page will not open it.")
+    if not path.is_dir():
+        raise ConfigError("The run's folder is no longer there; older runs are tidied away.")
+    return path
+
+
+def open_folder(path: Path) -> None:
+    """Show a folder in the system file browser. The path is passed as one argument, never through a shell."""
+    if sys.platform == "win32":
+        os.startfile(str(path))  # noqa: S606 - a checked folder, not a command
+    else:
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        subprocess.Popen([opener, str(path)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 # ------------------------------------------------------------------ server
@@ -325,6 +351,8 @@ class App:
         root = self.site_root
         if path == "/api/check":
             return self.jobs.start("check", None, lambda: check_connection(root)).as_dict()
+        if m := re.fullmatch(r"/api/runs/(\d+)/open-folder", path):
+            return self._open_folder(int(m.group(1)))
         if m := re.fullmatch(r"/api/feeds/([a-z0-9-]+)/(preview|run|build|release|release-preview|pause|resume)",
                              path):
             name, action = m.group(1), m.group(2)
@@ -370,6 +398,16 @@ class App:
         site = load_site(self.site_root)
         res = feedops.set_enabled(site, name, action == "resume", via="ui")
         return {"name": name, "enabled": res["enabled"]}
+
+    def _open_folder(self, run_id: int) -> dict:
+        site = load_site(self.site_root)
+        with History(site.history_path) as hist:
+            row = hist.get(run_id)
+        if row is None:
+            raise LookupError("No such run")
+        folder = run_folder(site, row)
+        open_folder(folder)
+        return {"opened": folder.name}
 
     @staticmethod
     def _result(site: Site, feed: Feed, res: runner.RunResult) -> dict:

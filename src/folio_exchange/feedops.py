@@ -76,8 +76,9 @@ def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors:
             if late:
                 out.append(_w("warning", "overdue", late[0].upper() + late[1:] + ".", f.name))
         else:
-            out.append(_w("note", "paused", f"Paused: scheduled runs skip it. Test it with `folio-exchange check "
-                          f"--delivery {f.name}`, then `folio-exchange feeds resume {f.name}`.", f.name))
+            test = f"Test it with `folio-exchange check --delivery {f.name}`, then" if f.delivers else "Resume it with"
+            out.append(_w("note", "paused", f"Paused: scheduled runs skip it. {test} "
+                          f"`folio-exchange feeds resume {f.name}`.", f.name))
         newer = library.newer_major(f.uses)
         if newer:
             out.append(_w("note", "recipe-update", f"{newer.ref} is available and waits for review: "

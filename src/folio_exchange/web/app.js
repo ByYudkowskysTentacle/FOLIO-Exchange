@@ -78,6 +78,135 @@ function kv(pairs) {
 
 function num(n) { return n === null || n === undefined ? "–" : Number(n).toLocaleString(); }
 
+function announce(text) {
+  // For screen readers: a quiet live region, cleared first so the same words are read again.
+  const el = $("live");
+  el.textContent = "";
+  setTimeout(() => { el.textContent = text; }, 50);
+}
+
+// One tab set. Arrow keys, Home and End move between the tabs and select them; Tab moves on into the panel.
+function tablist(cls, id, names, selected, ariaLabel, title, choose) {
+  const select = (t) => {
+    choose(t);
+    const el = $(`${id}-tab-${t}`);
+    if (el) el.focus();
+  };
+  return h("div", {
+    class: cls, role: "tablist", "aria-label": ariaLabel,
+    onkeydown: (e) => {
+      const i = names.indexOf(selected);
+      const to = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: names.length - 1 }[e.key];
+      if (to === undefined) return;
+      e.preventDefault();
+      select(names[(to + names.length) % names.length]);
+    },
+  }, names.map((t) => h("button", {
+    class: "tab", type: "button", role: "tab", id: `${id}-tab-${t}`, "aria-controls": `${id}-panel`,
+    "aria-selected": t === selected ? "true" : "false", tabindex: t === selected ? "0" : "-1",
+    onclick: () => select(t),
+  }, title(t))));
+}
+
+// ------------------------------------------------------------ the page's own words
+// Some text comes from the command-line side (alerts, logs, safety checks) and can end with a command to
+// type. Where the page has its own button for that step (run, preview, build, release, history, pause and
+// resume, the connection check), the sentence is left out here. Commands the page cannot stand in for
+// (setup, storing a secret, an upgrade, checking alerts or a delivery) stay, as they are the only remedy.
+const PAGE_HAS_IT = /`?folio-exchange (?:run|preview|build|release|history|feeds|check(?! --))\b/;
+function pageWords(text) {
+  if (!text) return text;
+  const kept = String(text).split(/(?<=\.)\s+/).filter((s) => !PAGE_HAS_IT.test(s));
+  return kept.length ? kept.join(" ") : String(text);
+}
+
+function nextStep(status, feed) {
+  if (status === "blocked") {
+    return "Look at the files (Open folder). If they are right, use Review and send…; if not, fix the records " +
+      "in FOLIO and Run again.";
+  }
+  if (status === "held" || (status === "built" && feed && feed.delivery.delivers)) {
+    return "Look at the files (Open folder), then use Review and send… if they are right.";
+  }
+  if (status === "built") return "This feed has nowhere to send files yet, so they stay on this computer.";
+  if (status === "failed") return "Fix the problem above, then Run again.";
+  return null;
+}
+
+const LEVELS = { problem: ["failed", "Problem"], warning: ["held", "Check"], note: ["none", "Note"] };
+function warningText(w, onFeedPage) {
+  const f = ((S.site && S.site.feeds) || []).find((x) => x.name === w.feed);
+  switch (w.code) {
+    case "no-alerts":
+      return "No alerts are set up, so nobody would hear about a failed scheduled run. Whoever looks after this " +
+        "site can add an alert webhook or email address in site.yaml.";
+    case "paused":
+      return onFeedPage ? "This feed is paused: scheduled runs skip it. You can still preview and run it here; Resume starts the schedule again."
+        : "Paused: scheduled runs skip it. You can still preview and run it on its page, and resume it there.";
+    case "recipe-update":
+      return `A newer version of its recipe${f && f.newer_recipe ? ` (${f.newer_recipe})` : ""} is available. ` +
+        "It changes what the vendor receives, so the feed stays on its current version until someone reviews the change.";
+    case "overdue":
+      return `${String(w.text).split(";")[0].replace(/\.$/, "")}. Check that the task that starts scheduled runs on this computer is still set up and running.`;
+    case "alerts-never":
+      return "Alerts are switched off (alerts.on is never in site.yaml), so a failed run sends no alert.";
+    case "ratio-off":
+      return "The item count check is off, so a sudden drop in items would be sent without a hold for review.";
+    case "host-key-unconfirmed":
+      return "The vendor's SFTP server key is not confirmed yet, so nothing is sent there. Once the vendor " +
+        "confirms the key, record it with the setup wizard.";
+    default:
+      return pageWords(w.text);
+  }
+}
+
+function label(key) {
+  const s = String(key).replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function readable(v) {
+  if (v === true) return "yes";
+  if (v === false) return "no";
+  if (v === null || v === undefined || v === "") return "not set";
+  if (Array.isArray(v)) {
+    if (!v.length) return "none";
+    if (v.some((x) => x && typeof x === "object")) return h("div", {}, v.map((x) => readable(x)));
+    return v.join(", ");
+  }
+  if (typeof v === "object") return Object.keys(v).length ? settingsList(v) : "none";
+  return String(v);
+}
+
+function settingsList(obj) {
+  // Settings as a person reads them: a plain label, the value in words, and the key as it is in the file.
+  return h("dl", { class: "kv" }, Object.entries(obj).map(([k, v]) => [
+    h("dt", {}, label(k), k.includes("_") ? h("span", { class: "key", text: k }) : null),
+    h("dd", {}, readable(v))]));
+}
+
+function detailText(detail) {
+  return Object.entries(detail || {}).map(([k, v]) => {
+    const val = Array.isArray(v) ? v.join(", ") : v && typeof v === "object" ? JSON.stringify(v) : String(v);
+    return `${label(k)}: ${val}`;
+  }).join(" · ");
+}
+
+function openFolderButton(run, id) {
+  if (!run || !run.id || !run.folder) return null;
+  return h("button", { class: "btn btn-small", type: "button", id, title: run.folder, onclick: () => openFolder(run.id) },
+    "Open folder");
+}
+
+async function openFolder(id) {
+  try {
+    await api(`/api/runs/${id}/open-folder`, {});
+    toast("The run's folder is open in a new window.");
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 // ------------------------------------------------------------ routing
 function go(view) {
   S.view = view;
@@ -100,8 +229,11 @@ function fromHash() {
 
 // ------------------------------------------------------------ sidebar
 async function loadSite() {
-  S.site = await api("/api/site");
-  const s = S.site;
+  applySite(await api("/api/site"));
+}
+
+function applySite(s) {
+  S.site = s;
   $("site-chip").textContent = `${s.name} · ${s.folio.tenant}`;
   $("site-chip").title = `${s.root}\n${s.folio.base_url} as ${s.folio.username}`;
   $("nav-connection-sub").textContent = s.folio.base_url.replace(/^https?:\/\//, "");
@@ -117,7 +249,7 @@ function renderSidebar() {
   for (const f of S.site.feeds) {
     const current = S.view && S.view.type === "feed" && S.view.name === f.name;
     list.append(h("li", {}, h("button", {
-      class: "nav-item", type: "button", "aria-current": current ? "true" : "false",
+      class: "nav-item", type: "button", "aria-current": current ? "true" : "false", "data-key": `nav-${f.name}`,
       onclick: () => go({ type: "feed", name: f.name }),
     }, S.job && S.job.feed === f.name ? badge("running", "Busy") : f.enabled ? badge(f.last_status) : badge("none", "Off"),
       h("span", { class: "nav-text" }, h("span", { class: "nav-name", text: f.name }),
@@ -125,13 +257,13 @@ function renderSidebar() {
   }
   for (const [name, problem] of Object.entries(S.site.problems || {})) {
     list.append(h("li", {}, h("button", {
-      class: "nav-item nav-problem", type: "button", title: problem,
+      class: "nav-item nav-problem", type: "button", title: problem, "data-key": `nav-${name}`,
       onclick: () => showProblem(name, problem),
     }, badge("failed", "Error"), h("span", { class: "nav-text" }, h("span", { class: "nav-name", text: name }),
       h("span", { class: "nav-sub", text: "the feed file has a problem" })))));
   }
   if (!S.site.feeds.length && !Object.keys(S.site.problems || {}).length) {
-    list.append(h("li", { class: "nav-sub" }, h("span", { class: "muted", text: "No feeds yet. Run folio-exchange init." })));
+    list.append(h("li", { class: "nav-sub" }, h("span", { class: "muted", text: "No feeds yet. Feeds are set up with folio-exchange init in a command window." })));
   }
   $("nav-connection").setAttribute("aria-current", S.view && S.view.type === "connection" ? "true" : "false");
   $("nav-activity").setAttribute("aria-current", S.view && S.view.type === "activity" ? "true" : "false");
@@ -167,22 +299,61 @@ async function openFeed(name) {
 
 function closeMenus() {
   for (const m of document.querySelectorAll(".menu")) m.hidden = true;
+  for (const b of document.querySelectorAll("[aria-haspopup='menu']")) b.setAttribute("aria-expanded", "false");
+}
+
+// The caret beside Run: a menu button. Enter, Space or Down opens it on the first choice, Up on the last;
+// arrows move, Escape closes it and puts the focus back on the caret, Tab closes it and moves on.
+function runMenu() {
+  const items = [
+    h("button", { type: "button", role: "menuitem", tabindex: "-1", onclick: () => { closeMenus(); startRun("run"); } },
+      "Run", h("small", { text: "Update from FOLIO, build, check, then send (or hold for review)" })),
+    h("button", { type: "button", role: "menuitem", tabindex: "-1", onclick: () => { closeMenus(); startRun("build"); } },
+      "Build only", h("small", { text: "Update and build the files; send nothing" }))];
+  const menu = h("div", {
+    class: "menu", id: "run-menu", hidden: true, role: "menu", "aria-label": "Run choices",
+    onkeydown: (e) => {
+      const i = items.indexOf(document.activeElement);
+      const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: items.length - 1 }[e.key];
+      if (to !== undefined) {
+        e.preventDefault();
+        items[(to + items.length) % items.length].focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeMenus();
+        caret.focus();
+      } else if (e.key === "Tab") {
+        closeMenus();
+      }
+    },
+  }, items);
+  const open = (at) => {
+    closeMenus();
+    menu.hidden = false;
+    caret.setAttribute("aria-expanded", "true");
+    items[at].focus();
+  };
+  const caret = h("button", {
+    class: "btn btn-primary btn-caret", type: "button", id: "btn-run-more", "aria-label": "More run choices",
+    "aria-haspopup": "menu", "aria-expanded": "false", "aria-controls": "run-menu", disabled: busy(),
+    onclick: () => (menu.hidden ? open(0) : closeMenus()),
+    onkeydown: (e) => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        open(e.key === "ArrowDown" ? 0 : items.length - 1);
+      }
+    },
+  }, "▾");
+  return [caret, menu];
 }
 
 function renderFeed() {
   const f = S.feed;
-  const menu = h("div", { class: "menu", hidden: true, role: "menu" },
-    h("button", { type: "button", role: "menuitem", onclick: () => { closeMenus(); startRun("run"); } },
-      "Run", h("small", { text: "Update from FOLIO, build, check, then send (or hold for review)" })),
-    h("button", { type: "button", role: "menuitem", onclick: () => { closeMenus(); startRun("build"); } },
-      "Build only", h("small", { text: "Update and build the files; send nothing" })));
-  const caret = h("button", { class: "btn btn-primary btn-caret", type: "button", "aria-label": "More run choices",
-    "aria-haspopup": "menu", disabled: busy(), onclick: () => { menu.hidden = !menu.hidden; } }, "▾");
-
   const head = h("div", { class: "feed-head" },
     h("div", { class: "title-row" }, h("h1", { text: f.title }), h("span", { class: "sub", text: f.name }),
       h("div", { class: "spacer" }),
-      h("button", { class: "btn btn-ghost", type: "button", onclick: togglePause, disabled: busy() },
+      h("button", { class: "btn btn-ghost", type: "button", id: "btn-pause", onclick: togglePause, disabled: busy() },
         f.enabled ? "Pause" : "Resume")),
     h("div", { class: "request-bar" },
       h("div", { class: "request-field", title: f.delivery.where },
@@ -192,14 +363,13 @@ function renderFeed() {
         title: "Preview (Ctrl+Enter): builds sample files and sends nothing", onclick: () => startRun("preview") }, "Preview"),
       h("div", { class: "split" },
         h("button", { class: "btn btn-primary", type: "button", id: "btn-run", disabled: busy(), onclick: () => startRun("run") }, "Run"),
-        caret, menu)),
-    h("div", { class: "tabs", role: "tablist" },
-      ["overview", "layout", "settings", "history"].map((t) => h("button", {
-        class: "tab", type: "button", role: "tab", "aria-selected": S.tab === t ? "true" : "false",
-        onclick: () => { S.tab = t; renderFeed(); },
-      }, t[0].toUpperCase() + t.slice(1), t === "history" ? h("span", { class: "count", text: S.runs.length }) : null))));
+        runMenu())),
+    tablist("tabs", "feed", ["overview", "layout", "settings", "history"], S.tab, "Feed sections",
+      (t) => [label(t), t === "history" ? h("span", { class: "count", text: S.runs.length }) : null],
+      (t) => { S.tab = t; renderFeed(); }));
 
-  const top = h("div", { class: "pane pane-top", role: "tabpanel" }, tabContent());
+  const top = h("div", { class: "pane pane-top", role: "tabpanel", id: "feed-panel", "aria-labelledby": `feed-tab-${S.tab}`,
+    tabindex: "0", "data-scroll": "top" }, tabContent());
   S.bottom = h("div", { class: "pane-bottom" });
   $("main").replaceChildren(head, h("div", { class: "split-v" }, top, S.bottom));
   renderResult();
@@ -223,17 +393,19 @@ function overviewTab(f) {
   const out = [];
   if (f.waiting) {
     const w = f.waiting;
-    const why = w.held || w.error || (w.status === "built" ? "built without sending" : "");
+    const why = pageWords(w.held || w.error) || (w.status === "built" ? "built without sending" : "");
     out.push(h("div", { class: "notice notice-held" }, badge(w.status),
       h("p", {}, h("b", { text: `The run of ${when(w.started)} is waiting for you. ` }), why),
-      h("button", { class: "btn btn-primary", type: "button", disabled: busy(), onclick: reviewRelease }, "Review and send…")));
+      openFolderButton(w, "btn-folder-waiting"),
+      h("button", { class: "btn btn-primary", type: "button", id: "btn-review", disabled: busy(), onclick: reviewRelease }, "Review and send…")));
   } else if (f.last_run && f.last_run.status === "failed") {
     out.push(h("div", { class: "notice notice-failed" }, badge("failed"),
-      h("p", {}, h("b", { text: "The last run failed. " }), f.last_run.error || "")));
+      h("p", {}, h("b", { text: "The last run failed. " }), pageWords(f.last_run.error) || "")));
   }
-  if (!f.enabled) out.push(h("div", { class: "notice notice-info" }, h("p", { text: "This feed is paused: scheduled runs skip it. You can still run it here." })));
-  if (f.newer_recipe) out.push(h("div", { class: "notice notice-info" }, h("p", { text: `A newer recipe, ${f.newer_recipe}, waits for review (folio-exchange upgrade ${f.name}).` })));
-  if (f.overdue) out.push(h("div", { class: "notice notice-info" }, h("p", { text: `Overdue: ${f.overdue}.` })));
+  // The site's warnings about this feed (paused, overdue, a newer recipe, …), in the page's words.
+  for (const w of ((S.site && S.site.warnings) || []).filter((x) => x.feed === f.name && x.code !== "feed-file")) {
+    out.push(h("div", { class: `notice ${w.level === "problem" ? "notice-failed" : "notice-info"}` }, h("p", { text: warningText(w, true) })));
+  }
   const last = f.last_run;
   out.push(kv([
     ["Recipe", `${f.recipe.title} (${f.recipe.vendor}), ${f.recipe.ref}`],
@@ -241,7 +413,7 @@ function overviewTab(f) {
     ["Schedule", f.enabled && f.schedule.next ? `${f.schedule.describe}; next ${when(f.schedule.next)}` : f.schedule.describe],
     ["Sends to", h("span", { class: "mono", text: f.delivery.where })],
     ["Last run", last ? h("span", {}, badge(last.status), ` ${when(last.started)} · ${num(last.items)} items, ${num(last.bibs)} bibs`) : "never"],
-    last && last.next ? ["Next step", last.next] : null,
+    last && nextStep(last.status, f) && !f.waiting ? ["Next step", nextStep(last.status, f)] : null,
     ["Feed file", h("span", { class: "mono", text: f.file })],
   ]));
   return out;
@@ -273,17 +445,17 @@ function layoutTab(f) {
 }
 
 function settingsTab(f) {
-  const list = (obj) => Object.entries(obj).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") || "none" : String(v)]);
   return [
-    h("p", { class: "muted" }, "To change these, edit ", h("code", { text: f.file }), " and reload. ",
-      "folio-exchange check validates the file."),
+    h("p", { class: "muted" }, "To change these, edit ", h("code", { text: f.file }), " in a text editor, reload this page, ",
+      "then use Preview to try the change."),
     h("div", { class: "section-title", text: "Filters" }),
-    Object.keys(f.filters).length ? kv(list(f.filters)) : h("p", { class: "muted", text: "Every record the recipe selects." }),
-    h("div", { class: "section-title", text: "Options" }), kv(list(f.options)),
+    Object.keys(f.filters).length ? settingsList(f.filters) : h("p", { class: "muted", text: "Every record the recipe selects." }),
+    h("div", { class: "section-title", text: "Options" }),
+    Object.keys(f.options).length ? settingsList(f.options) : h("p", { class: "muted", text: "The recipe's defaults." }),
     h("div", { class: "section-title", text: "Checks before sending" }), kv([
-      ["Minimum item ratio", f.checks.min_item_ratio ? `${Math.round(f.checks.min_item_ratio * 100)}% of the last delivery` : "off"],
+      ["Minimum item count", f.checks.min_item_ratio ? `${Math.round(f.checks.min_item_ratio * 100)}% of the last delivery` : "off"],
       ["Must be filled", (f.checks.must_be_filled || []).join(", ") || "nothing"]]),
-    Object.keys(f.legacy).length ? [h("div", { class: "section-title", text: "Migrated values (item note types)" }), kv(list(f.legacy))] : null,
+    Object.keys(f.legacy).length ? [h("div", { class: "section-title", text: "Migrated values (item note types)" }), settingsList(f.legacy)] : null,
   ];
 }
 
@@ -291,11 +463,15 @@ function historyTab() {
   if (!S.runs.length) return h("p", { class: "muted", text: "No runs yet." });
   return h("table", {}, h("thead", {}, h("tr", {}, ["Status", "Started", "By", "Items", "Bibs", "Folder", "Note"].map((t) =>
     h("th", { class: ["Items", "Bibs"].includes(t) ? "num" : null, text: t })))),
+  // The row opens the run on a click; its first cell is a real button, so Tab reaches it and Enter or Space opens it.
   h("tbody", {}, S.runs.map((r) => h("tr", { class: "clickable", onclick: () => showRun(r.id) },
-    h("td", {}, badge(r.status)), h("td", { text: when(r.started) }), h("td", { text: r.trigger || "" }),
+    h("td", {}, h("button", { class: "row-open", type: "button", "data-key": `run-${r.id}`,
+      "aria-label": `Open the run of ${when(r.started)}: ${r.status}`,
+      onclick: (e) => { e.stopPropagation(); showRun(r.id); } }, badge(r.status))),
+    h("td", { text: when(r.started) }), h("td", { text: r.trigger || "" }),
     h("td", { class: "num", text: num(r.items) }), h("td", { class: "num", text: num(r.bibs) }),
     h("td", { class: "mono", text: r.folder || "" }),
-    h("td", { class: "muted", text: r.released_by ? `released by ${r.released_by}` : (r.error || r.held || "").slice(0, 90) })))));
+    h("td", { class: "muted", text: r.released_by ? `released by ${r.released_by}` : (pageWords(r.error || r.held) || "").slice(0, 90) })))));
 }
 
 // ------------------------------------------------------------ result panel
@@ -329,7 +505,7 @@ function resultPanel() {
   }
   if (R.error) {
     return [notice, h("div", { class: "result-head" }, badge("failed"), h("span", { class: "label", text: "Did not run" })),
-      h("div", { class: "result-body" }, h("p", { class: "error-text", text: R.error }),
+      h("div", { class: "result-body" }, h("p", { class: "error-text", text: pageWords(R.error) }),
         R.job && R.job.log.length ? h("pre", { class: "log", text: R.job.log.join("\n") }) : null)];
   }
   const run = R.run || {};
@@ -342,16 +518,17 @@ function resultPanel() {
     h("span", { class: "stat" }, "Bibs ", h("b", { text: num(run.bibs ?? b.bibs_written) })),
     h("span", { class: "stat" }, "Items ", h("b", { text: num(run.items ?? b.items_written) })),
     h("span", { class: "stat" }, "Files ", h("b", { text: (run.files || []).length })),
+    openFolderButton(run, "btn-folder-result"),
     S.feed && S.feed.waiting && S.feed.waiting.id === run.id
-      ? h("button", { class: "btn btn-primary", type: "button", disabled: busy(), onclick: reviewRelease }, "Review and send…") : null,
-    h("div", { class: "result-tabs", role: "tablist" }, tabs.map((t) => h("button", {
-      class: "tab", type: "button", role: "tab", "aria-selected": R.tab === t ? "true" : "false",
-      onclick: () => { R.tab = t; renderResult(); if (t === "rows") loadRows(); },
-    }, t[0].toUpperCase() + t.slice(1)))));
+      ? h("button", { class: "btn btn-primary", type: "button", id: "btn-review-result", disabled: busy(), onclick: reviewRelease }, "Review and send…") : null,
+    tablist("result-tabs", "result", tabs, tabs.includes(R.tab) ? R.tab : "rows", "Result views", label,
+      (t) => { R.tab = t; renderResult(); if (t === "rows") loadRows(); }));
+  const tab = tabs.includes(R.tab) ? R.tab : "rows";
+  const panel = { role: "tabpanel", id: "result-panel", "aria-labelledby": `result-tab-${tab}`, tabindex: "0", "data-scroll": "result" };
   let body;
-  if (R.tab === "summary") body = h("div", { class: "result-body" }, runSummary(run, rep));
-  else if (R.tab === "log") body = h("div", { class: "result-body" }, h("pre", { class: "log", text: (R.job ? R.job.log : []).join("\n") }));
-  else body = h("div", { class: "result-body flush" }, rowsView(R));
+  if (tab === "summary") body = h("div", { class: "result-body", ...panel }, runSummary(run, rep));
+  else if (tab === "log") body = h("div", { class: "result-body", ...panel }, h("pre", { class: "log", text: (R.job ? R.job.log : []).join("\n") }));
+  else body = h("div", { class: "result-body flush", ...panel }, rowsView(R));
   return [notice, head, body];
 }
 
@@ -363,11 +540,11 @@ function runSummary(run, rep) {
       ["Status", h("span", {}, badge(run.status), " ", run.status)],
       ["Started", when(run.started)],
       ["Recipe", run.recipe],
-      rep.held ? ["Held because", rep.held] : null,
-      run.error ? ["Problem", h("span", { class: "error-text", text: run.error })] : null,
-      run.released_after ? ["Released despite", run.released_after] : null,
+      rep.held ? ["Held because", pageWords(rep.held)] : null,
+      run.error ? ["Problem", h("span", { class: "error-text", text: pageWords(run.error) })] : null,
+      run.released_after ? ["Released despite", pageWords(run.released_after)] : null,
       run.released_by ? ["Released by", run.released_by] : null,
-      run.next ? ["Next step", run.next] : null,
+      nextStep(run.status, S.feed) ? ["Next step", nextStep(run.status, S.feed)] : null,
       ["Items left out", skipped || "none"],
       b.items_without_barcode ? ["Items without barcode", num(b.items_without_barcode)] : null,
       b.duplicate_barcodes ? ["Duplicate barcodes", num(b.duplicate_barcodes)] : null,
@@ -387,9 +564,9 @@ function rowsView(R) {
   if (!r.header.length) return h("div", { class: "result-body" }, h("p", { class: "muted", text: "This run has no item rows to show." }));
   return [h("div", { class: "result-head" }, h("span", { class: "stat" }, h("b", { text: r.file })),
       h("span", { class: "stat", text: r.total > r.rows.length ? `first ${num(r.rows.length)} of ${num(r.total)} rows` : `${num(r.total)} rows` }),
-      (r.outputs || []).length > 1 ? h("select", { onchange: (e) => loadRows(e.target.value) },
+      (r.outputs || []).length > 1 ? h("select", { id: "rows-output", "aria-label": "Which file", onchange: (e) => loadRows(e.target.value) },
         r.outputs.map((o) => h("option", { value: o, selected: o === r.output }, o))) : null),
-    h("div", { class: "table-wrap" }, h("table", { class: "rows" },
+    h("div", { class: "table-wrap", "data-scroll": "rows" }, h("table", { class: "rows" },
       h("thead", {}, h("tr", {}, r.header.map((c) => h("th", { text: c })))),
       h("tbody", {}, r.rows.map((row) => h("tr", {}, row.map((c) => h("td", { text: c }))))))) ];
 }
@@ -408,11 +585,22 @@ async function loadRows(output) {
 
 async function showRun(id) {
   const name = S.feed.name;
-  const run = await api(`/api/runs/${id}`);
+  let run;
+  try {
+    run = await api(`/api/runs/${id}`);
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  if (S.job && S.job.feed === name) {            // a running job owns the result panel
+    toast("Wait for the running action to finish, then open the run again.");
+    return;
+  }
   S.results[name] = { run, report: run.report, tab: "rows" };
   if (S.feed && S.feed.name === name) {
     renderResult();
     loadRows();
+    announce(`Showing the run of ${when(run.started)} below.`);
   }
 }
 
@@ -463,6 +651,7 @@ async function follow(job) {
   S.job = job;
   if (job.feed) S.results[job.feed] = { job: { ...job, log: job.log || [] }, tab: "rows" };
   renderSidebar();
+  announce(`${{ preview: "Previewing", run: "Running", build: "Building", release: "Sending", check: "Checking the connection" }[job.kind] || "Working"}${job.feed ? ` ${job.feed}` : ""}…`);
   if (S.view && S.view.type === "feed" && S.feed) renderFeed();
   let done = null;
   try {
@@ -543,7 +732,7 @@ async function reviewRelease() {
     h("h2", { text: "Send these files?" }),
     kv([
       ["Run", `${when(s.built)}, ${s.recipe}`],
-      ["Waiting because", s.reason || "it was built without sending"],
+      ["Waiting because", pageWords(s.reason) || "it was built without sending"],
       ["Items", last ? `${num(s.items)} (last delivery ${num(last)}, ${when(s.last_delivered)})` : `${num(s.items)} (nothing delivered there before)`],
       ["Bibs", num(s.bibs)],
       ["Sends to", h("span", { class: "mono", text: s.destination })],
@@ -570,7 +759,7 @@ async function reviewRelease() {
 let lastCheck = null;
 function renderConnection() {
   const s = S.site;
-  const run = h("button", { class: "btn btn-primary", type: "button", disabled: busy(), onclick: runCheck }, "Check connection");
+  const run = h("button", { class: "btn btn-primary", type: "button", id: "btn-check-main", disabled: busy(), onclick: runCheck }, "Check connection");
   const parts = [h("div", { class: "feed-head" }, h("div", { class: "title-row" }, h("h1", { text: "Connection" }),
       h("span", { class: "sub", text: "FOLIO" }), h("div", { class: "spacer" }), run))];
   const body = [kv([
@@ -581,6 +770,16 @@ function renderConnection() {
     ["Alerts", s.alerts.on === "never" || (!s.alerts.webhook && !s.alerts.email) ? "none set up" : [s.alerts.webhook && "webhook", s.alerts.email && "email"].filter(Boolean).join(" and ")],
     ["Site folder", h("span", { class: "mono", text: s.root })],
   ])];
+  const warnings = s.warnings || [];
+  body.push(h("div", { class: "section-title", text: "Before you leave it to run on its own" }),
+    warnings.length ? h("ul", { class: "warnings" }, warnings.map((w) => {
+      const [cls, word] = LEVELS[w.level] || LEVELS.note;
+      const known = w.feed && s.feeds.some((f) => f.name === w.feed);
+      return h("li", {}, badge(cls, word),
+        h("p", {}, w.feed ? h("b", { text: `${w.feed}: ` }) : null, warningText(w, false)),
+        known ? h("button", { class: "btn btn-small", type: "button", "data-key": `warn-${w.code}-${w.feed}`,
+          onclick: () => go({ type: "feed", name: w.feed }) }, "Open feed") : null);
+    })) : h("p", { class: "muted", text: "Nothing to look at: every feed is set up to run on its own." }));
   if (lastCheck && lastCheck.running) body.push(h("p", {}, h("span", { class: "spinner" }), " Checking…"));
   else if (lastCheck && lastCheck.error) body.push(h("div", { class: "notice notice-failed" }, h("p", { text: lastCheck.error })));
   else if (lastCheck && lastCheck.result) {
@@ -643,7 +842,7 @@ async function renderActivity() {
     h("div", { class: "pane" }, rows.length ? h("table", {}, h("thead", {}, h("tr", {}, ["When", "Who", "Feed", "What", "Details"].map((t) => h("th", { text: t })))),
       h("tbody", {}, rows.map((a) => h("tr", {}, h("td", { text: when(a.ts) }), h("td", { text: a.actor || "" }),
         h("td", { text: a.feed || "" }), h("td", { text: a.action }),
-        h("td", { class: "mono", text: JSON.stringify(a.detail || {}).slice(0, 160) })))))
+        h("td", { text: detailText(a.detail).slice(0, 240) })))))
       : h("p", { class: "muted", text: "Nothing recorded yet." })));
 }
 
@@ -651,8 +850,91 @@ async function renderActivity() {
 $("btn-check").addEventListener("click", runCheck);
 $("nav-connection").addEventListener("click", () => go({ type: "connection" }));
 $("nav-activity").addEventListener("click", () => go({ type: "activity" }));
+// ------------------------------------------------------------ keeping the page current
+// Scheduled runs happen while the page sits open. Every 45 seconds, and when the tab comes back into view,
+// the sidebar and the open feed are fetched again and redrawn only if something changed, keeping the scroll
+// position and the focus. Nothing is fetched while the tab is hidden, a job is running (it has its own
+// polling), the dialog is open or the Run menu or a drop-down is in use.
+const REFRESH_MS = 45000;
+let lastRefresh = Date.now();
+
+function quiet() {
+  const a = document.activeElement;
+  return document.hidden || busy() || $("modal").open || !!document.querySelector(".menu:not([hidden])")
+    || (a && a.tagName === "SELECT");
+}
+
+function snapshot() {
+  const a = document.activeElement;
+  return {
+    key: a && a !== document.body ? a.id || (a.dataset && a.dataset.key) || null : null,
+    scrolls: [...document.querySelectorAll("#main [data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop, el.scrollLeft]),
+    main: $("main").scrollTop, page: window.scrollY,
+  };
+}
+
+function restore(snap) {
+  for (const [k, top, left] of snap.scrolls) {
+    const el = document.querySelector(`#main [data-scroll="${k}"]`);
+    if (el) { el.scrollTop = top; el.scrollLeft = left; }
+  }
+  $("main").scrollTop = snap.main;
+  window.scrollTo(window.scrollX, snap.page);
+  if (!snap.key) return;
+  const el = document.getElementById(snap.key) || document.querySelector(`[data-key="${CSS.escape(snap.key)}"]`);
+  if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+}
+
+function redraw(draw) {
+  const snap = snapshot();
+  draw();
+  restore(snap);
+}
+
+async function refresh() {
+  if (quiet()) return;
+  lastRefresh = Date.now();
+  const nav = S.nav;
+  let site;
+  try {
+    site = await api("/api/site");
+  } catch (e) {
+    return;                                  // quiet: the next turn tries again
+  }
+  if (nav !== S.nav || quiet()) return;
+  const siteChanged = JSON.stringify(site) !== JSON.stringify(S.site);
+  if (siteChanged) redraw(() => applySite(site));
+  if (busy()) return;                        // applySite found a job started elsewhere and follows it
+  const v = S.view;
+  if (v && v.type === "connection" && siteChanged && !(lastCheck && lastCheck.running)) {
+    redraw(renderConnection);
+  } else if (v && v.type === "feed" && S.feed && S.feed.name === v.name) {
+    let feed, runs;
+    try {
+      feed = await api(`/api/feeds/${v.name}`);
+      runs = await api(`/api/feeds/${v.name}/runs?limit=50`);
+    } catch (e) {
+      return;
+    }
+    if (nav !== S.nav || quiet() || !S.feed || S.feed.name !== v.name) return;
+    if (!siteChanged && JSON.stringify(feed) === JSON.stringify(S.feed) && JSON.stringify(runs) === JSON.stringify(S.runs)) return;
+    S.feed = feed;
+    S.runs = runs;
+    redraw(renderFeed);
+  }
+}
+
+setInterval(refresh, REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - lastRefresh > 5000) refresh();
+});
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeMenus();
+  if (e.key === "Escape") {
+    const inMenu = e.target.closest && e.target.closest(".split");
+    closeMenus();
+    if (inMenu && $("btn-run-more")) $("btn-run-more").focus();
+  }
   if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
   // Ctrl+Enter previews (it never sends anything), and never while a dialog or a form field has the keys.
   if ($("modal").open || (e.target.closest && e.target.closest("dialog, input, select, textarea"))) return;

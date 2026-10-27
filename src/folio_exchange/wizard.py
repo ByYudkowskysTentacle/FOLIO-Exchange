@@ -617,12 +617,28 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
 
     # 9. Done
     p.say(f"\nSaved {SITE_FILE} and feeds/{name}.yaml in {root}.")
-    if not raw["enabled"]:
-        p.say(f"The feed is paused. When it is ready, run `folio-exchange feeds resume {name}`.")
-    p.say("Next steps:")
-    p.say(f"  1. folio-exchange -s \"{root}\" run {name}     (the first delivery is held for you to check)")
-    p.say(f"  2. folio-exchange -s \"{root}\" release {name} (sends it once you are happy)")
-    p.say(f"  3. folio-exchange -s \"{root}\" schedule      (shows the one command that schedules it)")
+    fx = f"folio-exchange -s \"{root}\""
+    if d.get("transport") in ("sftp", "local"):
+        if not raw["enabled"]:
+            first = ("Once the vendor has given you the key fingerprint, run init again to confirm it. Then t"
+                     if d.get("host_key_confirmed") is False else "T")
+            p.say(f"The feed is paused. {first}est the delivery with `{fx} check --delivery {name}`, then resume it "
+                  f"with `{fx} feeds resume {name}`.")
+        p.say("Next steps:")
+        p.say(f"  1. {fx} run {name}   (the first delivery is held for you to check)")
+        p.say(f"  2. {fx} release {name}   (sends it once you are happy)")
+        p.say(f"  3. {fx} schedule   (shows the command that schedules it)")
+    else:
+        if not raw["enabled"]:
+            p.say(f"The feed is paused. When it is ready, run `{fx} feeds resume {name}`.")
+        p.say("Next steps for a dry run (nothing is sent anywhere):")
+        p.say(f"  1. {fx} check   (login, permissions and record counts)")
+        p.say(f"  2. {fx} preview {name}   (a few rows from a sample)")
+        p.say(f"  3. {fx} run {name} --no-deliver   (the full files, in a dated folder under "
+              f"{site.out_dir / name})")
+        p.say(f"  4. {fx} history   (the runs; history --show <number> for one)")
+        p.say("When the vendor's delivery details are ready, run init again and choose how the files are "
+              "delivered. The first real delivery is then held for you to check and release.")
     if os.name == "nt":
         p.say(f"  Tip: setx FOLIO_EXCHANGE_SITE \"{root}\" lets you leave out -s in new windows.")
     return 0
