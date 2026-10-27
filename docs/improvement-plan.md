@@ -75,6 +75,8 @@ Decide these with the partner library when its vendor is chosen. Several change 
 
 ## Also: a second review round
 
+_Done on 27 October 2026: `docs/review-2026-10-27-round-2.md` (19 verified findings in four groups, none high)._
+
 The review's completeness check named four areas that the first round covered thinly. A focused round on these should run before or alongside batch 3:
 - field values in the output files (`fields.py`, `dates.py`, the delimited writer, MARC built from instances);
 - unattended scheduled running on a Windows PC, end to end;
