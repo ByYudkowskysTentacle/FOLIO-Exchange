@@ -18,13 +18,13 @@ from pathlib import Path
 from . import __version__, checks, credentials, delivery, notify, schedule
 from .build import BuildReport, build
 from .cache import Cache
-from .client import FolioClient, FolioError, LoginFailed
-from .config import Site, read_yaml
+from .client import FolioClient, FolioError, LoginFailed, tls_verify
+from .config import BUNDLED_RECIPES, Site, read_yaml
 from .dates import now_utc
 from .errors import ConfigError, DeliveryError, FxError, LockBusy, SafetyCheckFailed
 from .history import History, current_user, file_digest
 from .lock import RunLock
-from .recipe import Feed, feed_paths
+from .recipe import Feed, feed_paths, layout_changes, layout_signature, recipe_digest
 from .sync import Syncer, reads_to_sync
 
 log = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def client_for(site: Site) -> FolioClient:
     f = site.folio
     return FolioClient(
         f["base_url"], f["tenant"], f["username"], site.folio_password() or "",
-        timeout=float(f["timeout_seconds"]), max_retries=int(f["max_retries"]), verify_tls=bool(f["verify_tls"]),
+        timeout=float(f["timeout_seconds"]), max_retries=int(f["max_retries"]), verify_tls=tls_verify(f, site.root),
     )
 
 
@@ -93,16 +93,34 @@ def _major(version: str | None) -> str | None:
 
 
 def hold_reason(hist: History, feed: Feed) -> str | None:
-    """Why the next delivery must wait for a person, or None. A first delivery to a destination, and the first
-    after a major recipe version change, are held."""
+    """Why the next delivery must wait for a person, or None. A first delivery to a destination, the first
+    after a major recipe version change, and the first whose layout differs from the last delivery to that
+    destination are held. A delivery recorded before layouts were kept has none: that alone never holds."""
     dest = delivery.destination_key(feed.delivery)
     last = hist.last_delivered(feed.name, dest)
     if last is None:
         return f"first delivery to {dest}"
+    reasons = []
     if _major(last.get("recipe_version")) != _major(feed.recipe.version_str):
-        return (f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
-                f"{last.get('recipe_version')})")
-    return None
+        reasons.append(f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
+                       f"{last.get('recipe_version')})")
+    note = layout_note(last, layout_signature(feed))
+    if note:
+        reasons.append(note)
+    return "; ".join(reasons) or None
+
+
+def layout_note(last: dict | None, layout: object) -> str | None:
+    """What changed in the files' layout since the delivery ``last``, or None when nothing did, or when either
+    side has no recorded layout (runs from before layouts were kept)."""
+    before = ((last or {}).get("report") or {}).get("layout")
+    if not isinstance(before, dict) or not isinstance(layout, dict):
+        return None
+    changes = layout_changes(before, layout)
+    if not changes:
+        return None
+    when = _local((last or {}).get("started"))
+    return f"the files' layout changed since the last delivery on {when}: " + "; ".join(changes)
 
 
 def _local(iso: str | None) -> str:
@@ -173,7 +191,7 @@ def redact(data, key: str = ""):
         return [redact(v, key) for v in data]
     if key.lower() in credentials.SECRET_KEYS:
         return "[removed: secrets never go in files]"
-    if key in ("secret", "webhook") and data is not None and not credentials.is_secret_ref(data):
+    if key in ("secret", "webhook", "heartbeat") and data is not None and not credentials.is_secret_ref(data):
         return "[removed: not keyring or env:NAME]"
     return data
 
@@ -183,15 +201,28 @@ def _flatten(data, prefix: str = "") -> dict[str, object]:
     if isinstance(data, dict):
         for k, v in data.items():
             out.update(_flatten(v, f"{prefix}.{k}" if prefix else str(k)))
+    elif isinstance(data, list) and any(isinstance(v, dict) for v in data):    # e.g. outputs, columns
+        for i, v in enumerate(data):
+            out.update(_flatten(v, f"{prefix}[{i}]"))
     else:
         out[prefix] = data
     return out
 
 
+def site_recipe_paths(site: Site) -> list[Path]:
+    """The recipe files in the site's own recipe folders (not the ones bundled with the program)."""
+    bundled = BUNDLED_RECIPES.resolve()
+    skip = {bundled, site.root.resolve()}
+    return [p for d in site.recipe_dirs if d.is_dir() and d.resolve() not in skip
+            for p in sorted(d.glob("*/*.yaml")) if p.is_file()]
+
+
 def audit_settings(site: Site, hist: History) -> list[str]:
-    """Audit hand edits to site.yaml and the feed files since the last check (the files hold no secrets)."""
+    """Audit hand edits to site.yaml, the feed files and the site's own recipe files since the last check (the
+    files hold no secrets)."""
     changed: list[str] = []
-    for path in [site.root / "site.yaml", *feed_paths(site)]:
+    feeds = feed_paths(site)
+    for path in [site.root / "site.yaml", *feeds, *site_recipe_paths(site)]:
         rel = path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
         key = f"settings:{rel}"
         try:
@@ -208,7 +239,7 @@ def audit_settings(site: Site, hist: History) -> list[str]:
         before, after = _flatten(json.loads(stored)), _flatten(current)
         diff = {k: {"from": before.get(k), "to": after.get(k)}
                 for k in sorted(set(before) | set(after)) if before.get(k) != after.get(k)}
-        hist.audit(None, path.stem if rel.startswith(site.paths["feeds"]) else None, "settings changed",
+        hist.audit(None, path.stem if path in feeds else None, "settings changed",
                    {"file": rel, "changes": diff})
         changed.append(rel)
     for path in feed_paths(site):
@@ -239,7 +270,10 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         "version": __version__, "feed": feed.name, "recipe": feed.recipe.id,
         "recipe_version": feed.recipe.version_str, "trigger": opts.trigger, "started": now_utc().isoformat(),
         "run_dir": str(run_dir), "destination": delivery.describe_destination(feed.delivery),
+        "recipe_sha256": recipe_digest(feed.recipe), "layout": layout_signature(feed),
     }
+    if site.folio.get("verify_tls") is False:
+        report["tls_unchecked"] = True                 # FOLIO's certificate was not checked (folio.verify_tls)
     status, code, error = "success", 0, None
     rep: BuildReport | None = None
     digests: list[dict] = []
@@ -600,7 +634,8 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
             "recipe": f"{row.get('recipe')}@{row.get('recipe_version')}", "bibs": row.get("bibs"),
             "items": row.get("items"), "last_delivered_items": last.get("items") if last else None,
             "last_delivered": last.get("started") if last else None,
-            "reason": row.get("error") or (row.get("report") or {}).get("held"),
+            "reason": row.get("error") or (row.get("report") or {}).get("held")
+            or layout_note(last, (row.get("report") or {}).get("layout")),
             "files": [(f["name"], f["bytes"]) for f in files], "destination": delivery.describe_destination(
                 feed.delivery),
             "newer_runs": [r["run_dir"] for r in hist.runs(feed.name, 20)

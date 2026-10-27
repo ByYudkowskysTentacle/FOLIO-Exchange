@@ -6,10 +6,13 @@ words and shows them.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import runner
+from . import runner, schedule
 from .config import read_yaml, rewrite_key
 from .errors import ConfigError
 from .history import History
@@ -67,6 +70,108 @@ def _resume_checked(site: Site, name: str, path) -> None:
         raise ConfigError(f"{name} stays paused: resuming it would stop feed {other} from loading.\n{problem}")
 
 
+LAST_DUE_START = "last_due_start"          # history meta: when `run --due` last started (UTC, ISO)
+TASK_STALE_AFTER = timedelta(hours=2)
+
+
+def record_due_start(hist: History, now: datetime) -> None:
+    """Note that the scheduled task started a pass (SPEC-6), so a stopped task shows up."""
+    hist.set_meta(LAST_DUE_START, now.astimezone(timezone.utc).isoformat(timespec="seconds"))
+
+
+def last_due_start(hist: History) -> datetime | None:
+    """When the scheduled task last started: the recorded start, or else the newest scheduled run (a site
+    from before starts were recorded)."""
+    raw = hist.get_meta(LAST_DUE_START)
+    if not raw:
+        raw = next((r["started"] for r in hist.runs(None, 200) if r.get("trigger") == "schedule"), None)
+    try:
+        return datetime.fromisoformat(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def ago(delta: timedelta) -> str:
+    """'25 minutes', '3 hours', '2 days'."""
+    minutes = max(0, int(delta.total_seconds() // 60))
+    if minutes < 120:
+        n, unit = minutes, "minute"
+    elif minutes < 48 * 60:
+        n, unit = minutes // 60, "hour"
+    else:
+        n, unit = minutes // (24 * 60), "day"
+    return f"{n} {unit}{'' if n == 1 else 's'}"
+
+
+def run_started(lock_path: Path) -> datetime | None:
+    """When the run that holds the site's lock took it, or None when no run holds it.
+
+    It only looks: taking the lock, even for a moment, could turn away a run starting at that instant. On
+    Windows a held lock's byte cannot be read through another handle; on Linux the kernel lists held locks in
+    /proc/locks. Elsewhere it cannot tell and says None. A run writes its process ID when it takes the lock, so
+    the file's modified time is when it started."""
+    path = Path(lock_path)
+    try:
+        started = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    except (OSError, ValueError):
+        return None
+    return started if _lock_held(path) else None
+
+
+def _lock_held(path: Path) -> bool:
+    if sys.platform == "win32":
+        try:
+            with open(path, "rb") as fh:
+                fh.read(1)
+        except PermissionError:          # the locked byte: another handle holds it
+            return True
+        except OSError:
+            return False
+        return False
+    try:
+        st = path.stat()
+        with open("/proc/locks", encoding="ascii", errors="replace") as fh:
+            locks = fh.read().splitlines()
+    except OSError:
+        return False
+    # "1: FLOCK  ADVISORY  WRITE 2785 08:01:1311759 0 EOF": device major and minor in hex, then the inode.
+    me = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    return any(len(parts) > 5 and "->" not in parts and parts[5] == me
+               for parts in (line.split() for line in locks))
+
+
+def task_status(hist: History, feeds: list[Feed], now: datetime, *, lock_path: Path | None = None) -> dict:
+    """How the hourly scheduled task is doing: {state: running | ok | stale | never | unneeded, last, text}
+    (and ``since`` while running).
+
+    It matters only while an enabled feed runs on a schedule; otherwise a stopped task is no warning. While a
+    pass holds the site's lock (``lock_path``), Task Scheduler does not start the task again, so a long pass (a
+    first full sync can take hours) is "running", not "stale". A run that took the lock more than two hours
+    after the task last started is not that pass (a manual run while the task is stopped), so it hides nothing."""
+    scheduled = any(f.enabled and schedule.parse(f.schedule).kind != "manual" for f in feeds)
+    last = last_due_start(hist)
+    since = run_started(lock_path) if lock_path is not None else None
+    if since is not None and (last is None or since - last <= TASK_STALE_AFTER):
+        stamp = last.astimezone(timezone.utc).isoformat(timespec="seconds") if last else None
+        text = (f"A run has been going since {since:%Y-%m-%d %H:%M} UTC ({ago(now - since)}); the hourly task "
+                "starts again once it finishes. A first sync of a large catalogue can take several hours.")
+        return {"state": "running", "last": stamp, "since": since.isoformat(timespec="seconds"), "text": text}
+    if last is None:
+        state = "never" if scheduled else "unneeded"
+        text = ("Scheduled runs have not started yet: no feed runs on its own until the hourly task is "
+                "registered. Register it with `folio-exchange schedule --register`.")
+        return {"state": state, "last": None, "text": text}
+    age = now - last
+    stamp = last.astimezone(timezone.utc).isoformat(timespec="seconds")
+    if scheduled and age > TASK_STALE_AFTER:
+        text = (f"The scheduled task last ran {ago(age)} ago, so no feed has run on its schedule and no alert "
+                "could be sent since. Check that this computer is on and awake and that the task is enabled in "
+                "Task Scheduler. After a change of Windows password, the task needs the new one: register it "
+                "again with `folio-exchange schedule --register`.")
+        return {"state": "stale", "last": stamp, "text": text}
+    return {"state": "ok", "last": stamp, "text": f"The scheduled task last ran {ago(age)} ago."}
+
+
 def _w(level: str, code: str, text: str, feed: str | None = None) -> dict:
     return {"level": level, "code": code, "text": text, "feed": feed}
 
@@ -82,12 +187,29 @@ def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors:
             out.append(_w("problem", "feed-file", err, name))
     for problem in library.problems():
         out.append(_w("problem", "recipe-file", problem))
+    for text in library.shadow_warnings():
+        out.append(_w("warning", "recipe-shadow", text))
+    from .permissions import problems as permission_problems
+
+    for text in permission_problems(site):
+        out.append(_w("warning", "folder-access", text))
     if not site.alerts.get("webhook") and not site.alerts.get("email"):
         out.append(_w("warning", "no-alerts", "No alert channel is set up, so a failed scheduled run would go "
                       "unnoticed. Add alerts.webhook or alerts.email to site.yaml, then run "
                       "`folio-exchange check --alerts`."))
     elif site.alerts.get("on") == "never":
         out.append(_w("warning", "alerts-never", "alerts.on is never: failed runs send no alert."))
+    task = task_status(hist, feeds, now, lock_path=site.lock_path)
+    if task["state"] == "stale":
+        out.append(_w("warning", "task-stale", task["text"]))
+    elif task["state"] == "never":
+        out.append(_w("note", "task-never", task["text"]))
+    if site.folio.get("verify_tls") is False:
+        out.append(_w("warning", "tls-off", "folio.verify_tls is false, so FOLIO's certificate is not checked: "
+                      "anyone between this computer and FOLIO could read the service account's password and the "
+                      "data. If FOLIO's certificate comes from your campus or a network proxy, set folio.ca_bundle "
+                      "to that certificate's PEM file (or to windows, to trust the Windows certificate store) and "
+                      "set verify_tls back to true."))
     for f in feeds:
         if only and f.name != only:
             continue

@@ -1,6 +1,6 @@
 # Working notes
 
-_Last updated: 27 October 2026, when FOLIOHQ became the home of the collectionHQ recipe. Read with `docs/spec.md` and `docs/design.md`._
+_Last updated: 27 October 2026, after batch 1 of the improvement plan. Read with `docs/spec.md` and `docs/design.md`._
 
 ## Where things stand
 
@@ -21,6 +21,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - The whole pipeline: recipe library and feed overlay, read-only FOLIO client with patron and redirect guards, sync, MARC and delimited builders, checks, SFTP and local delivery, run history and audit, schedules, alerts, the runner, the command line and the guided `init`.
 - Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
 - A design and function review on 27 Oct (`docs/review-2026-10-27.md`) verified 71 findings; the 27 in "Fix now" are fixed, and the rest are planned in `docs/improvement-plan.md`.
+- Batch 1 of the plan is done: any change to a feed's delivered layout holds the next delivery and says what changed; `check`, `feeds` and the page warn when the hourly task has not run for two hours, and an optional heartbeat URL tells an outside monitor; `check` warns about folders other Windows users can change, and the guide installs under `%LOCALAPPDATA%`; `folio.ca_bundle` (a PEM file or the Windows certificate store) replaces turning TLS checks off; the page opens only through a one-time link; staff data is dropped from cached records; dependencies are pinned in `constraints.txt`. No release tag yet: the guide and installer still install `main`.
 - Batch 2 of the plan is done: a shared feed-operations core (`feedops.py`), paused and dry-run feeds handled plainly on the command line, a schedule command that works in PowerShell, guide sections for going live and updating, and a keyboard-usable, self-refreshing page.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data. Since 27 Oct 2026, FOLIOHQ's CI checks it on every change.
@@ -94,8 +95,13 @@ Still open: patron data, upkeep and funding, a proposal to the FOLIO community (
 
 **GitHub**
 - On this account, GitHub Actions in private repos is blocked by billing; public repos run free.
-- Current Node 24 action versions (Oct 2026): `actions/checkout@v7`, `actions/setup-python@v7`, `actions/cache@v6`, `actions/upload-artifact@v7`.
+- Current Node 24 action versions (Oct 2026): `actions/checkout@v7`, `actions/setup-python@v7`, `actions/cache@v6`, `actions/upload-artifact@v7`. CI pins each action to the full commit SHA of its tag, with the tag in a comment; look the commit up read-only with `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` when moving to a new version.
 - Commits use the GitHub noreply address, so no personal email is published.
+
+**Refreshing `constraints.txt`** (on purpose, in a change of its own; CI and the installer both install with it):
+1. In a fresh venv on Windows with Python 3.12, install FOLIO-Exchange alone, so pip picks the newest versions: `py -3.12 -m venv ../venv-constraints` (outside the repository), then `../venv-constraints/Scripts/python -m pip install .`
+2. `../venv-constraints/Scripts/python -m pip freeze --exclude folio-exchange` lists the runtime packages. Put those lines in `constraints.txt` under its header. Keep the environment markers: `sys_platform == "win32"` on `pywin32-ctypes`, and the `python_version` pairs for packages whose newest version needs Python 3.11 (check on PyPI which version is the newest for 3.10). Leave out the Linux-only and older-Python packages the header names.
+3. Install the dev tools with the new file (`../venv-constraints/Scripts/python -m pip install -c constraints.txt -e ".[dev]"`), run the tests and ruff, and let CI check Linux (Python 3.10 to 3.13) before merging.
 
 ## Next steps
 

@@ -34,12 +34,13 @@ SITE_DEFAULTS: dict[str, Any] = {
         "timeout_seconds": 120,
         "max_retries": 5,
         "verify_tls": True,
+        "ca_bundle": None,
         "srs_include_shared": False,
     },
     "sync": {"mode": "auto", "full_refresh_days": 30},
     "paths": {"data": "data", "out": "out", "logs": "logs", "feeds": "feeds", "recipes": ["recipes"]},
     "runs": {"keep_local_runs": 5, "history_months": 12, "max_attempts_per_slot": 3, "timezone": None},
-    "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None},
+    "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None, "heartbeat": None},
     "recipe_sources": [],
 }
 
@@ -280,6 +281,9 @@ def validate_site(cfg: dict) -> list[str]:
     for key in ("verify_tls", "srs_include_shared"):
         if not isinstance(f.get(key), bool):
             p.append(f"folio.{key}: must be true or false")
+    if f.get("ca_bundle") is not None and not (isinstance(f["ca_bundle"], str) and f["ca_bundle"].strip()):
+        p.append("folio.ca_bundle: the path of a PEM file of trusted certificates, or windows (the Windows "
+                 "certificate store)")
 
     s = cfg["sync"]
     if s.get("mode") not in {"auto", "full", "delta"}:
@@ -317,6 +321,8 @@ def validate_site(cfg: dict) -> list[str]:
         p.append("alerts.webhook_format: must be slack (Slack, Mattermost, Google Chat) or teams (Teams Workflows)")
     if a.get("webhook") is not None and not credentials.is_secret_ref(a["webhook"]):
         p.append("alerts.webhook: must be keyring or env:NAME (the URL itself is a secret)")
+    if a.get("heartbeat") is not None and not credentials.is_secret_ref(a["heartbeat"]):
+        p.append("alerts.heartbeat: must be keyring or env:NAME (a monitor's ping URL is a secret)")
     email = a.get("email")
     if email is not None:
         if not isinstance(email, dict):

@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 
 from . import credentials, delivery, runner, schedule
-from .client import FolioClient, probe
+from .client import FolioClient, probe, tls_verify
 from .config import SITE_FILE, load_site, read_yaml, write_yaml
 from .errors import ConfigError, FxError
 from .history import History
@@ -143,6 +143,13 @@ class ScriptedPrompter(Prompter):
 
 
 # ------------------------------------------------------------------ helpers
+TLS_OFF_WARNING = ("WARNING  folio.verify_tls is false in site.yaml, so FOLIO's certificate is not checked: anyone "
+                   "between this computer and FOLIO could read the service account's password. If FOLIO's "
+                   "certificate comes from your campus or a network proxy, set folio.ca_bundle to that "
+                   "certificate's PEM file (or to windows, for the Windows certificate store) and set verify_tls "
+                   "back to true.")
+
+
 def _required(answer: str) -> str | None:
     return None if answer.strip() else "This is needed."
 
@@ -241,7 +248,8 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
     p.say(f"Site folder: {root}")
     if "onedrive" in str(root).lower() or "dropbox" in str(root).lower():
         p.say("WARNING  This folder looks synced to the cloud. The cache and lock files break in synced "
-              "folders; a plain local folder such as C:\\FOLIO-Exchange\\<tenant> is safer.")
+              "folders; a plain local folder that only you can change, such as "
+              "%LOCALAPPDATA%\\FOLIO-Exchange\\<tenant>, is safer.")
         if not p.confirm("Use it anyway?", False):
             return 1
     root.mkdir(parents=True, exist_ok=True)
@@ -290,10 +298,12 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                 p.say("Nothing was entered. Run init again when you have the password.")
                 return 1
             password = typed
+    if effective.get("verify_tls") is False:
+        p.say(TLS_OFF_WARNING)
     client = FolioClient(effective["base_url"], effective["tenant"], effective["username"], password,
                          timeout=float(effective.get("timeout_seconds", 120)),
                          max_retries=int(effective.get("max_retries", 5)),
-                         verify_tls=bool(effective.get("verify_tls", True)))
+                         verify_tls=tls_verify(effective, root))
     try:
         client.connect()
     except (FxError, requests.RequestException) as exc:

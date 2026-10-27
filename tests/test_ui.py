@@ -1,4 +1,5 @@
 """The local page (`folio-exchange ui`): its safety rules, and the run, review and send flow over its API."""
+import http.client
 import json
 import re
 import shutil
@@ -31,10 +32,13 @@ def server(site):
     httpd.server_close()
 
 
-def call(app, path, body=None, *, token=True, host=None, origin=None):
+def call(app, path, body=None, *, token=True, cookie=True, host=None, origin=None):
+    """A request as the signed-in page makes it: with the cookie a one-time link gives, and the token on POSTs."""
     url = f"http://127.0.0.1:{app.port}{path}"
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET")
+    if cookie:
+        req.add_header("Cookie", f"{app.cookie}={app.session if cookie is True else cookie}")
     if body is not None:
         req.add_header("Content-Type", "application/json")
         if token:
@@ -82,11 +86,306 @@ def test_requests_must_name_this_computer_and_actions_need_the_token(server):
     assert call(server, "/api/check", {}, origin="https://evil.example")[0] == 403
 
 
+def raw(app, method, path, headers=None, body=b""):
+    """One request exactly as given: redirects are not followed and any Content-Length can be sent."""
+    conn = http.client.HTTPConnection("127.0.0.1", app.port, timeout=30)
+    try:
+        conn.putrequest(method, path, skip_host="Host" in (headers or {}))
+        for k, v in (headers or {}).items():
+            conn.putheader(k, v)
+        conn.endheaders(body or None)
+        r = conn.getresponse()
+        return r.status, r.headers, r.read()
+    finally:
+        conn.close()
+
+
+def signed_in(app) -> dict:
+    return {"Cookie": f"{app.cookie}={app.session}", "X-FX-Token": app.token, "Content-Type": "application/json"}
+
+
+def test_the_page_and_its_api_need_the_cookie(server):
+    status, html, _ = call(server, "/", cookie=False)
+    assert status == 403 and server.token.encode() not in html and b"launcher" in html
+    status, err, _ = call(server, "/api/site", cookie=False)
+    assert status == 403 and err["signed_out"] is True and "launcher" in err["error"]
+    assert call(server, "/api/audit", cookie="wrong")[0] == 403
+    assert raw(server, "GET", "/api/site", {"Cookie": f"fx_1={server.session}"})[0] == 403     # another page's name
+    assert call(server, "/api/check", {}, cookie=False)[0] == 403                   # the token alone is not enough
+    assert call(server, "/static/app.js", cookie=False)[0] == 200                   # the package's own files are open
+    assert raw(server, "POST", "/api/check", {**signed_in(server), "X-FX-Token": "é"})[0] == 403
+
+
+def link_path(app, url: str) -> str:
+    """The path of a one-time link, which is always on this run's own fx-….localhost name."""
+    assert url.startswith(app.address) and re.fullmatch(r"fx-[0-9a-f]{16}\.localhost", app.host)
+    return "/" + url.removeprefix(app.address)
+
+
+def test_a_one_time_link_signs_the_browser_in_once(server):
+    path = link_path(server, server.link())
+    assert path.startswith("/?t=")
+    own = {"Host": f"{server.host}:{server.port}"}               # as the browser sends it, following the link
+    status, headers, _ = raw(server, "GET", path, own)
+    cookie = headers["Set-Cookie"]
+    assert status == 303 and headers["Location"] == "/"         # on the same host name
+    assert cookie.startswith(f"fx_{server.port}={server.session};")
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Path=/" in cookie
+    assert "domain" not in cookie.lower()                       # host-only: never sent to 127.0.0.1 or another name
+    status, _, html = raw(server, "GET", "/", {**own, "Cookie": cookie.split(";")[0]})
+    assert status == 200 and server.token.encode() in html
+
+    for used in (path, "/?t=wrong", "/index.html?t=nope"):                              # once only; a wrong code: nothing
+        status, headers, _ = raw(server, "GET", used, own)
+        assert status == 303 and headers["Location"] == "/" and "Set-Cookie" not in headers
+    assert raw(server, "GET", "/", {"Host": f"fx-0000000000000000.localhost:{server.port}"})[0] == 403   # another run's name
+
+
+def test_each_run_has_its_own_host_name(site):
+    first, second = ui.App(site), ui.App(site)
+    assert first.host != second.host and first.host.endswith(".localhost")
+
+
+def test_a_one_time_link_goes_out_of_date(server, monkeypatch):
+    monkeypatch.setattr(ui, "CODE_SECONDS", -1)
+    status, headers, _ = raw(server, "GET", link_path(server, server.link()))
+    assert status == 303 and "Set-Cookie" not in headers
+
+
+def test_whoami_says_which_site_without_saying_where(server, site, tmp_path):
+    status, body, _ = call(server, "/api/whoami", cookie=False)
+    assert status == 200 and body["site"] == ui.site_id(site) and body["app"] == "folio-exchange"
+    assert "proof" not in body and "challenge" not in body                 # no nonce, no proof
+    assert str(site) not in json.dumps(body) and server.token not in json.dumps(body)
+    assert ui._open_for(server.port, site) and not ui._open_for(server.port, tmp_path)
+
+
+def test_whoami_proves_it_knows_the_sites_secret(server, site):
+    nonce = "n" * 24
+    status, body, _ = call(server, f"/api/whoami?nonce={nonce}", cookie=False)
+    secret = ui.page_secret(site)
+    assert status == 200 and body["proof"] == ui.proof(secret, "whoami", server.port, nonce)
+    assert body["challenge"] and server.host not in json.dumps(body)        # the host name is never told
+    assert (site / "data" / ui.SECRET_FILE).is_file() and secret.hex() not in json.dumps(body)
+    assert "proof" not in call(server, "/api/whoami?nonce=short", cookie=False)[1]     # a nonce must be long enough
+
+
+def test_the_page_secret_is_owner_only_before_it_is_written(site, monkeypatch):
+    limited = []
+    monkeypatch.setattr(ui.setupops, "_owner_only", lambda p, **k: limited.append((p, p.stat().st_size)))
+    secret = ui.page_secret(site)
+    assert len(secret) == 32 and ui.page_secret(site) == secret          # made once, then read
+    ((path, size),) = limited
+    assert size == 0 and path.parent == site / "data" and not path.exists()     # the empty temporary file
+
+
+def launch_body(app, site, port=None):
+    """What a second start of the same site sends: a fresh challenge from whoami, answered with the secret."""
+    challenge = call(app, "/api/whoami?nonce=" + "x" * 24, cookie=False)[1]["challenge"]
+    return {"challenge": challenge, "proof": ui.proof(ui.page_secret(site), "launch", port or app.port, challenge)}
+
+
+def test_starting_the_page_again_shows_a_new_link_from_the_running_one(site):
+    shown = []
+    httpd, app = ui.start_in_thread(site, show=lambda url: shown.append(url) or "browser")
+    try:
+        body = launch_body(app, site)
+        status, answer, _ = call(app, "/api/launch", body, token=False, cookie=False)
+        assert status == 200 and answer == {"shown": "browser"}
+        assert call(app, "/api/launch", body, token=False, cookie=False)[0] == 403        # each challenge works once
+        again = launch_body(app, site)
+        assert call(app, "/api/launch", again, token=False, cookie=False)[1] == {"shown": None}   # not again at once
+        assert call(app, "/api/launch", launch_body(app, site), cookie=False, origin="https://evil.example")[0] == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    (url,) = shown
+    assert app.redeem(link_path(app, url).removeprefix("/?t="))
+
+
+def test_launch_without_a_good_proof_is_refused(site):
+    shown = []
+    httpd, app = ui.start_in_thread(site, show=lambda url: shown.append(url) or "browser")
+    try:
+        assert call(app, "/api/launch", {}, token=False, cookie=False)[0] == 403
+        good = launch_body(app, site)
+        assert call(app, "/api/launch", {**good, "proof": "0" * 64}, token=False, cookie=False)[0] == 403
+        assert call(app, "/api/launch", {**good, "challenge": "made-up"}, token=False, cookie=False)[0] == 403
+        other_port = launch_body(app, site, port=app.port + 1)                   # an answer meant for another port
+        assert call(app, "/api/launch", other_port, token=False, cookie=False)[0] == 403
+        wrong_secret = launch_body(app, site)
+        wrong_secret["proof"] = ui.proof(b"s" * 32, "launch", app.port, wrong_secret["challenge"])
+        assert call(app, "/api/launch", wrong_secret, token=False, cookie=False)[0] == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert not shown
+
+
+class Impostor:
+    """Something else on a port that answers /api/whoami as this site's page: with a made-up proof, or by
+    passing the challenge on to the real page and handing back its answer."""
+
+    def __init__(self, site, relay_to=None):
+        import http.server
+
+        self.asked = []
+        impostor = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _answer(self, body):
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):  # noqa: N802
+                impostor.asked.append(("GET", self.path))
+                if relay_to is not None:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{relay_to}{self.path}", timeout=10) as r:
+                        return self._answer(json.loads(r.read()))
+                return self._answer({"app": "folio-exchange", "site": ui.site_id(site), "proof": "0" * 64,
+                                     "challenge": "c" * 24, "address": "http://fx-0.localhost:1/"})
+
+            def do_POST(self):  # noqa: N802
+                impostor.asked.append(("POST", self.path))
+                self._answer({"shown": "browser"})
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.mark.parametrize("relay", [False, True])
+def test_a_second_start_does_not_trust_a_page_that_cannot_prove_it_is_this_sites(site, capsys, monkeypatch, relay):
+    monkeypatch.delenv("FOLIO_EXCHANGE_NO_BROWSER", raising=False)
+    made_to_open = []
+    httpd, real = ui.start_in_thread(site, show=made_to_open.append)      # before serve_forever is stubbed below
+    impostor = Impostor(site, relay_to=real.port if relay else None)
+    opened = []
+    monkeypatch.setattr(ui.webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(ui.threading, "Timer", lambda delay, fn: type("T", (), {"start": staticmethod(fn)})())
+    monkeypatch.setattr(ui._Server, "serve_forever", lambda self, *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(ui, "DEFAULT_PORT", impostor.port)
+    try:
+        assert not ui._open_for(impostor.port, site)
+        ui.serve(site)                                             # moves to a free port instead
+    finally:
+        impostor.close()
+        httpd.shutdown()
+        httpd.server_close()
+    out = capsys.readouterr().out
+    assert "already open" not in out and not made_to_open
+    assert not any(method == "POST" for method, _ in impostor.asked)      # never asked to launch
+    assert f"Port {impostor.port} is in use by something that is not this site's page" in out
+    assert "could pretend to be this page" in out
+    assert len(opened) == 1 and ".localhost:" in opened[0]        # its own page, on its own port and name
+
+
+def test_a_second_start_asks_the_open_page_to_show_itself(site, capsys, monkeypatch):
+    opened = []
+    monkeypatch.setattr(ui.webbrowser, "open", opened.append)
+    monkeypatch.delenv("FOLIO_EXCHANGE_NO_BROWSER", raising=False)
+    shown = []
+    httpd, app = ui.start_in_thread(site, show=lambda url: shown.append(url) or "browser")
+    try:
+        ui.serve(site, port=app.port)                            # returns at once instead of serving
+        first = capsys.readouterr().out
+        ui.serve(site, port=app.port, open_browser=False)
+        second = capsys.readouterr().out
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert "already open" in first and "opening it in your browser" in first
+    assert len(shown) == 1 and not opened                       # the running page opened it, at a link only it knows
+    assert "?t=" not in first + second and "without --no-browser" in second
+
+
+def test_a_second_start_without_a_browser_points_to_the_running_window(site, capsys, monkeypatch):
+    monkeypatch.delenv("FOLIO_EXCHANGE_NO_BROWSER", raising=False)
+    httpd, app = ui.start_in_thread(site)                       # shows links in its own window
+    try:
+        ui.serve(site, port=app.port)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    out = capsys.readouterr().out
+    assert "already running shows a new link" in out and out.count("?t=") == 1   # printed by the running one
+
+
+def test_the_first_start_opens_the_browser_at_a_one_time_link(site, capsys, monkeypatch):
+    opened = []
+    monkeypatch.setattr(ui.webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(ui.threading, "Timer", lambda delay, fn: type("T", (), {"start": staticmethod(fn)})())
+    monkeypatch.setattr(ui._Server, "serve_forever", lambda self, *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.delenv("FOLIO_EXCHANGE_NO_BROWSER", raising=False)
+    ui.serve(site, port=0)
+    out = capsys.readouterr().out
+    assert len(opened) == 1 and re.match(r"http://fx-[0-9a-f]{16}\.localhost:\d+/\?t=", opened[0])
+    # the window also shows a second one-time link, for another browser, never the one the browser used
+    (other,) = re.findall(r"http://\S+/\?t=\S+", out)
+    assert "To open it in another browser on this computer, use this link once within 10 minutes" in out
+    assert other != opened[0] and other.split("?t=")[0] == opened[0].split("?t=")[0] and ".localhost" in out
+    ui.serve(site, port=0, open_browser=False)                 # no browser: the window shows the link instead
+    out = capsys.readouterr().out
+    assert len(opened) == 1 and out.count("/?t=") == 1 and "works once" in out
+
+
+def test_the_page_cannot_skip_the_safety_checks(server, site):
+    for force in (True, False):
+        status, err, _ = call(server, "/api/feeds/chq/release", {"run_dir": "anything", "force": force})
+        assert status == 400 and "never skips the safety checks" in err["error"]
+    assert not (site / "vendor-drop").exists()
+    assert not re.search(r"\bforce\s*:", (ui.WEB / "app.js").read_text(encoding="utf-8"))   # never sent
+
+
+@pytest.mark.parametrize("length, code", [("-1", 400), ("abc", 400), ("+5", 400), ("1e3", 400), ("²", 400),
+                                          (str(64 * 1024 + 1), 413), ("9" * 30, 413)])
+def test_request_lengths_are_checked_before_anything_is_read(server, site, length, code):
+    status, _, body = raw(server, "POST", "/api/feeds/chq/pause", {**signed_in(server), "Content-Length": length})
+    assert status == code and "error" in json.loads(body)
+    assert "enabled: false" not in (site / "feeds" / "chq.yaml").read_text(encoding="utf-8")
+
+
+def test_a_plain_length_still_works(server):
+    status, _, body = raw(server, "POST", "/api/feeds/chq/pause", {**signed_in(server), "Content-Length": "2"}, b"{}")
+    assert status == 200 and json.loads(body)["enabled"] is False
+
+
+def test_every_limit_is_kept_in_range(server, monkeypatch):
+    seen = []
+    real_runs, real_audit = History.runs, History.audit_log
+    monkeypatch.setattr(History, "runs", lambda self, feed=None, limit=20: seen.append(limit) or real_runs(self, feed, limit))
+    monkeypatch.setattr(History, "audit_log",
+                        lambda self, limit=50, feed=None: seen.append(limit) or real_audit(self, limit, feed))
+    for q in ("-1", "0", "100000"):
+        assert call(server, f"/api/feeds/chq/runs?limit={q}")[0] == 200
+        assert call(server, f"/api/audit?limit={q}")[0] == 200
+    assert seen == [1, 1, 1, 1, 500, 500]
+
+    job = call(server, "/api/feeds/chq/build", {})[1]
+    run = wait(server, job)["result"]["run"]
+    rows = call(server, f"/api/runs/{run['id']}/rows?limit=-1")[1]
+    assert len(rows["rows"]) == 1 and rows["total"] > 1
+    status, j, _ = call(server, f"/api/jobs/{job['id']}?since=-3")
+    assert status == 200 and j["log_total"] == len(j["log"])          # never a negative count
+
+
 def test_site_summary_never_includes_the_password(server, site):
     status, data, _ = call(server, "/api/site")
     assert status == 200
     assert [f["name"] for f in data["feeds"]] == ["chq"]
     assert data["folio"]["password"] == "environment (FOLIO_PASSWORD)"
+    assert data["task"]["state"] and data["task"]["text"]           # the scheduled task's age, shown quietly
     status, raw, _ = call(server, "/api/feeds/chq")
     assert status == 200
     for body in (json.dumps(data), json.dumps(raw)):

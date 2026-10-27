@@ -11,11 +11,12 @@ import getpass
 import json
 import logging
 import platform
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, credentials, delivery, feedops, reads, runner, schedule
+from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule
 from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError
@@ -174,11 +175,14 @@ def cmd_check(args) -> int:
         if changed:
             print(f"Settings changed since the last check (recorded in the audit log): {', '.join(changed)}")
         print(f"Site: {site.root}")
+        now = datetime.now(timezone.utc)
+        task = feedops.task_status(hist, chosen, now, lock_path=site.lock_path)
+        if task["state"] in ("ok", "running"):
+            print(task["text"])                 # stale and never-started come as warnings below
         for f in chosen:
             line = f"Feed {f.name}: {f.recipe.ref} ({f.uses}), {schedule.describe(schedule.parse(f.schedule))}"
             print(line + ("" if f.enabled else " [paused]"))
-        warnings = feedops.site_warnings(site, library, chosen, errors, hist, datetime.now(timezone.utc),
-                                         only=args.feed)
+        warnings = feedops.site_warnings(site, library, chosen, errors, hist, now, only=args.feed)
     file_problems = any(w["code"] == "feed-file" for w in warnings)
     for w in warnings:
         label = {"problem": "PROBLEM ", "warning": "WARNING ", "note": "NOTE    "}[w["level"]]
@@ -334,6 +338,23 @@ def cmd_run(args) -> int:
         print(f"{new} is not set up yet (no {SITE_FILE}), so nothing is due. Open the page to set it up.")
         return 0
     site = _site(args)
+    if not args.due:
+        return _run(args, site)
+    try:
+        with History(site.history_path) as hist:
+            feedops.record_due_start(hist, datetime.now(timezone.utc))
+    except sqlite3.Error as exc:
+        log.warning("Could not record the start of this scheduled pass: %s", exc)
+    # The heartbeat goes at the start of the pass as well as the end, so a monitor hears from a long pass (a
+    # first full sync can take hours) as soon as it starts; its period must still allow for the longest pass.
+    notify.heartbeat(site.alerts, site.name)
+    try:
+        return _run(args, site)
+    finally:
+        notify.heartbeat(site.alerts, site.name)
+
+
+def _run(args, site: Site) -> int:
     feeds, errors = _feeds(site)
     opts = runner.RunOptions(full=args.full, no_deliver=args.no_deliver, skip_sync=args.skip_sync,
                              force=args.force, trigger="schedule" if args.due else "manual")
@@ -495,6 +516,10 @@ def cmd_feeds(args) -> int:
         return 0
     now = datetime.now(timezone.utc)
     with History(site.history_path) as hist:
+        task = feedops.task_status(hist, feeds, now, lock_path=site.lock_path)
+        if task["state"] != "unneeded":
+            label = {"ok": "", "running": "", "stale": "WARNING  ", "never": "NOTE     "}[task["state"]]
+            print(f"{label}{task['text']}\n")
         for f in feeds:
             s = schedule.parse(f.schedule)
             nxt = schedule.next_slot(s, now, site.timezone)
@@ -581,6 +606,8 @@ def cmd_recipes(args) -> int:
             print(f"{rid:<24} {latest.title}  (versions: {', '.join(r.version_str for r in versions)})")
         for p in library.problems():
             print("PROBLEM " + p)
+        for w in library.shadow_warnings():
+            print("WARNING " + w)
         return 1 if library.problems() else 0
     if action in ("sources", "get"):
         return _recipe_sources(args, site, library)
@@ -717,6 +744,9 @@ def cmd_history(args) -> int:
     return 0
 
 
+ALERT_TARGETS = ("webhook", "heartbeat")       # secret targets that are site.yaml alerts settings
+
+
 def _secret_target(site: Site, target: str) -> tuple[str, str, str | None, str]:
     """(service, account, reference, description) for `secret set` and `secret status`."""
     if target == "folio":
@@ -725,6 +755,8 @@ def _secret_target(site: Site, target: str) -> tuple[str, str, str | None, str]:
                 "FOLIO password")
     if target == "webhook":
         return credentials.WEBHOOK_SERVICE, site.name, site.alerts.get("webhook"), "alert webhook URL"
+    if target == "heartbeat":
+        return credentials.HEARTBEAT_SERVICE, site.name, site.alerts.get("heartbeat"), "heartbeat URL"
     if target == "smtp":
         email = site.alerts.get("email") or {}
         if not email.get("username"):
@@ -743,8 +775,7 @@ def cmd_secret(args) -> int:
     site = _site(args)
     if args.action == "status":
         targets = ["folio"]
-        if site.alerts.get("webhook"):
-            targets.append("webhook")
+        targets += [t for t in ALERT_TARGETS if site.alerts.get(t)]
         if (site.alerts.get("email") or {}).get("username"):
             targets.append("smtp")
         feeds, _errors = _feeds(site)
@@ -760,7 +791,7 @@ def cmd_secret(args) -> int:
               "A scheduled task must run as the same user.)")
         return 1 if missing else 0
     if not args.target:
-        raise ConfigError("Say which secret: folio, smtp, webhook, or a feed name.")
+        raise ConfigError("Say which secret: folio, smtp, webhook, heartbeat, or a feed name.")
     service, account, ref, what = _secret_target(site, args.target)
     if ref and str(ref).startswith("env:"):
         print(f"The {what} is read from the environment variable {ref[4:]} ({args.target}'s secret: {ref}). "
@@ -769,9 +800,11 @@ def cmd_secret(args) -> int:
     value = getpass.getpass(f"{what} for {account} (not shown): ")
     credentials.store(service, account, value)
     with History(site.history_path) as hist:
-        hist.audit(None, None if args.target in ("folio", "smtp", "webhook") else args.target,
+        hist.audit(None, None if args.target in ("folio", "smtp", *ALERT_TARGETS) else args.target,
                    "secret stored", {"what": what, "service": service, "account": account})
     print(f"Stored the {what} in the system keyring ({service}, {account}).")
+    if args.target in ALERT_TARGETS and not ref:
+        print(f"It is used once site.yaml says so: add `{args.target}: keyring` under alerts.")
     return 0
 
 
@@ -898,6 +931,18 @@ def cmd_init(args) -> int:
 
 
 # ------------------------------------------------------------------ main
+def _version_text() -> str:
+    """The version, and the git commit when pip recorded one (an install from git+https://...)."""
+    try:
+        from importlib.metadata import distribution
+
+        info = json.loads(distribution("folio-exchange").read_text("direct_url.json") or "{}")
+        commit = (info.get("vcs_info") or {}).get("commit_id")
+    except Exception:  # noqa: BLE001 - the version is enough when the commit cannot be known
+        commit = None
+    return f"folio-exchange {__version__}" + (f" (commit {commit[:12]})" if commit else "")
+
+
 class _Parser(argparse.ArgumentParser):
     """Usage mistakes exit 1: exit code 2 means a blocked or held run, and a scheduler must not mistake one
     for the other."""
@@ -912,7 +957,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="Scheduled, recipe-driven exports from FOLIO to vendors.")
     p.add_argument("-s", "--site", help="the site folder (default: FOLIO_EXCHANGE_SITE, else the current folder)")
     p.add_argument("-v", "--verbose", action="store_true")
-    p.add_argument("--version", action="version", version=f"folio-exchange {__version__}")
+    p.add_argument("--version", action="version", version=_version_text())
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     i = sub.add_parser("init", help="guided setup: connect to FOLIO, choose a recipe, preview, deliver, schedule")
@@ -970,7 +1015,7 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--show", metavar="RUN", help="a run id (from the list) or run folder")
     se = sub.add_parser("secret", help="store a secret in the system keyring, or show where each comes from")
     se.add_argument("action", choices=["set", "status"])
-    se.add_argument("target", nargs="?", help="folio, smtp, webhook, or a feed name")
+    se.add_argument("target", nargs="?", help="folio, smtp, webhook, heartbeat, or a feed name")
     sc = sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
     sc.add_argument("--register", action="store_true", help="register the hourly task now (Windows asks for "
                                                              "your Windows password)")
