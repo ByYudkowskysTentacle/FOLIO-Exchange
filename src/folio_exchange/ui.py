@@ -29,9 +29,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from . import __version__, delivery, reads, runner, schedule
+from . import __version__, delivery, feedops, reads, runner, schedule
 from .client import probe
-from .config import Site, load_site, read_yaml
+from .config import Site, load_site, password_note
 from .errors import ConfigError, FxError, LockBusy
 from .fields import FIELDS
 from .history import History
@@ -220,7 +220,9 @@ def site_summary(site_root: Path) -> dict:
             items.append({"name": f.name, "title": f.title, "recipe": f.recipe.ref, "enabled": f.enabled,
                           "last_status": last["status"] if last else None,
                           "last_started": last["started"] if last else None})
+        warnings = feedops.site_warnings(site, library, feeds, errors, hist, datetime.now(timezone.utc))
     return {
+        "warnings": warnings,
         "version": __version__, "name": site.name, "root": str(site.root),
         "folio": {"base_url": site.folio["base_url"], "tenant": site.folio["tenant"],
                   "username": site.folio["username"], "password": site.folio_password_source()},
@@ -232,11 +234,9 @@ def site_summary(site_root: Path) -> dict:
 
 def check_connection(site_root: Path) -> dict:
     """Log in and read one page of every endpoint the enabled feeds need (structured, for the page)."""
-    from .cli import _env_password_note
-
     site, _library, feeds, errors = _load(site_root)
     needed = set().union(*(set(f.reads) for f in feeds if f.enabled)) or set(reads.READS)
-    out: dict[str, Any] = {"password": site.folio_password_source(), "note": _env_password_note(site),
+    out: dict[str, Any] = {"password": site.folio_password_source(), "note": password_note(site),
                            "endpoints": [], "denied": [], "problems": errors, "logged_in": False}
     client = runner.client_for(site)
     client.connect()
@@ -367,17 +367,9 @@ class App:
         raise LookupError("Not found")
 
     def _pause(self, name: str, action: str) -> dict:
-        from .cli import _rewrite_key
-
-        site, _library, feed, _feeds = _feed(self.site_root, name)
-        current = read_yaml(feed.path).get("enabled", True)
-        wanted = action == "resume"
-        if current is not wanted:
-            _rewrite_key(feed.path, "enabled", "true" if wanted else "false")
-            with History(site.history_path) as hist:
-                hist.audit(None, name, f"feed {action}d", {"file": str(feed.path), "from": "ui"})
-                runner.audit_settings(site, hist)
-        return {"name": name, "enabled": wanted}
+        site = load_site(self.site_root)
+        res = feedops.set_enabled(site, name, action == "resume", via="ui")
+        return {"name": name, "enabled": res["enabled"]}
 
     @staticmethod
     def _result(site: Site, feed: Feed, res: runner.RunResult) -> dict:
