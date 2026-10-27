@@ -56,11 +56,13 @@ class Job:
         self.lines: list[str] = []
         self.result: Any = None
         self.error: str | None = None
+        self.thread: threading.Thread | None = None
 
     def as_dict(self, since: int = 0) -> dict:
+        fresh = self.lines[since:]               # one snapshot, so log and log_total always agree
         return {"id": self.id, "kind": self.kind, "feed": self.feed, "status": self.status,
                 "seconds": round(self.seconds if self.seconds is not None else time.monotonic() - self.started, 1),
-                "log": self.lines[since:], "log_total": len(self.lines), "result": self.result, "error": self.error}
+                "log": fresh, "log_total": since + len(fresh), "result": self.result, "error": self.error}
 
 
 class _JobLog(logging.Handler):
@@ -111,8 +113,13 @@ class Jobs:
                 job.seconds = round(time.monotonic() - job.started, 1)
                 root.removeHandler(handler)
 
-        threading.Thread(target=body, name=f"fx-job-{job.id}", daemon=True).start()
+        job.thread = threading.Thread(target=body, name=f"fx-job-{job.id}", daemon=True)
+        job.thread.start()
         return job
+
+    def running(self) -> Job | None:
+        job = self.current
+        return job if job is not None and job.status == "running" else None
 
 
 # ------------------------------------------------------------------ helpers
@@ -277,7 +284,8 @@ class App:
     # -- GET
     def get(self, path: str, query: dict) -> Any:
         if path == "/api/site":
-            return site_summary(self.site_root)
+            job = self.jobs.running()
+            return {**site_summary(self.site_root), "job": job.as_dict() if job else None}
         if m := re.fullmatch(r"/api/feeds/([a-z0-9-]+)", path):
             site, library, feed, _feeds = _feed(self.site_root, m.group(1))
             with History(site.history_path) as hist:
@@ -485,9 +493,26 @@ def serve(site_root: Path, port: int = 8765, open_browser: bool = True) -> None:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
+        _finish_running_job(app)
         print("\nStopped.", file=sys.stderr)
     finally:
         httpd.server_close()
+
+
+def _finish_running_job(app: App) -> None:
+    """On Ctrl+C, let a running run or release finish rather than cut a delivery off half way."""
+    job = app.jobs.running()
+    if job is None or job.thread is None:
+        return
+    what = f"{job.kind} of {job.feed}" if job.feed else job.kind
+    print(f"\nA {what} is still running; waiting for it to finish. Press Ctrl+C again to stop anyway.",
+          file=sys.stderr, flush=True)
+    try:
+        while job.thread.is_alive():
+            job.thread.join(0.5)
+        print(f"The {what} finished: {job.status}.", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("Stopped while it was still running; check `folio-exchange history` for what it did.", file=sys.stderr)
 
 
 def start_in_thread(site_root: Path) -> tuple[ThreadingHTTPServer, App]:

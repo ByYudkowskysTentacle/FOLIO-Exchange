@@ -149,3 +149,24 @@ def test_problem_feeds_and_unknown_things(server, site):
 
 def test_bad_numbers_are_a_bad_request(server):
     assert call(server, "/api/feeds/chq/runs?limit=abc")[0] == 400
+
+
+def test_the_page_can_find_a_running_job_after_a_reload(server, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(ui, "check_connection", lambda root: release.wait(10) and {"ok": True})
+    job = call(server, "/api/check", {})[1]
+    site = call(server, "/api/site")[1]
+    assert site["job"]["id"] == job["id"] and site["job"]["status"] == "running"
+    release.set()
+    wait(server, job)
+    assert call(server, "/api/site")[1]["job"] is None
+
+
+def test_ctrl_c_waits_for_a_running_job(server, monkeypatch, capsys):
+    release = threading.Event()
+    monkeypatch.setattr(ui, "check_connection", lambda root: release.wait(10) and {"ok": True})
+    call(server, "/api/check", {})
+    threading.Timer(0.3, release.set).start()
+    ui._finish_running_job(server)
+    err = capsys.readouterr().err
+    assert "still running; waiting for it to finish" in err and "finished: done" in err
