@@ -13,7 +13,7 @@ import logging
 import platform
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule
@@ -340,18 +340,73 @@ def cmd_run(args) -> int:
     site = _site(args)
     if not args.due:
         return _run(args, site)
+    started = datetime.now(timezone.utc)
+    previous: dict = {}
+    try:                                   # beside the lock too, so a pass that cannot write history still shows
+        previous = feedops.mark_pass_start(site.lock_path, started)
+    except OSError as exc:
+        log.warning("Could not note the start of this scheduled pass beside the run lock: %s", exc)
     try:
         with History(site.history_path) as hist:
-            feedops.record_due_start(hist, datetime.now(timezone.utc))
+            feedops.record_due_start(hist, started)
     except sqlite3.Error as exc:
         log.warning("Could not record the start of this scheduled pass: %s", exc)
     # The heartbeat goes at the start of the pass as well as the end, so a monitor hears from a long pass (a
     # first full sync can take hours) as soon as it starts; its period must still allow for the longest pass.
     notify.heartbeat(site.alerts, site.name)
+    error, alerted = None, False
     try:
         return _run(args, site)
+    except Exception as exc:  # noqa: BLE001 - alert first (without the history: it may be what failed), then stop
+        error = f"{type(exc).__name__}: {exc}"
+        alerted = _pass_failed(site, exc, error, previous)
+        raise
     finally:
+        try:
+            feedops.mark_pass_end(site.lock_path, started, error, alerted)
+        except OSError as exc:
+            log.warning("Could not note how this scheduled pass ended: %s", exc)
         notify.heartbeat(site.alerts, site.name)
+
+
+def _pass_failed(site: Site, exc: Exception, error: str, previous: dict) -> bool:
+    """Alert that a scheduled pass failed, without needing the run history. The same failure as the last pass's,
+    already alerted, is not sent again every hour. Returns whether the alert went (now or before)."""
+    if not isinstance(exc, (FxError, OSError, sqlite3.Error)):
+        log.exception("The scheduled pass failed: %s", error)        # main shows the others plainly
+    if previous.get("error") == error and previous.get("alerted"):
+        return True
+    text = (f"The scheduled pass failed: {error}\nFeeds due in this pass may not have run or been recorded. If the "
+            "disk is full, free some space; logs/folio-exchange.log has the details, and `folio-exchange check` "
+            "shows the site's state.")
+    return bool(runner.alert(site, None, "failed", text))
+
+
+LOCK_STUCK_AFTER = timedelta(hours=4)
+LOCK_STUCK = "lock_stuck_since"            # history meta: the lock holder's start already alerted about
+
+
+def _lock_busy(site: Site, exc: LockBusy) -> int:
+    """A scheduled pass found the site's lock taken: skip this hour. When one run has held it for hours (a
+    stalled upload, a stuck process), alert once for that run."""
+    log.info("%s Skipping this hour; the next start will catch up.", exc)
+    since = feedops.run_started(site.lock_path)
+    now = datetime.now(timezone.utc)
+    if since is None or now - since < LOCK_STUCK_AFTER:
+        return 0
+    stamp = since.isoformat(timespec="seconds")
+    with History(site.history_path) as hist:
+        if hist.get_meta(LOCK_STUCK) == stamp:
+            return 0
+        hist.set_meta(LOCK_STUCK, stamp)
+    text = (f"Scheduled runs are being skipped: one run has held this site's lock since "
+            f"{since.astimezone():%Y-%m-%d %H:%M} ({feedops.ago(now - since)}), so no feed has run on its schedule "
+            "since. A first full download of a large catalogue can take this long; otherwise the run may be stuck "
+            "(a stalled upload, say). Look at logs/folio-exchange.log; if nothing is moving, end that FOLIO-Exchange "
+            "process or restart the computer, and the next hourly start catches up.")
+    log.warning("%s", text)
+    runner.alert(site, None, "failed", text)
+    return 0
 
 
 def _run(args, site: Site) -> int:
@@ -361,14 +416,19 @@ def _run(args, site: Site) -> int:
     bad: dict[str, str] = {}
     if args.due:
         bad = runner.active_problems(site, errors)
-        with History(site.history_path) as hist:
-            runner.audit_settings(site, hist)
-            now = datetime.now(timezone.utc)
-            chosen = runner.due_feeds(site, feeds, now, hist)
-            for f in feeds:
-                late = runner.overdue(site, f, hist, now)
-                if late and f not in chosen:
-                    log.warning("Feed %s is %s", f.name, late)
+        try:
+            with runner.RunLock(site.lock_path), History(site.history_path) as hist:
+                runner.start_pass(site, hist)        # a pass killed on a slot's last attempt is reported now
+                runner.audit_settings(site, hist)
+                now = datetime.now(timezone.utc)
+                runner.report_given_up(site, feeds, hist, now)
+                chosen = runner.due_feeds(site, feeds, now, hist)
+                for f in feeds:
+                    late = runner.overdue(site, f, hist, now)
+                    if late and f not in chosen:
+                        log.warning("Feed %s is %s", f.name, late)
+        except LockBusy as exc:
+            return _lock_busy(site, exc)
         if not chosen and not bad:
             log.info("No feed is due.")
             return 0
@@ -383,9 +443,11 @@ def _run(args, site: Site) -> int:
         results = runner.run_many(site, chosen, opts, all_feeds=feeds, bad_feeds=bad)
     except LockBusy as exc:
         if args.due:
-            log.info("%s Skipping this hour; the next start will catch up.", exc)
-            return 0
+            return _lock_busy(site, exc)
         raise
+    if args.due:
+        with History(site.history_path) as hist:
+            runner.report_given_up(site, feeds, hist, datetime.now(timezone.utc))
     print(json.dumps([_summary(r) for r in results] if len(results) != 1 else _summary(results[0]), indent=2))
     return runner.worst_code(results)
 
@@ -1059,6 +1121,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2 if exc.__class__.__name__ in ("SafetyCheckFailed", "HeldForRelease") else 1
     except OSError as exc:
         log.error("%s: %s", type(exc).__name__, exc)
+        return 1
+    except sqlite3.Error as exc:
+        log.error("A file in the site's data folder could not be read or written (%s: %s). Check that its drive "
+                  "has free space and that no other program (a backup or an antivirus scan) holds it open, then "
+                  "run again.", type(exc).__name__, exc)
         return 1
 
 

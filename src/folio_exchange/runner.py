@@ -153,7 +153,62 @@ def alert(site: Site, feed: str | None, status: str, text: str, *, force: bool =
     if not force and not notify.should_alert(site.alerts, status):
         return []
     subject = f"FOLIO-Exchange [{site.name}]{f' {feed}' if feed else ''}: {status.upper()}"
-    return notify.send(site.alerts, subject, text, account=site.name)
+    sent = notify.send(site.alerts, subject, text, account=site.name)
+    if not sent and notify.has_channel(site.alerts):
+        _keep_unsent(site, subject, text)
+    return sent
+
+
+UNSENT = "unsent_alerts"          # history meta: alerts no channel took, sent again by a later pass
+UNSENT_KEEP = 20
+
+
+def _keep_unsent(site: Site, subject: str, text: str) -> None:
+    """Keep an alert that no channel took, to send on a later pass. Never raises: when the history cannot be
+    written (perhaps why the pass failed), only the copy is lost."""
+    try:
+        with History(site.history_path) as hist:
+            kept = _unsent(hist)
+            kept.append({"subject": subject, "text": text, "raised": now_utc().isoformat(timespec="seconds")})
+            hist.set_meta(UNSENT, json.dumps(kept[-UNSENT_KEEP:]))
+    except (sqlite3.Error, OSError) as exc:
+        log.warning("Could not keep the unsent alert to send later: %s", type(exc).__name__)
+
+
+def _unsent(hist: History) -> list[dict]:
+    try:
+        kept = json.loads(hist.get_meta(UNSENT) or "[]")
+    except ValueError:
+        return []
+    return [a for a in kept if isinstance(a, dict)] if isinstance(kept, list) else []
+
+
+def resend_alerts(site: Site, hist: History) -> int:
+    """Send the alerts that could not be sent before, oldest first, each saying when it was first raised. Stops
+    at the first that still fails (the channel is still out of reach). Returns how many were sent."""
+    kept = _unsent(hist)
+    if not kept or not notify.has_channel(site.alerts):
+        return 0
+    done = 0
+    for a in kept:
+        text = f"First raised {_local(a.get('raised'))}, when it could not be sent.\n{a.get('text', '')}"
+        if not notify.send(site.alerts, str(a.get("subject")), text, account=site.name):
+            break
+        done += 1
+    if done:
+        hist.set_meta(UNSENT, json.dumps(kept[done:]) if kept[done:] else None)
+    return done
+
+
+def start_pass(site: Site, hist: History) -> None:
+    """What every pass does first, with the run lock held: send the alerts that could not be sent before, and
+    mark runs left 'running' by a process that stopped as failed (with an alert)."""
+    resend_alerts(site, hist)
+    stale = hist.fail_stale()
+    if stale:
+        log.warning("%d earlier run(s) never finished; marked as failed", stale)
+        alert(site, None, "failed", f"{stale} earlier run(s) stopped without finishing and were marked "
+                                    "failed. Check logs/folio-exchange.log.")
 
 
 def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) -> None:
@@ -473,11 +528,7 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
     feeds being run), so the shared cache never goes stale for another feed."""
     results: list[RunResult] = []
     with RunLock(site.lock_path), History(site.history_path) as hist:
-        stale = hist.fail_stale()
-        if stale:
-            log.warning("%d earlier run(s) never finished; marked as failed", stale)
-            alert(site, None, "failed", f"{stale} earlier run(s) stopped without finishing and were marked "
-                                        "failed. Check logs/folio-exchange.log.")
+        start_pass(site, hist)
         audit_settings(site, hist)
         hist.prune(int(site.runs["history_months"]))
         for name, err in (bad_feeds or {}).items():
@@ -567,6 +618,47 @@ def overdue(site: Site, feed: Feed, hist: History, now: datetime) -> str | None:
     return None
 
 
+def given_up(site: Site, feed: Feed, hist: History, now: datetime) -> tuple[datetime, list[dict]] | None:
+    """The feed's latest slot and its scheduled runs when every attempt the slot allows has failed (or FOLIO
+    refused the login), so nothing more is tried until the next slot; else None."""
+    if not feed.enabled:
+        return None
+    s = schedule.parse(feed.schedule)
+    slot = schedule.last_slot(s, now, site.timezone)
+    created = feed_created(hist, feed)
+    if slot is None or slot <= created:
+        return None
+    runs = hist.runs_since(feed.name, slot)
+    tries = [r for r in runs if r.get("trigger") == "schedule"]
+    if not tries or any(r.get("status") != "failed" for r in tries) or any(r.get("status") == "success"
+                                                                            for r in runs):
+        return None
+    if schedule.is_due(s, now, site.timezone, runs, int(site.runs["max_attempts_per_slot"]), created):
+        return None
+    return slot, tries
+
+
+def report_given_up(site: Site, feeds: list[Feed], hist: History, now: datetime) -> None:
+    """Alert once (remembered in history meta) when a feed's slot is given up after its last allowed attempt."""
+    for f in feeds:
+        hit = given_up(site, f, hist, now)
+        if hit is None:
+            continue
+        slot, tries = hit
+        key = f"slot_given_up:{f.name}"
+        if hist.get_meta(key) == slot.isoformat():
+            continue
+        hist.set_meta(key, slot.isoformat())
+        nxt = schedule.next_slot(schedule.parse(f.schedule), now, site.timezone)
+        until = f"its next slot ({_local(nxt.isoformat())})" if nxt else "its next slot"
+        text = (f"Feed {f.name}: the scheduled run due {_local(slot.isoformat())} was given up after {len(tries)} "
+                f"failed attempt(s), so nothing was delivered and nothing more is tried until {until}.\n"
+                f"The last attempt failed: {tries[-1].get('error') or 'see logs/folio-exchange.log'}\n"
+                f"Fix the problem, then run: folio-exchange run {f.name}")
+        log.warning("%s", text.replace("\n", " "))
+        alert(site, f.name, "failed", text)
+
+
 # ------------------------------------------------------------- release
 def releasable_run(hist: History, feed: Feed, run_dir: Path | None, force: bool = False) -> dict:
     """The run to release: the newest held, blocked or built run that no later delivery has superseded, or
@@ -601,48 +693,67 @@ def releasable_run(hist: History, feed: Feed, run_dir: Path | None, force: bool 
     return row
 
 
+def _release_ready(hist: History, feed: Feed, run_dir: Path | None, force: bool) -> tuple[dict, dict]:
+    """The run to release and the summary shown before sending, after checking it can still be sent: its files
+    unchanged since the build, the same destination, and (for a built run) the item count."""
+    row = releasable_run(hist, feed, run_dir, force)
+    rdir = Path(row["run_dir"])
+    files = row.get("files") or []
+    if not files or not rdir.is_dir():
+        raise FxError(f"{rdir} has no recorded files; it cannot be released. Run the feed again.")
+    for f in files:
+        path = rdir / f["name"]
+        if not path.is_file():
+            raise FxError(f"{path} is missing; the run cannot be released. Run the feed again.")
+        if file_digest(path)["sha256"] != f["sha256"]:
+            raise FxError(f"{path} changed after it was built (was it opened and saved in another program?). "
+                          "Run the feed again rather than sending an edited file.")
+    dest = delivery.destination_key(feed.delivery)
+    if row.get("destination") and row["destination"] != dest:
+        raise FxError(f"The feed now delivers to {dest}, but this run was built for {row['destination']}. "
+                      "Run the feed again.")
+    last = hist.last_delivered(feed.name, dest)
+    if row["status"] == "built" and not force:
+        checks.item_ratio(feed, int(row.get("items") or 0), last.get("items") if last else None)
+    summary = {
+        "feed": feed.name, "run_dir": str(rdir), "status": row["status"], "built": row.get("started"),
+        "recipe": f"{row.get('recipe')}@{row.get('recipe_version')}", "bibs": row.get("bibs"),
+        "items": row.get("items"), "last_delivered_items": last.get("items") if last else None,
+        "last_delivered": last.get("started") if last else None,
+        "reason": row.get("error") or (row.get("report") or {}).get("held")
+        or layout_note(last, (row.get("report") or {}).get("layout")),
+        "files": [(f["name"], f["bytes"]) for f in files], "destination": delivery.describe_destination(
+            feed.delivery),
+        "newer_runs": [r["run_dir"] for r in hist.runs(feed.name, 20)
+                       if r["id"] > row["id"] and r.get("status") in ("success",) and r.get("delivered")],
+    }
+    return row, summary
+
+
 def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False, actor: str | None = None,
             confirm=None) -> RunResult:
     """Deliver a held, blocked or built run after a person has looked at it. ``confirm(summary) -> bool``
-    is asked before anything is sent. Built runs still pass the checks unless ``force``; releasing a held
-    or blocked run is itself the person's approval. A feed with no delivery (transport none) is refused."""
+    is asked before anything is sent, without the site lock held (a person may leave the question open), so
+    the run is checked again under the lock before sending. Built runs still pass the checks unless ``force``;
+    releasing a held or blocked run is itself the person's approval. A feed with no delivery is refused."""
     if not feed.delivers:
         raise FxError(f"Feed {feed.name} has no delivery set up, so there is nothing to send; its files stay in "
                       "the run folder. Add a delivery with `folio-exchange init`.")
+    asked = None
+    if confirm is not None:
+        with RunLock(site.lock_path), History(site.history_path) as hist:
+            row, summary = _release_ready(hist, feed, run_dir, force)
+        if not confirm(summary):
+            return RunResult(feed.name, row["status"], 2, Path(row["run_dir"]), {"cancelled": True, **summary})
+        asked = (row["id"], summary)
     with RunLock(site.lock_path), History(site.history_path) as hist:
-        row = releasable_run(hist, feed, run_dir, force)
+        row, summary = _release_ready(hist, feed, run_dir, force)
+        if asked is not None and asked != (row["id"], summary):
+            raise FxError(f"While you were deciding, feed {feed.name} changed (another run, or a delivery, was "
+                          "recorded), so nothing was sent. Run the release again to see what it would send now.")
         rdir = Path(row["run_dir"])
         files = row.get("files") or []
-        if not files or not rdir.is_dir():
-            raise FxError(f"{rdir} has no recorded files; it cannot be released. Run the feed again.")
-        for f in files:
-            path = rdir / f["name"]
-            if not path.is_file():
-                raise FxError(f"{path} is missing; the run cannot be released. Run the feed again.")
-            if file_digest(path)["sha256"] != f["sha256"]:
-                raise FxError(f"{path} changed after it was built (was it opened and saved in another program?). "
-                              "Run the feed again rather than sending an edited file.")
         dest = delivery.destination_key(feed.delivery)
-        if row.get("destination") and row["destination"] != dest:
-            raise FxError(f"The feed now delivers to {dest}, but this run was built for {row['destination']}. "
-                          "Run the feed again.")
-        last = hist.last_delivered(feed.name, dest)
-        if row["status"] == "built" and not force:
-            checks.item_ratio(feed, int(row.get("items") or 0), last.get("items") if last else None)
-        summary = {
-            "feed": feed.name, "run_dir": str(rdir), "status": row["status"], "built": row.get("started"),
-            "recipe": f"{row.get('recipe')}@{row.get('recipe_version')}", "bibs": row.get("bibs"),
-            "items": row.get("items"), "last_delivered_items": last.get("items") if last else None,
-            "last_delivered": last.get("started") if last else None,
-            "reason": row.get("error") or (row.get("report") or {}).get("held")
-            or layout_note(last, (row.get("report") or {}).get("layout")),
-            "files": [(f["name"], f["bytes"]) for f in files], "destination": delivery.describe_destination(
-                feed.delivery),
-            "newer_runs": [r["run_dir"] for r in hist.runs(feed.name, 20)
-                           if r["id"] > row["id"] and r.get("status") in ("success",) and r.get("delivered")],
-        }
-        if confirm is not None and not confirm(summary):
-            return RunResult(feed.name, row["status"], 2, rdir, {"cancelled": True, **summary})
         try:
             sent = delivery.deliver([rdir / f["name"] for f in files], feed.delivery, feed.name)
         except DeliveryError as exc:
