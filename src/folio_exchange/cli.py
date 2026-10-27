@@ -769,6 +769,13 @@ def cmd_schedule(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    from .ui import serve
+
+    serve(find_site(args.site), port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_init(args) -> int:
     from .wizard import ConsolePrompter, run_wizard
 
@@ -847,6 +854,9 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("action", choices=["set", "status"])
     se.add_argument("target", nargs="?", help="folio, smtp, webhook, or a feed name")
     sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
+    ui = sub.add_parser("ui", help="open a simple page in your browser to look at feeds and run them")
+    ui.add_argument("--port", type=int, default=8765, help="port on this computer (default 8765)")
+    ui.add_argument("--no-browser", action="store_true", help="do not open the browser")
     return p
 
 
@@ -854,7 +864,7 @@ HANDLERS = {
     "init": cmd_init, "check": cmd_check, "preview": cmd_preview, "run": cmd_run, "release": cmd_release,
     "deliver": cmd_release, "sync": cmd_sync, "build": cmd_build, "feeds": cmd_feeds, "recipes": cmd_recipes,
     "upgrade": cmd_upgrade, "fields": cmd_fields, "history": cmd_history, "secret": cmd_secret,
-    "schedule": cmd_schedule,
+    "schedule": cmd_schedule, "ui": cmd_ui,
 }
 NO_SITE = {"init", "fields", "recipes"}
 
