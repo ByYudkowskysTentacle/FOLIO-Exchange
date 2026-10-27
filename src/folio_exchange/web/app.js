@@ -704,6 +704,7 @@ function go(view) {
   } else if (view.type === "connection") renderConnection();
   else if (view.type === "activity") renderActivity();
   else if (view.type === "recipes") renderRecipes();
+  else if (view.type === "options") renderOptions();
   else if (view.type === "add") renderWizard();
   else renderHome();
 }
@@ -711,7 +712,7 @@ function go(view) {
 function fromHash() {
   const m = location.hash.match(/^#feed\/([a-z0-9-]+)$/);
   if (m) return { type: "feed", name: m[1] };
-  for (const t of ["connection", "activity", "recipes", "add"]) if (location.hash === `#${t}`) return { type: t };
+  for (const t of ["connection", "activity", "recipes", "options", "add"]) if (location.hash === `#${t}`) return { type: t };
   return null;
 }
 
@@ -776,6 +777,7 @@ function renderSidebar() {
   $("nav-connection").setAttribute("aria-current", v === "connection" ? "true" : "false");
   $("nav-recipes").setAttribute("aria-current", v === "recipes" ? "true" : "false");
   $("nav-activity").setAttribute("aria-current", v === "activity" ? "true" : "false");
+  $("nav-options").setAttribute("aria-current", v === "options" ? "true" : "false");
   $("btn-add-feed").setAttribute("aria-current", v === "add" ? "page" : "false");
 }
 
@@ -2477,6 +2479,62 @@ async function renderActivity() {
       : h("p", { class: "muted", text: "Nothing recorded yet." })));
 }
 
+// ------------------------------------------------------------ options: the site folder
+function inFolder(parent, name) {
+  const sep = parent.includes("\\") ? "\\" : "/";
+  return parent.endsWith(sep) ? parent + name : parent + sep + name;
+}
+
+// The folder's name is the site's name. A rename keeps the folder where it is; the server carries the launcher
+// and the stored alert addresses along and says what is left, such as registering the scheduled task again.
+function renderOptions() {
+  const s = S.site;
+  const input = textInput("opt-name", s.name, { spellcheck: "false" });
+  const where = h("span", { class: "mono", id: "opt-where", text: inFolder(s.parent, s.name) });
+  input.addEventListener("input", () => { where.textContent = inFolder(s.parent, input.value.trim() || s.name); });
+  const btn = h("button", { class: "btn btn-primary", type: "submit", id: "opt-rename" }, "Rename folder");
+  const form = h("form", {
+    class: "edit-box", id: "opt-form", novalidate: true, autocomplete: "off", "aria-labelledby": "opt-heading",
+    onsubmit: guarded(async () => {
+      clearErrors(form);
+      const name = input.value.trim();
+      if (!name) return fieldError(input, "Enter a name for the folder.");
+      if (name === s.name) return fieldError(input, "The folder already has that name.");
+      let res;
+      try {
+        res = await working(btn, "Renaming…", () => api("/api/site/rename", { name }));
+      } catch (err) {
+        formError(form, err.message, btn);
+        return undefined;
+      }
+      S.renamed = res;
+      await loadSite();
+      toast(`The site folder is now called ${res.name}.`);
+      S.focus = "opt-done";
+      renderOptions();
+      return undefined;
+    }),
+  },
+  h("h2", { id: "opt-heading", tabindex: "-1", text: "Rename the site folder" }),
+  h("p", { text: "The folder's name is this site's name: it shows at the top of this page and in alert messages, and the " +
+    "scheduled task and the desktop launcher are named after it. Renaming keeps the folder where it is. The FOLIO and " +
+    "vendor passwords are stored by account, so they carry on as they are." }),
+  field(input, "Folder name", "For example the library's name, such as Lakeside College Library. Letters, numbers, " +
+    "spaces, dots, hyphens and brackets work everywhere."),
+  h("p", { class: "help" }, "The folder becomes: ", where),
+  formErrorBox("opt-form"),
+  h("div", { class: "form-actions" }, btn));
+  const done = S.renamed && S.renamed.root === s.root ? h("div", {
+    class: `notice ${S.renamed.task ? "notice-held" : "notice-ok"}`, id: "opt-done", tabindex: "-1" },
+  h("p", {}, h("b", { text: `Renamed to ${S.renamed.name}. ` }), S.renamed.task ? "One thing is left to do:" : "Nothing else needs doing."),
+  S.renamed.notes.length ? h("ul", {}, S.renamed.notes.map((n) => h("li", { text: n }))) : null) : null;
+  $("main").replaceChildren(h("div", { class: "feed-head" }, h("div", { class: "title-row" },
+    h("h1", { id: "options-title", tabindex: "-1", text: "Options" }), h("span", { class: "sub", text: "this site" }))),
+  h("div", { class: "pane" }, done, kv([["Site folder", h("span", { class: "mono", text: s.root })]]), form));
+  if (!S.focus) S.focus = "options-title";
+  takeFocus();
+}
+
 // ------------------------------------------------------------ recipes
 async function renderRecipes() {
   const nav = S.nav;
@@ -2641,6 +2699,7 @@ $("btn-add-feed").addEventListener("click", startWizard);
 $("nav-connection").addEventListener("click", () => go({ type: "connection" }));
 $("nav-recipes").addEventListener("click", () => go({ type: "recipes" }));
 $("nav-activity").addEventListener("click", () => go({ type: "activity" }));
+$("nav-options").addEventListener("click", () => go({ type: "options" }));
 // ------------------------------------------------------------ keeping the page current
 // Scheduled runs happen while the page sits open. Every 45 seconds, and when the tab comes back into view,
 // the sidebar and the open feed are fetched again and redrawn only if something changed, keeping the scroll

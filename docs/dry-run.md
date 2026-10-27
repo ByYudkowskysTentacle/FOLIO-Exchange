@@ -243,9 +243,20 @@ An alert that cannot be sent when it is raised (the PC's network was down, say) 
 
 From now on, `folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary feeds` shows each feed's last run and next step, and `history` lists every run.
 
+## Renaming the site folder
+
+The site folder's name is the site's name: the page shows it at the top, alert messages carry it, and the scheduled task and the desktop launcher are named after it. To give it a proper name (say, from `demo-eureka` to the library's name), use **Options** on the page, or `folio-exchange rename-site "Lakeside College Library"`. The folder stays where it is. Close every other FOLIO-Exchange window first, and wait for any run to finish: Windows will not rename a folder while a file in it is open, and you are told so if that happens (nothing is changed). The rename then:
+
+- replaces the launcher on the desktop with one for the new name (a file you made yourself is left alone);
+- copies the webhook and heartbeat addresses stored in Windows Credential Manager to the new name;
+- tells you if the scheduled task still runs the old folder. Register it again, which asks for your Windows password, and delete the old task. `rename-site` in a Command Prompt offers to do both; on the page you get the two commands to run;
+- tells you if `FOLIO_EXCHANGE_SITE` still names the old folder.
+
+The FOLIO and vendor passwords are stored by account, not by folder, so they carry on. Settings that name a place inside the folder by its full path (for example a `paths.data` of `C:\...\demo-eureka\data`) would still point at the old folder, so the rename refuses until they are changed to paths relative to the site folder.
+
 ## Moving the site folder
 
-If you move or rename the site folder (for example into `%LOCALAPPDATA%\FOLIO-Exchange`, as `check` may suggest), runs held before the move can still be released and their folders are still kept. Afterwards:
+If you move the site folder somewhere else (for example into `%LOCALAPPDATA%\FOLIO-Exchange`, as `check` may suggest), or rename it by hand, runs held before the move can still be released and their folders are still kept. Afterwards:
 
 - Register the hourly task again for the new folder with `schedule --register`. The task is named after the folder (`FOLIO-Exchange (mylibrary)`), so if the name changed, delete the old task in Task Scheduler.
 - Store the webhook and heartbeat addresses again with `secret set webhook` and `secret set heartbeat`: Windows Credential Manager keeps them under the folder's name, so after a rename they are not found. Until then `check` and the page warn that alerts or the heartbeat cannot be sent.

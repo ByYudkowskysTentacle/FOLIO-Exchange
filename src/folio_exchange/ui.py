@@ -55,7 +55,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import __version__, credentials, delivery, feedops, reads, runner, schedule, setupops, sources
+from . import __version__, credentials, delivery, feedops, reads, runner, schedule, setupops, siteops, sources
 from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, load_site, password_note
 from .errors import ConfigError, FxError, LockBusy
@@ -261,7 +261,7 @@ def site_summary(site_root: Path) -> dict:
         task = feedops.task_status(hist, feeds, now, lock_path=site.lock_path)
     return {
         "warnings": warnings, "task": task, "setup": None, "keyring": credentials.keyring_available(),
-        "version": __version__, "name": site.name, "root": str(site.root),
+        "version": __version__, "name": site.name, "root": str(site.root), "parent": str(site.root.resolve().parent),
         "folio": {"base_url": site.folio["base_url"], "tenant": site.folio["tenant"],
                   "username": site.folio["username"], "password": site.folio_password_source()},
         "alerts": {"on": site.alerts.get("on"), "webhook": bool(site.alerts.get("webhook")),
@@ -618,6 +618,15 @@ class App:
         if path == "/api/setup/connection":
             return setupops.connect(root, _text(body, "base_url"), _text(body, "tenant"), _text(body, "username"),
                                     _text(body, "password") or None)
+        if path == "/api/site/rename":
+            with self.jobs.lock:                         # no action on the page starts during the rename
+                job = self.jobs.running()
+                if job is not None:
+                    raise FxError(f"Wait for the {job.kind}{' of ' + job.feed if job.feed else ''} to finish, "
+                                  "then rename the folder.")
+                res = siteops.rename_site(root, _text(body, "name"), via="ui")
+                self.site_root = Path(res["root"])      # this page now serves the renamed folder
+            return res
         if path == "/api/recipes/check":
             site, library, _feeds, _errors = _load(root)
             return sources.check(site, library, _text(body, "source"))

@@ -59,6 +59,7 @@ The guided setup asks for the FOLIO API address, tenant and a read-only service 
 | `folio-exchange recipes summary chq` | The one-page file layout to send the vendor |
 | `folio-exchange history --audit` | Who changed, released or upgraded what |
 | `folio-exchange ui` | A simple page in your browser to look at feeds, run them and review held runs. It opens through a one-time link; `--no-browser` prints the link instead |
+| `folio-exchange rename-site NAME` | Give the site folder a new name, such as the library's (also under Options on the page) |
 | `folio-exchange launcher` | Put a file on your desktop that opens that page with a double-click (again after closing the browser) |
 | `folio-exchange recipes get foliohq` | Check a vendor's recipes on GitHub for new versions, and install them after you confirm (`recipes sources` lists the vendors) |
 | `folio-exchange schedule --register` | Set up the hourly scheduled runs now (Windows asks for your Windows password) |
