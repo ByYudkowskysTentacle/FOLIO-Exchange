@@ -24,11 +24,22 @@ from .dates import now_utc
 from .errors import ConfigError, DeliveryError, FxError, LockBusy, SafetyCheckFailed
 from .history import History, current_user, file_digest
 from .lock import RunLock
-from .recipe import Feed, feed_paths, layout_changes, layout_signature, recipe_digest
+from .recipe import (
+    Feed,
+    collision_with,
+    feed_paths,
+    key_text,
+    layout_changes,
+    layout_signature,
+    load_all,
+    recipe_digest,
+)
 from .sync import Syncer, reads_to_sync
 
 log = logging.getLogger(__name__)
 
+UPGRADE_META = "upgrade:"            # history meta: upgrade:<feed> = {"to": version, "changes": [...]}
+SETTINGS_AUDITED = "settings_audited"  # history meta: set once the first settings audit stored its snapshots
 CODES = {"success": 0, "built": 0, "preview": 0, "blocked": 2, "held": 2, "failed": 1}
 RELEASABLE = {"held", "blocked", "built"}
 
@@ -104,10 +115,22 @@ def hold_reason(hist: History, feed: Feed) -> str | None:
     if _major(last.get("recipe_version")) != _major(feed.recipe.version_str):
         reasons.append(f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
                        f"{last.get('recipe_version')})")
+        reasons += upgrade_review(hist, feed)
     note = layout_note(last, layout_signature(feed))
     if note:
         reasons.append(note)
     return "; ".join(reasons) or None
+
+
+def upgrade_review(hist: History, feed: Feed) -> list[str]:
+    """What `upgrade` found the new major version changes in the feed's settings, when it moved to this major."""
+    try:
+        stored = json.loads(hist.get_meta(f"{UPGRADE_META}{feed.name}") or "{}")
+    except ValueError:
+        return []
+    if _major(stored.get("to")) != _major(feed.recipe.version_str) or not stored.get("changes"):
+        return []
+    return ["the new version changes: " + "; ".join(map(str, stored["changes"]))]
 
 
 def layout_note(last: dict | None, layout: object) -> str | None:
@@ -191,6 +214,8 @@ def redact(data, key: str = ""):
         return [redact(v, key) for v in data]
     if key.lower() in credentials.SECRET_KEYS:
         return "[removed: secrets never go in files]"
+    if (key in ("private_key", "known_hosts") and key_text(data)) or (isinstance(data, str) and "PRIVATE KEY" in data):
+        return "[removed: key text, not the path of a key file]"
     if key in ("secret", "webhook", "heartbeat") and data is not None and not credentials.is_secret_ref(data):
         return "[removed: not keyring or env:NAME]"
     return data
@@ -217,31 +242,57 @@ def site_recipe_paths(site: Site) -> list[Path]:
             for p in sorted(d.glob("*/*.yaml")) if p.is_file()]
 
 
+def _site_rel(site: Site, path: Path) -> str:
+    return path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
+
+
 def audit_settings(site: Site, hist: History) -> list[str]:
     """Audit hand edits to site.yaml, the feed files and the site's own recipe files since the last check (the
-    files hold no secrets)."""
+    files hold no secrets). A file added or removed is audited with its settings, except on a new site's first
+    audit, which only records what is there."""
     changed: list[str] = []
     feeds = feed_paths(site)
+    known = dict(hist.db.execute("SELECT key, value FROM meta WHERE key GLOB 'settings:*' AND value IS NOT NULL"))
+    established = bool(known) or hist.get_meta(SETTINGS_AUDITED) is not None
+    present: set[str] = set()
     for path in [site.root / "site.yaml", *feeds, *site_recipe_paths(site)]:
-        rel = path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
+        rel = _site_rel(site, path)
         key = f"settings:{rel}"
+        present.add(key)
         try:
             current = redact(read_yaml(path))
         except ConfigError:
             continue
-        stored = hist.get_meta(key)
+        stored = known.get(key)
         snapshot = json.dumps(current, sort_keys=True, default=str)
         if stored == snapshot:
             continue
         hist.set_meta(key, snapshot)
         if stored is None:
+            if established:
+                hist.audit(None, path.stem if path in feeds else None, "settings file added",
+                           {"file": rel, "settings": current})
+                changed.append(rel)
             continue
-        before, after = _flatten(json.loads(stored)), _flatten(current)
+        before, after = _flatten(redact(json.loads(stored))), _flatten(current)
         diff = {k: {"from": before.get(k), "to": after.get(k)}
                 for k in sorted(set(before) | set(after)) if before.get(k) != after.get(k)}
+        if not diff:
+            continue                          # only masked in a snapshot stored before the mask
         hist.audit(None, path.stem if path in feeds else None, "settings changed",
                    {"file": rel, "changes": diff})
         changed.append(rel)
+    feeds_rel = _site_rel(site, site.feeds_dir)
+    for key in sorted(set(known) - present):
+        rel = key.removeprefix("settings:")
+        feed = Path(rel).stem if Path(rel).parent == Path(feeds_rel) else None
+        hist.audit(None, feed, "settings file removed",
+                   {"file": rel, "settings": redact(json.loads(known[key]))})
+        hist.db.execute("DELETE FROM meta WHERE key=?", (key,))
+        hist.db.commit()
+        changed.append(rel)
+    if not established:
+        hist.set_meta(SETTINGS_AUDITED, datetime.now(timezone.utc).isoformat(timespec="seconds"))
     for path in feed_paths(site):
         key = f"feed_seen:{path.stem}"
         if hist.get_meta(key) is None:
@@ -255,6 +306,13 @@ def feed_created(hist: History, feed: Feed) -> datetime:
     if seen:
         return datetime.fromisoformat(seen)
     return datetime.fromtimestamp(feed.path.stat().st_mtime, timezone.utc)
+
+
+def delivery_clash(site: Site, feed: Feed) -> str | None:
+    """For a paused feed run or released by hand: another feed of the site, paused or not, that sends one of
+    its file names to the same place. Loading compares enabled feeds only (a clash there stops both), so an
+    enabled feed owns its file names and keeps running; the paused copy is refused here."""
+    return None if feed.enabled else collision_with(feed, load_all(site)[0])
 
 
 # ------------------------------------------------------------------ runs
@@ -320,6 +378,9 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         elif not feed.delivers:
             log.info("Feed %s has transport none; files stay in %s", feed.name, run_dir)
         else:
+            clash = delivery_clash(site, feed)
+            if clash:
+                raise FxError(f"Nothing was sent: {clash}")
             reason = hold_reason(hist, feed)
             if reason:
                 status, code = "held", 2
@@ -626,6 +687,9 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
         if row.get("destination") and row["destination"] != dest:
             raise FxError(f"The feed now delivers to {dest}, but this run was built for {row['destination']}. "
                           "Run the feed again.")
+        clash = delivery_clash(site, feed)
+        if clash:
+            raise FxError(f"Not released: {clash}")
         last = hist.last_delivered(feed.name, dest)
         if row["status"] == "built" and not force:
             checks.item_ratio(feed, int(row.get("items") or 0), last.get("items") if last else None)

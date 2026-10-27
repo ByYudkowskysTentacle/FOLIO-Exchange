@@ -29,6 +29,7 @@ from .recipe import (
     load_feed_data,
     load_recipe_file,
     parse_uses,
+    settings_changes,
 )
 
 log = logging.getLogger("folio_exchange")
@@ -553,6 +554,11 @@ def cmd_feeds(args) -> int:
             late = runner.overdue(site, f, hist, now)
             if late:
                 print(f"  WARNING   {late}")
+            from . import sources
+
+            local = sources.local_minor_warning(site, library, f)
+            if local:
+                print(f"  WARNING   {local}")
     for name, err in errors.items():
         print(f"{name}  PROBLEM\n  " + err.replace("\n", "\n  "))
     return 1 if errors else 0
@@ -680,6 +686,11 @@ def cmd_upgrade(args) -> int:
             a, b = [c["header"] for c in old["columns"]], [c["header"] for c in o["columns"]]
             if a != b:
                 print(f"  {o['name']}: columns change from\n    {a}\n  to\n    {b}")
+    changes = settings_changes(feed, new)
+    if changes:
+        print(f"  What else changes for {feed.name}:")
+        for text in changes:
+            print(f"    - {text}")
     if new.recipe.version[0] != feed.recipe.version[0] and feed.delivers:
         print("  This is a new major version: the next delivery is held until you release it.")
     if not (args.yes or _yes(f"Change {feed.path.name} to uses: {target}?")):
@@ -688,7 +699,9 @@ def cmd_upgrade(args) -> int:
     rewrite_key(feed.path, "uses", target)
     with History(site.history_path) as hist:
         hist.audit(None, feed.name, "recipe upgraded", {"from": feed.recipe.ref, "to": new.recipe.ref,
-                                                         "uses": target})
+                                                         "uses": target, "changes": changes})
+        hist.set_meta(f"{runner.UPGRADE_META}{feed.name}",
+                      json.dumps({"to": new.recipe.version_str, "changes": changes}))
         runner.audit_settings(site, hist)
     print(f"Done. Run `folio-exchange preview {feed.name}` to look at the new layout.")
     return 0
