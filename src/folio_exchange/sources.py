@@ -199,12 +199,19 @@ def _session() -> requests.Session:
 
 
 # ------------------------------------------------------------------ check and install
+def _same_text(a: bytes, b: bytes) -> bool:
+    """The same file apart from line endings and a byte-order mark (a Windows checkout may store CRLF)."""
+    def norm(x: bytes) -> bytes:
+        return x.removeprefix(b"\xef\xbb\xbf").replace(b"\r\n", b"\n")
+    return norm(a) == norm(b)
+
+
 def _status(library: RecipeLibrary, rid: str, version: tuple[int, int, int], content: bytes) -> str:
     """new, installed (the same file) or conflict (another file under the same version)."""
     for r in library.versions(rid):
         if r.version == version:
             try:
-                same = r.path.read_bytes() == content
+                same = _same_text(r.path.read_bytes(), content)
             except OSError:
                 same = False
             return "installed" if same else "conflict"

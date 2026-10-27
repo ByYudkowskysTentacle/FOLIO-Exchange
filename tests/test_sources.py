@@ -16,7 +16,7 @@ from folio_exchange.recipe import RecipeLibrary
 
 REPO = "ByYudkowskysTentacle/FOLIOHQ"
 SHA = "a" * 40
-BUNDLED = (BUNDLED_RECIPES / "chq-academic" / "1.0.0.yaml").read_bytes()
+BUNDLED = (BUNDLED_RECIPES / "chq-academic" / "1.0.0.yaml").read_bytes().replace(b"\r\n", b"\n")   # as GitHub serves it
 
 
 def newer(version="1.1.0", change="Adds a column."):
@@ -242,3 +242,12 @@ def test_an_emptied_sources_list_is_just_empty(tmp_path):
     (root / "site.yaml").write_text((root / "site.yaml").read_text(encoding="utf-8") + "recipe_sources:\n",
                                     encoding="utf-8")
     assert [s.id for s in sources.load_sources(load_site(root))] == ["foliohq"]
+
+
+def test_a_windows_checkout_with_crlf_line_endings_is_the_same_recipe(site, tmp_path):
+    crlf = tmp_path / "crlf"
+    (crlf / "chq-academic").mkdir(parents=True)
+    (crlf / "chq-academic" / "1.0.0.yaml").write_bytes(BUNDLED.replace(b"\n", b"\r\n"))
+    crlf_library = RecipeLibrary([crlf])
+    result = sources.check(site, crlf_library, "foliohq", http=FakeGitHub({"recipes/chq-academic/1.0.0.yaml": BUNDLED}))
+    assert result["recipes"][0]["status"] == "installed"
