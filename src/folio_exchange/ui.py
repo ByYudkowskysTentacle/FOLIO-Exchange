@@ -30,7 +30,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, delivery, reads, runner, schedule
-from .client import FolioError
+from .client import probe
 from .config import Site, load_site, read_yaml
 from .errors import ConfigError, FxError, LockBusy
 from .fields import FIELDS
@@ -56,11 +56,13 @@ class Job:
         self.lines: list[str] = []
         self.result: Any = None
         self.error: str | None = None
+        self.thread: threading.Thread | None = None
 
     def as_dict(self, since: int = 0) -> dict:
+        fresh = self.lines[since:]               # one snapshot, so log and log_total always agree
         return {"id": self.id, "kind": self.kind, "feed": self.feed, "status": self.status,
                 "seconds": round(self.seconds if self.seconds is not None else time.monotonic() - self.started, 1),
-                "log": self.lines[since:], "log_total": len(self.lines), "result": self.result, "error": self.error}
+                "log": fresh, "log_total": since + len(fresh), "result": self.result, "error": self.error}
 
 
 class _JobLog(logging.Handler):
@@ -111,8 +113,13 @@ class Jobs:
                 job.seconds = round(time.monotonic() - job.started, 1)
                 root.removeHandler(handler)
 
-        threading.Thread(target=body, name=f"fx-job-{job.id}", daemon=True).start()
+        job.thread = threading.Thread(target=body, name=f"fx-job-{job.id}", daemon=True)
+        job.thread.start()
         return job
+
+    def running(self) -> Job | None:
+        job = self.current
+        return job if job is not None and job.status == "running" else None
 
 
 # ------------------------------------------------------------------ helpers
@@ -232,27 +239,10 @@ def check_connection(site_root: Path) -> dict:
     out: dict[str, Any] = {"password": site.folio_password_source(), "note": _env_password_note(site),
                            "endpoints": [], "denied": [], "problems": errors, "logged_in": False}
     client = runner.client_for(site)
-    client.login()
+    client.connect()
     out["logged_in"] = True
-    targets = [(n, reads.READS[n].path, reads.READS[n].permission) for n in reads.ENTITY_ORDER + ("marc",)
-               if n in needed]
-    targets += [(kind, path, perm) for kind, (path, _key, perm) in reads.REFDATA.items()]
-    for name, path, perm in targets:
-        row: dict[str, Any] = {"name": name, "path": path, "permission": perm}
-        try:
-            if path == reads.READS["marc"].path:
-                client.get(path, {"limit": 0})
-                row["count"] = None
-            else:
-                row["count"] = client.count(path)
-            row["status"] = "ok"
-        except FolioError as exc:
-            text = str(exc)
-            row["status"] = "denied" if ("-> 401" in text or "-> 403" in text) else "failed"
-            row["error"] = text[:300]
-            if row["status"] == "denied":
-                out["denied"].append(perm)
-        out["endpoints"].append(row)
+    out["endpoints"] = probe(client, needed)
+    out["denied"] = [r["permission"] for r in out["endpoints"] if r["status"] == "denied"]
     out["ok"] = all(r["status"] == "ok" for r in out["endpoints"])
     return out
 
@@ -294,7 +284,8 @@ class App:
     # -- GET
     def get(self, path: str, query: dict) -> Any:
         if path == "/api/site":
-            return site_summary(self.site_root)
+            job = self.jobs.running()
+            return {**site_summary(self.site_root), "job": job.as_dict() if job else None}
         if m := re.fullmatch(r"/api/feeds/([a-z0-9-]+)", path):
             site, library, feed, _feeds = _feed(self.site_root, m.group(1))
             with History(site.history_path) as hist:
@@ -502,9 +493,26 @@ def serve(site_root: Path, port: int = 8765, open_browser: bool = True) -> None:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
+        _finish_running_job(app)
         print("\nStopped.", file=sys.stderr)
     finally:
         httpd.server_close()
+
+
+def _finish_running_job(app: App) -> None:
+    """On Ctrl+C, let a running run or release finish rather than cut a delivery off half way."""
+    job = app.jobs.running()
+    if job is None or job.thread is None:
+        return
+    what = f"{job.kind} of {job.feed}" if job.feed else job.kind
+    print(f"\nA {what} is still running; waiting for it to finish. Press Ctrl+C again to stop anyway.",
+          file=sys.stderr, flush=True)
+    try:
+        while job.thread.is_alive():
+            job.thread.join(0.5)
+        print(f"The {what} finished: {job.status}.", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("Stopped while it was still running; check `folio-exchange history` for what it did.", file=sys.stderr)
 
 
 def start_in_thread(site_root: Path) -> tuple[ThreadingHTTPServer, App]:

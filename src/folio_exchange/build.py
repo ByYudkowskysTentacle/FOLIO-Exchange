@@ -19,6 +19,7 @@ from .dates import FMT, fmt, now_utc
 from .delimited import DelimitedWriter
 from .fields import DATE_FIELDS, Ref, RowBuilder
 from .marc import MarcBuilder, from_instance, from_srs
+from .sync import MARC_SOURCES
 
 if TYPE_CHECKING:
     from .recipe import Feed
@@ -44,6 +45,10 @@ class BuildReport:
     marc_items_truncated: int = 0
     marc_oversize_skipped: int = 0
     marc_long_fields_truncated: int = 0
+    bibs_marc_missing: int = 0          # MARC-source instances with no SRS record: sent as brief records
+    bibs_marc_missing_consortium: int = 0
+    marc_unreadable: int = 0            # SRS records that could not be read or written: sent as brief records
+    marc_problem_hrids: list[str] = field(default_factory=list)
 
 
 class _MarcSink:
@@ -126,6 +131,7 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
     keep_suppressed_item = bool(sel["include_suppressed_items"])
     keep_no_barcode = bool(sel["include_items_without_barcode"])
     keep_bibs_without_items = bool(sel["bibs_without_items"])
+    keep_suppressed_holdings = bool(sel.get("include_suppressed_holdings", True))
     seen_barcodes: set[str] = set()
     flushed = 0
 
@@ -143,6 +149,10 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
             return "no barcode"
         return None
 
+    def note_problem(inst: dict) -> None:
+        if len(rep.marc_problem_hrids) < 10:
+            rep.marc_problem_hrids.append(str(inst.get("hrid") or inst.get("id")))
+
     def flush(inst_row, rows: list[dict]) -> None:
         nonlocal flushed
         if inst_row is None:
@@ -156,12 +166,28 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
             inst = unpack(inst_blob)
             content = unpack(marc_blob) if "marc" in feed.reads else None
             rec = from_srs(content) if content else None
+            data = None
+            unreadable = bool(content) and rec is None
             if rec is not None:
-                rep.bibs_from_srs += 1
-            else:
+                try:
+                    data = marc_builder.finalize(rec, inst, rows)
+                    rep.bibs_from_srs += 1
+                except Exception as exc:  # noqa: BLE001 - one odd record must not stop the whole file
+                    log.warning("The MARC record of %s (%s) could not be written (%s: %s); a brief record is "
+                                "sent instead", inst.get("hrid"), inst.get("id"), type(exc).__name__, exc)
+                    rec, unreadable = None, True
+            if rec is None:
+                if unreadable:
+                    rep.marc_unreadable += 1
+                    note_problem(inst)
+                elif "marc" in feed.reads and inst.get("source") in MARC_SOURCES:
+                    rep.bibs_marc_missing += 1
+                    if inst.get("source") == "CONSORTIUM-MARC":
+                        rep.bibs_marc_missing_consortium += 1
+                    note_problem(inst)
                 rec = from_instance(inst, ref)
                 rep.bibs_generated += 1
-            data = marc_builder.finalize(rec, inst, rows)
+                data = marc_builder.finalize(rec, inst, rows)
             if data is not None:
                 marc_sink.write(data)
                 rep.bibs_written += 1
@@ -211,6 +237,9 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
                 continue
             item = unpack(it_blob)
             reason = item_ok(item)
+            holdings = unpack(h_blob) or {}
+            if not reason and not keep_suppressed_holdings and holdings.get("discoverySuppress"):
+                reason = "holdings suppressed"
             if reason:
                 rep.items_skipped[reason] += 1
                 continue
@@ -218,7 +247,7 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
                 current_inst_json = unpack(inst_blob)
             loans = {"last_loan": last_loan, "last_return": last_return, "total": total,
                      "window": win, "renewals": renewals, "open_due": open_due}
-            row = rows_builder.build(item, unpack(h_blob) or {}, current_inst_json, loans)
+            row = rows_builder.build(item, holdings, current_inst_json, loans)
             bc = row["barcode"]
             if not bc:
                 rep.items_without_barcode += 1

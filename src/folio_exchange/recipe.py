@@ -46,6 +46,7 @@ FEED_KEYS = (
 SELECTION_DEFAULTS: dict[str, Any] = {
     "include_suppressed_instances": False,
     "include_suppressed_items": False,
+    "include_suppressed_holdings": True,
     "include_items_without_barcode": True,
     "bibs_without_items": False,
     "exclude_item_statuses": [],
@@ -59,7 +60,7 @@ LEGACY_DEFAULTS: dict[str, Any] = {
 CHECKS_DEFAULTS: dict[str, Any] = {"min_item_ratio": 0.9, "must_be_filled": []}
 DELIVERY_DEFAULTS: dict[str, Any] = {
     "transport": "none", "upload_mode": "staged", "host": None, "port": 22, "username": None, "remote_dir": ".",
-    "host_key_fingerprint": None, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
+    "host_key_fingerprint": None, "host_key_confirmed": True, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
 }
 # A shared recipe may only say how files travel; where they go and which server key to trust are local.
 RECIPE_DELIVERY_KEYS = ("transport", "upload_mode")
@@ -461,6 +462,8 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
     fp = dlv.get("host_key_fingerprint")
     if fp is not None and not (isinstance(fp, str) and fp.startswith("SHA256:") and len(fp) > 20):
         c.add("delivery.host_key_fingerprint", "must look like SHA256:... (run `folio-exchange check --delivery`)")
+    if "host_key_confirmed" in dlv:
+        c.boolean(dlv["host_key_confirmed"], "delivery.host_key_confirmed")
     for key in ("host", "username", "remote_dir", "known_hosts", "private_key", "directory"):
         if dlv.get(key) is not None and not isinstance(dlv[key], str):
             c.add(f"delivery.{key}", "must be text")
@@ -774,7 +777,40 @@ def load_all(site: Site, library: RecipeLibrary | None = None) -> tuple[list[Fee
         except Exception as exc:  # noqa: BLE001 - one odd file must never stop the other feeds
             errors[feed_name(path)] = (f"{path.parent.name}/{path.name}: could not be read "
                                        f"({type(exc).__name__}: {exc}); check it against examples/feeds/chq.yaml")
-    return feeds, errors
+    for name, problem in file_collisions(feeds).items():
+        errors[name] = problem
+    return [f for f in feeds if f.name not in errors], errors
+
+
+def output_names(feed: Feed) -> list[str]:
+    """The file names a feed sends, with {date} left as it is (it is the same for every feed on a day)."""
+    names = []
+    for o in feed.outputs:
+        base = o["file_name"].replace("{prefix}", feed.file_prefix)
+        names.append(f"{base}.mrc" if o["format"] == "marc21" else f"{base}.{o.get('extension', 'csv')}")
+    return names
+
+
+def file_collisions(feeds: list[Feed]) -> dict[str, str]:
+    """Enabled feeds that would send a file of the same name to the same place: the later one would overwrite
+    the earlier at the vendor, and every check would still pass. Both feeds are reported."""
+    from .delivery import destination_key
+
+    seen: dict[tuple[str, str], str] = {}
+    problems: dict[str, str] = {}
+    for f in feeds:
+        if not f.enabled or not f.delivers:
+            continue
+        dest = destination_key(f.delivery)
+        for name in output_names(f):
+            other = seen.setdefault((dest, name), f.name)
+            if other != f.name:
+                text = (f"feeds/{other}.yaml and feeds/{f.name}.yaml both send {name} to {dest}, so one would "
+                        f"overwrite the other at the vendor. Give one of them its own file_prefix (for example "
+                        f"file_prefix: {f.name}) or a different folder.")
+                problems.setdefault(other, text)
+                problems.setdefault(f.name, text)
+    return problems
 
 
 def load_feeds(site: Site, library: RecipeLibrary | None = None) -> list[Feed]:
