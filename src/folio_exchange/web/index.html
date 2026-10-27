@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="fx-token" content="{{TOKEN}}">
+  <title>FOLIO-Exchange</title>
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="/static/logo.svg" alt="" width="22" height="22"><span>FOLIO-Exchange</span></div>
+    <div class="site-chip" id="site-chip" title="">Loading…</div>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost" id="btn-check" type="button">Check connection</button>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" aria-label="Feeds">
+      <div class="sidebar-head">Feeds</div>
+      <ul class="feed-list" id="feed-list"></ul>
+      <div class="sidebar-head">Site</div>
+      <ul class="feed-list">
+        <li><button class="nav-item" id="nav-connection" type="button"><span class="badge badge-muted">FOLIO</span><span class="nav-text"><span class="nav-name">Connection</span><span class="nav-sub" id="nav-connection-sub"></span></span></button></li>
+        <li><button class="nav-item" id="nav-activity" type="button"><span class="badge badge-muted">LOG</span><span class="nav-text"><span class="nav-name">Activity</span><span class="nav-sub">changes, releases, overrides</span></span></button></li>
+      </ul>
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </nav>
+
+    <main class="main" id="main">
+      <div class="empty" id="empty">
+        <p class="empty-title">Choose a feed</p>
+        <p>Each feed sends one vendor its files on a schedule. Pick one on the left to see its layout, run it, or look at past runs.</p>
+      </div>
+    </main>
+  </div>
+
+  <dialog class="modal" id="modal">
+    <form method="dialog" class="modal-body" id="modal-body"></form>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -275,6 +275,7 @@ Flat, small modules under `src/folio_exchange/`, as in FOLIOHQ. Copied FOLIOHQ c
 | `runner.py` | The pipeline for one feed, `--due` runs, release, preview, settings audit, alerts. |
 | `cli.py` | `folio-exchange` commands. |
 | `wizard.py` | `folio-exchange init`, the guided setup. |
+| `ui.py`, `web/` | `folio-exchange ui`: a small local page for looking at feeds and running them (see below). |
 
 ### Contracts
 
@@ -534,6 +535,7 @@ def worst_code(results) -> int                      # 1 if any failed, else 2 if
 | `history [FEED] [-n 20] [--audit] [--show RUN]` | Run history, one run in plain language, or the audit log. |
 | `secret set {folio\|smtp\|webhook\|FEED}` and `secret status` | Store a secret in the keyring; show where each comes from. |
 | `schedule` | Next slot per feed, the exact command to register the hourly `run --due` with the OS, and commands to run it now, see its last result or remove it. Registers nothing. |
+| `ui [--port 8765] [--no-browser]` | Serve the local page on 127.0.0.1 and open it in the browser; Ctrl+C stops it. |
 
 Exit codes: 0 success, built or nothing due; 1 failed (or a usage or settings problem, including a mistyped command); 2 blocked, held, or a release that was not confirmed. `release` refuses a run folder that belongs to another feed, and a released blocked run keeps its block reason as `released_after`, not as an error.
 
@@ -548,6 +550,18 @@ class ScriptedPrompter(Prompter): __init__(answers: list); transcript: list[str]
 def run_wizard(root: Path, prompter: Prompter, *, library=None, read_host_key=None) -> int
 ```
 Steps, saving as it goes: site folder (warn on synced folders) → FOLIO URL, tenant, user → password into the keyring (or `FOLIO_PASSWORD`) → test login, then **write `site.yaml`** → choose a recipe and feed name, then **write the feed, paused** → test the recipe's permissions, listing the missing ones for the FOLIO administrator and stopping (progress kept) → filters from the tenant's own location codes and common item statuses → legacy note types from the tenant's note types → preview of 10 bibs → delivery: SFTP host, port, user, folder; read the server's host key and show it, then *matches the vendor's* (pin), *not confirmed yet* (pin, keep the feed paused) or *differs* (stop, delivery off) → SFTP password into the keyring → test the destination (uploads nothing) → schedule → alerts by email or webhook, with a test message → print the next steps (`run`, `release`, `schedule`) and a `setx FOLIO_EXCHANGE_SITE` tip on Windows. Every step can be re-run; existing answers are offered as defaults; every write is audited.
+
+## The local page (`folio-exchange ui`)
+
+Started early (26 Oct 2026), ahead of the phase 2 web UI, as a simple companion to the command line. The layout follows Postman's: feeds in a sidebar with a status label each (OK, Held, Blocked, Fail, Built, New, Off), a request-style bar per feed (recipe, destination, **Preview**, and **Run** with a *Build only* choice), tabs for Overview, Layout, Settings and History, and a result panel below with the run's status, time, counts, item rows, summary and live log. *Connection* runs the same probes as `check`; *Activity* shows the audit log. A held, blocked or built run gets a **Review and send…** button, which shows the same summary as `release` and sends only after the person confirms.
+
+- **No new dependencies.** Python's own `http.server` serves `web/index.html`, `app.css` and `app.js` from the package; nothing is loaded from the internet, and there is no build step. The page reuses the runner, so it adds no new way to reach FOLIO or a vendor.
+- **This computer only.** It listens on 127.0.0.1. Every request must name `127.0.0.1:<port>` or `localhost:<port>` in its Host header (against DNS rebinding). Every action is a POST carrying the per-session token written into the page; a request from another origin is refused. Responses carry a strict Content-Security-Policy (`script-src 'self'`, no inline scripts or styles), `X-Frame-Options: DENY` and `no-store`.
+- **No secrets.** The page is told where each secret comes from, never its value. It shows item rows only from files recorded for a run, and every value from FOLIO is set as text, never as HTML.
+- **One action at a time.** Check, preview, run, build and release run in a background thread; a second action while one runs is refused (HTTP 409). The page polls `/api/jobs/<id>` for log lines and the result.
+- **Status means the last real run.** Previews show in History but never set a feed's label or "Last run".
+- **API** (JSON): `GET /api/site`, `/api/feeds/<name>`, `/api/feeds/<name>/runs`, `/api/runs/<id>`, `/api/runs/<id>/rows`, `/api/audit`, `/api/jobs/<id>`; `POST /api/check`, `/api/feeds/<name>/{preview,run,build,release-preview,release,pause,resume}`.
+- **Not yet:** editing settings in the page (it points at the feed file), the setup wizard, storing secrets, alerts settings, and recipe upgrades. Those stay on the command line.
 
 ## From FOLIOHQ
 
@@ -588,7 +602,7 @@ FOLIO-Exchange reads none of FOLIOHQ's files; a library moving over runs `init` 
 
 Reviewed and left for later, each with a reason:
 
-- **Phase 2 web UI, inbound loads (v2), patron-data approvals** – roadmap; patron data is refused outright until the open question is answered.
+- **The full phase 2 web UI** (setup, editing settings and storing secrets in the page, more than one user), **inbound loads (v2), patron-data approvals** – roadmap; the local page above only looks and runs. Patron data is refused outright until the open question is answered.
 - **Transports beyond SFTP and a local folder (DEL-3), MARCXML/JSON/KBART builders (MAP-5)** – roadmap.
 - **A 9XX barcode link (MAP-4's third option)** – needs embedded items and a per-row check; add with the first vendor that links that way.
 - **Changed-records and deletes outputs** (`scope: changed`, a deletes file) – discovery layers and OCLC usually want them. They need per-feed delivered state; this is the main known limit for gate 2 ("a second recipe with no core code changes") and should be decided when the partner library picks the second vendor.

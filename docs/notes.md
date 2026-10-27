@@ -22,7 +22,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
-- 168 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
+- 177 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
 
 **Eureka trial (26 Oct 2026).** Run against the public Eureka Snapshot reference system (`https://folio-etesting-snapshot-kong.ci.folio.org`, tenant `diku`, the published demo login), delivering to a local folder:
 - `check`: login and every endpoint readable (10,042 instances, 27 holdings, 33 items, 15 loans, ten reference tables).
@@ -51,6 +51,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 | 2026-10-26 | Writing into FOLIO (inbound loads) waits for v2, behind a separate account and a second approver | Writes carry far more risk than reads |
 | 2026-10-26 | Working name FOLIO-Exchange | Check FOLIO's trademark guidance before announcing it |
 | 2026-10-26 | MIT license, the same as FOLIOHQ | One license across both tools; FOLIOHQ's code is reused here |
+| 2026-10-26 | Start a simple UI early, before gate 1: a local page served by `folio-exchange ui`, laid out like Postman, with no new dependencies | The dry run waits on the library's credentials. The page reuses the runner, so it adds no new path to FOLIO or a vendor |
 | 2026-10-26 | A delivery to a new destination, or on a new recipe major version, waits for a person to release it | A test delivery to a local folder must not disarm the review of the first real upload |
 | 2026-10-26 | Recipe minor and patch versions never change an output's bytes; any layout change is a new major | `^1.0` updates automatically, so a vendor must never see an unreviewed change |
 | 2026-10-26 | A shared recipe sets only how files travel (transport, upload mode); hosts, folders and server keys are local | A recipe from another site must not choose where files go or which server to trust |
