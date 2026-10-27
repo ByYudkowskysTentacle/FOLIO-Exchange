@@ -125,6 +125,73 @@ def test_source_change_note():
     assert "https://test.example.org tenant lib instead of https://folio.example.org tenant lib" in note
 
 
+# ------------------------------------------------------- R-HOLD-1, R-release-1: what a built or blocked run would hold
+def release_summary(site) -> dict:
+    s = load_site(site)
+    feed = next(f for f in load_all(s, RecipeLibrary(s.recipe_dirs))[0] if f.name == "chq")
+    seen: dict = {}
+    runner.release(s, feed, None, confirm=lambda summary: seen.update(summary) or False)
+    return seen
+
+
+def test_a_smaller_run_from_another_folio_is_blocked_and_names_the_change(site, folio, monkeypatch, capsys):
+    sent: list = []
+    monkeypatch.setattr("folio_exchange.notify.send", lambda alerts, subject, text, account="default":
+                        sent.append(text) or ["webhook"])
+    edit_site(site, alerts={"on": "failure", "webhook": "env:HOOK"})
+    released(site)
+    with hist(site) as h:
+        source = h.last_delivered("chq")["folio_source"]
+    monkeypatch.setenv("FOLIO_TENANT", "test")                      # a smaller test tenant
+    folio.data["items"] = folio.data["items"][:3]
+    assert main(["-s", str(site), "run", "chq"]) == 2
+    with hist(site) as h:
+        run = h.last_run("chq")
+    change = f"first delivery from FOLIO {source[:-4]}test; the last came from {source}"
+    assert run["status"] == "blocked" and run["report"]["would_hold"] == change
+    assert change in run["error"] and "held" not in run["report"]
+    assert change in sent[-1]                                        # the alert names it too
+    reason = release_summary(site)["reason"]
+    assert change in reason and reason.count(change) == 1
+    capsys.readouterr()
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    assert change in capsys.readouterr().out
+
+
+def test_a_built_run_from_another_folio_names_the_change_when_released(site, monkeypatch, capsys):
+    released(site)
+    monkeypatch.setenv("FOLIO_TENANT", "test")
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    with hist(site) as h:
+        run = h.last_run("chq")
+    assert run["status"] == "built" and "from FOLIO" in run["report"]["would_hold"]
+    assert release_summary(site)["reason"].startswith("a delivery would be held for review: first delivery from FOLIO")
+    capsys.readouterr()
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    assert "Why it waited: a delivery would be held for review: first delivery from FOLIO" in capsys.readouterr().out
+
+
+def test_a_built_run_after_a_major_upgrade_shows_the_upgrade_review(site, capsys):
+    from folio_exchange.config import BUNDLED_RECIPES
+    released(site)
+    data = read_yaml(BUNDLED_RECIPES / "chq-academic" / "1.0.0.yaml")
+    data["version"] = "2.0.0"
+    data["changelog"] = [{"version": "2.0.0", "date": "2026-10-27", "changes": "No drop guard"}]
+    data["checks"] = {**data.get("checks", {}), "min_item_ratio": 0}
+    write_yaml(site / "recipes" / "chq-academic" / "2.0.0.yaml", data)
+    assert main(["-s", str(site), "upgrade", "chq", "--to", "chq-academic@^2.0", "--yes"]) == 0
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    reason = release_summary(site)["reason"]
+    assert "recipe chq-academic@2.0.0" in reason and "check min_item_ratio changed from 0.9 to 0" in reason
+
+
+def test_a_held_runs_reason_is_unchanged(site):
+    assert main(["-s", str(site), "run", "chq"]) == 2
+    with hist(site) as h:
+        dest = h.last_run("chq")["destination"]
+    assert release_summary(site)["reason"] == f"first delivery to {dest}"
+
+
 # ------------------------------------------------------- CACHE-diskfull-treated-as-corruption
 def broken_copies(site):
     return sorted(p.name for p in (site / "data").glob("cache.broken-*"))
@@ -292,6 +359,7 @@ def ssh_server(*keys):
             except OSError:
                 continue
             t = paramiko.Transport(conn)
+            t.set_log_channel("tests.sftp-server")       # the client's records stay apart from the test server's
             for k in keys:
                 t.add_server_key(k)
             transports.append(t)
@@ -538,3 +606,119 @@ def test_an_alert_url_that_cannot_be_found_is_a_warning(site, keyring, monkeypat
     site.rename(renamed)                                            # the keyring entry belongs to the old name
     assert [w["text"][:14] for w in warnings_for(renamed) if w["code"] == "alert-secret-missing"] == [
         "alerts.webhook"]
+
+
+# ------------------------------------------------------- R-SFTP-1: a typed pin whose type the server dropped
+def test_a_typed_pin_the_server_no_longer_offers_is_a_changed_key(host_keys, monkeypatch):
+    import paramiko
+
+    monkeypatch.setenv("PW", "pw")
+    rsa, ed = host_keys["rsa"], host_keys["ed25519"]
+    with ssh_server(ed) as port:                                    # the vendor moved to Ed25519 only
+        d = pin(port, rsa, "ssh-rsa")
+        with pytest.raises(paramiko.SSHException) as err:
+            delivery._connect(d)
+    text = delivery.plain_error(err.value, d)
+    assert text.startswith("Host key for 127.0.0.1: the server no longer offers the pinned ssh-rsa key "
+                           f"(pinned {delivery.sha256_fingerprint(rsa)}); it now offers ssh-ed25519 "
+                           f"{delivery.sha256_fingerprint(ed)}")
+    assert "ask the vendor" in text and "IncompatiblePeer" not in text
+
+
+# ------------------------------------------------- R-SFTP-2: probing for key types logs no tracebacks
+@pytest.fixture
+def paramiko_errors():
+    import logging
+
+    records: list = []
+
+    class Catch(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.ERROR:
+                records.append(record)
+
+    logger, handler = logging.getLogger("paramiko"), Catch()
+    level = logger.level
+    logger.setLevel(logging.WARNING)                               # as cli._setup_logging leaves it
+    logger.addHandler(handler)
+    yield records
+    logger.removeHandler(handler)
+    logger.setLevel(level)
+
+
+def test_probing_for_key_types_logs_no_errors(host_keys, monkeypatch, paramiko_errors):
+    import logging
+
+    monkeypatch.setenv("PW", "pw")
+    rsa, ed = host_keys["rsa"], host_keys["ed25519"]
+    kinds: list = []
+    real = delivery.disabled_host_key_algorithms
+    monkeypatch.setattr(delivery, "disabled_host_key_algorithms", lambda kind: kinds.append(kind) or real(kind))
+    before = logging.getLogger("paramiko.transport").level
+    with ssh_server(rsa, ed) as port:
+        client = delivery._connect(pin(port, rsa))                  # untyped: Ed25519 is offered first
+        client.close()
+        assert kinds == ["ssh-rsa"]                 # no second Ed25519 try, and RSA before the ECDSA kinds
+        kinds.clear()
+        keys = delivery.host_key_fingerprints("127.0.0.1", port)
+    assert [k["type"] for k in keys["keys"]] == ["ssh-ed25519", "ssh-rsa"]
+    assert kinds[0] == "ssh-rsa" and all(k.startswith("ecdsa") for k in kinds[1:])
+    assert paramiko_errors == [] and logging.getLogger("paramiko.transport").level == before
+
+
+# ----------------------------------------------- R-SFTP-3: check --delivery compares every offered key
+def unconfirmed_feed(site, key_type="ssh-rsa"):
+    path = site / "feeds" / "chq.yaml"
+    raw = read_yaml(path)
+    raw["enabled"] = False
+    raw["delivery"] = {"transport": "sftp", "host": "sftp.vendor.example", "username": "lib1", "remote_dir": ".",
+                       "host_key_fingerprint": "SHA256:" + "r" * 43, "host_key_type": key_type,
+                       "host_key_confirmed": False}
+    write_yaml(path, raw)
+
+
+def test_check_delivery_finds_an_unconfirmed_pin_among_the_offered_keys(site, keyring, capsys, monkeypatch):
+    rsa, ed, read = two_keys()
+    monkeypatch.setattr(delivery, "host_key_fingerprints", lambda host, port=22, timeout=30: read)
+    unconfirmed_feed(site)
+    assert main(["-s", str(site), "check", "--delivery", "chq"]) == 1
+    out = capsys.readouterr().out
+    assert "The server offers it as its ssh-rsa key (the same)." in out and "DIFFERENT" not in out
+    other = {**ed, "sha256": "SHA256:" + "x" * 43}
+    monkeypatch.setattr(delivery, "host_key_fingerprints",
+                        lambda host, port=22, timeout=30: {**other, "keys": [other]})
+    assert main(["-s", str(site), "check", "--delivery", "chq"]) == 1
+    out = capsys.readouterr().out
+    assert "DIFFERENT: ask the vendor" in out and f"ssh-ed25519: {other['sha256']}" in out
+
+
+# --------------------------------------------- R-HIST-1: two programs open an old history file at once
+def test_an_old_history_file_opened_at_once_gains_its_columns_once(tmp_path):
+    failures: list = []
+    for trial in range(60):
+        path = tmp_path / f"history{trial}.sqlite"
+        db = sqlite3.connect(path)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("""CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, feed TEXT NOT NULL, recipe TEXT,
+            recipe_version TEXT, trigger TEXT, run_dir TEXT, started TEXT NOT NULL, finished TEXT,
+            status TEXT NOT NULL DEFAULT 'running', items INTEGER, bibs INTEGER, delivered INTEGER NOT NULL DEFAULT 0,
+            files TEXT, destinations TEXT, error TEXT, report TEXT, actor TEXT, destination TEXT)""")
+        db.commit()
+        db.close()
+        start = threading.Barrier(6)
+
+        def open_it(path=path, start=start):
+            start.wait()
+            try:
+                History(path).close()
+            except Exception as exc:  # noqa: BLE001 - every failure is the finding
+                failures.append(repr(exc))
+
+        threads = [threading.Thread(target=open_it) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        with History(path) as h:
+            assert "folio_source" in {r[1] for r in h.db.execute("PRAGMA table_info(runs)")}
+    assert failures == []

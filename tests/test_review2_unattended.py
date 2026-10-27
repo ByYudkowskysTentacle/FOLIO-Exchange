@@ -148,6 +148,7 @@ def test_a_cancelled_release_still_answers_without_sending(site, monkeypatch, ca
 
 @can_see_locks
 def test_a_lock_held_for_hours_alerts_once(site, alerts):
+    due_daily(site)
     s = load_site(site)
     taken = datetime.now(timezone.utc) - timedelta(hours=5)
     with RunLock(s.lock_path):
@@ -356,3 +357,141 @@ def test_a_slot_whose_login_route_was_missing_is_tried_again(site, folio):
     assert due(site) == 2                                               # the next hour tries again: held for review
     with hist(site) as h:
         assert [r["status"] for r in h.runs("chq")] == ["held", "failed"]
+
+
+# ------------------------------------------------------- review 2b: R-alerts-1, R-alerts-2/3, R-lock-3, R-due-2, R-warn-4
+def test_kept_alerts_are_not_sent_again_while_history_cannot_be_written(site, alerts, monkeypatch):
+    alerts.up = False
+    s = load_site(site)
+    for i in range(5):
+        runner.alert(s, "chq", "failed", f"kept {i}")
+    alerts.up = True
+    real = History.set_meta
+    monkeypatch.setattr(History, "set_meta", disk_full)              # the disk fills up as the network returns
+    assert [due(site) for _ in range(2)] == [1, 1]
+    assert not [t for t in alerts.texts() if t.startswith("First raised")]
+    monkeypatch.setattr(History, "set_meta", real)                   # space is freed
+    assert due(site) == 0
+    assert due(site) == 0
+    resent = [t.split("\n", 1)[1] for t in alerts.texts() if t.startswith("First raised")]
+    assert resent == [f"kept {i}" for i in range(5)]                  # each once, in order
+
+
+def test_a_kept_alert_is_sent_at_most_once_when_history_fails_after_the_send(site, alerts, monkeypatch):
+    alerts.up = False
+    s = load_site(site)
+    runner.alert(s, "chq", "failed", "one")
+    runner.alert(s, "chq", "failed", "two")
+    alerts.up = True
+    real, calls = History.set_meta, []
+
+    def fails_second(self, key, value):
+        calls.append(key)
+        if len(calls) > 1:
+            disk_full()
+        real(self, key, value)
+
+    with hist(site) as h:
+        monkeypatch.setattr(History, "set_meta", fails_second)
+        assert runner.resend_alerts(s, h) == 1                         # "one" is off the list before it goes
+        monkeypatch.setattr(History, "set_meta", real)
+        assert runner.resend_alerts(s, h) == 1
+    assert [t.split("\n", 1)[1] for t in alerts.texts()] == ["one", "two"]
+
+
+def test_a_failed_test_alert_is_never_kept_or_sent_later(site, alerts):
+    alerts.up = False
+    for _ in range(3):
+        assert main(["-s", str(site), "check", "--alerts"]) == 1
+    with hist(site) as h:
+        assert h.get_meta(runner.UNSENT) is None
+    alerts.up = True
+    assert main(["-s", str(site), "check", "--alerts"]) == 0
+    assert due(site) == 0
+    assert sum("test alert" in t for t in alerts.texts()) == 1
+
+
+def test_a_test_alert_kept_by_an_older_version_is_dropped(site, alerts):
+    s = load_site(site)
+    with hist(site) as h:
+        h.set_meta(runner.UNSENT, json.dumps([
+            {"subject": f"FOLIO-Exchange [{s.name}]: TEST", "text": "This is a test alert", "raised": None},
+            {"subject": f"FOLIO-Exchange [{s.name}] chq: FAILED", "text": "real", "raised": None}]))
+        assert runner.resend_alerts(s, h) == 1
+        assert h.get_meta(runner.UNSENT) is None
+    assert [t.split("\n", 1)[1] for t in alerts.texts()] == ["real"]
+
+
+def hold_lock_since(site, hours: float) -> RunLock:
+    s = load_site(site)
+    lock = RunLock(s.lock_path).__enter__()
+    taken = datetime.now(timezone.utc) - timedelta(hours=hours)
+    os.utime(s.lock_path, (taken.timestamp(), taken.timestamp()))
+    return lock
+
+
+@can_see_locks
+def test_a_lock_held_for_hours_sends_no_alert_while_no_feed_is_due(site, alerts, caplog):
+    lock = hold_lock_since(site, 5)                                  # a long first sync; chq (Sun 02:15) is not due
+    try:
+        assert due(site) == 0
+    finally:
+        lock.__exit__(None, None, None)
+    assert alerts.sent == []
+    due_daily(site)                                                   # once a feed would have run, it alerts
+    lock = hold_lock_since(site, 6)
+    try:
+        assert due(site) == 0
+    finally:
+        lock.__exit__(None, None, None)
+    assert len([t for t in alerts.texts() if "held this site's lock" in t]) == 1
+
+
+@can_see_locks
+def test_a_lock_held_for_hours_is_stuck_in_check_feeds_and_the_page(site, alerts, capsys):
+    due_daily(site)
+    lock = hold_lock_since(site, 48)
+    try:
+        assert due(site) == 0
+        task = task_now(site)
+        warned = [w for w in warnings_for(site) if w["code"] == "task-stuck"]
+        capsys.readouterr()
+        assert main(["-s", str(site), "feeds"]) == 0
+        out = capsys.readouterr().out
+    finally:
+        lock.__exit__(None, None, None)
+    alert = next(t for t in alerts.texts() if "held this site's lock" in t)
+    assert task["state"] == "stuck" and alert == "Scheduled runs are being skipped. " + task["text"] and "(2 days)" in alert
+    assert "first sync" not in task["text"]
+    assert len(warned) == 1 and warned[0]["level"] == "warning"
+    assert "WARNING  One run has held this site's lock since" in out
+
+
+@can_see_locks
+def test_a_lock_held_for_less_than_the_threshold_is_still_running(site):
+    lock = hold_lock_since(site, (feedops.LOCK_STUCK_AFTER - timedelta(minutes=10)).total_seconds() / 3600)
+    try:
+        task = task_now(site)
+    finally:
+        lock.__exit__(None, None, None)
+    assert task["state"] == "running"
+
+
+def test_a_preview_does_not_alert_an_unchanged_warning_again(site, folio, alerts):
+    created = next(t["id"] for t in folio.data["itemNoteTypes"] if t["name"] == "Legacy created date")
+    for item in folio.data["items"]:
+        item["notes"] = [{"itemNoteTypeId": created, "note": "1998"}]       # no usable date in any of them
+    assert main(["-s", str(site), "run", "chq"]) == 2
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    assert main(["-s", str(site), "run", "chq"]) == 0
+
+    def warnings() -> int:
+        return sum(subject.endswith("WARNING") for subject, _text in alerts.sent)
+
+    first = warnings()
+    assert main(["-s", str(site), "preview", "chq", "-n", "1"]) == 0
+    with hist(site) as h:
+        shown, real = h.runs("chq", 2)
+    assert shown["status"] == "preview" and shown["report"]["warnings"] != real["report"]["warnings"]  # a sample
+    assert main(["-s", str(site), "run", "chq"]) == 0
+    assert warnings() == first

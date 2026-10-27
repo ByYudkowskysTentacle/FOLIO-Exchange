@@ -74,12 +74,27 @@ class History:
         self._add_columns()
         self.db.commit()
 
-    def _add_columns(self) -> None:
+    def _missing_columns(self) -> list[tuple[str, str, str]]:
+        out = []
         for table, columns in ADDED_COLUMNS.items():
             have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
-            for name, kind in columns.items():
-                if name not in have:
-                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")  # noqa: S608 (fixed names)
+            out.extend((table, name, kind) for name, kind in columns.items() if name not in have)
+        return out
+
+    def _add_columns(self) -> None:
+        """Add the columns newer versions keep to an older file. The check is made again under the write lock,
+        so two programs opening the same old file at once (the page and the hourly task) add each column once."""
+        if not self._missing_columns():
+            return
+        self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for table, name, kind in self._missing_columns():
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")  # noqa: S608 (fixed names)
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def close(self) -> None:
         self.db.close()

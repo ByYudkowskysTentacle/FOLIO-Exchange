@@ -820,3 +820,13 @@ def test_headers_wrap_in_narrow_windows():
     assert "flex-wrap: wrap" in title_row[:title_row.index("}")]
     narrow = css[css.index("@media (max-width: 760px)"):]
     assert ".tabs { flex-wrap: wrap; }" in narrow and "flex-wrap: wrap" in narrow[narrow.index(".topbar {"):]
+
+
+def test_a_runs_summary_shows_its_warnings():
+    # Regression (R-page-5): the page never showed report.warnings, so unreadable legacy notes and brief MARC
+    # records were reported only on the command line, in run-report.json and in alerts.
+    js = _web("app.js")
+    summary = js[js.index("function runSummary("):]
+    summary = summary[:summary.index("\n}\n")]
+    assert "rep.warnings.map(" in summary and "pageWords(w)" in summary and '"Warnings"' in summary
+    assert "runSummary(run, rep)" in js and "const rep = R.report" in js       # previews and runs alike

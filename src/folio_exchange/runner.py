@@ -181,8 +181,8 @@ def alert(site: Site, feed: str | None, status: str, text: str, *, force: bool =
         return []
     subject = f"FOLIO-Exchange [{site.name}]{f' {feed}' if feed else ''}: {status.upper()}"
     sent = notify.send(site.alerts, subject, text, account=site.name)
-    if not sent and notify.has_channel(site.alerts):
-        _keep_unsent(site, subject, text)
+    if not sent and status != "test" and notify.has_channel(site.alerts):
+        _keep_unsent(site, subject, text)          # a test is for the person waiting on it, never for later
     return sent
 
 
@@ -212,18 +212,32 @@ def _unsent(hist: History) -> list[dict]:
 
 def resend_alerts(site: Site, hist: History) -> int:
     """Send the alerts that could not be sent before, oldest first, each saying when it was first raised. Stops
-    at the first that still fails (the channel is still out of reach). Returns how many were sent."""
-    kept = _unsent(hist)
-    if not kept or not notify.has_channel(site.alerts):
+    at the first that still fails (the channel is still out of reach). Returns how many were sent.
+
+    Each is taken off the list in history before it is sent, and put back if the send fails, so a history that
+    cannot be written (a full disk) sends nothing rather than the same alerts again on every pass."""
+    if not notify.has_channel(site.alerts):
         return 0
     done = 0
-    for a in kept:
+    while kept := _unsent(hist):
+        a, rest = kept[0], kept[1:]
+        try:
+            hist.set_meta(UNSENT, json.dumps(rest) if rest else None)
+        except sqlite3.Error as exc:
+            log.warning("Could not update the alerts kept to send later, so none is sent now: %s",
+                        type(exc).__name__)
+            break
+        subject = str(a.get("subject"))
+        if subject.endswith(": TEST"):
+            continue                                   # kept by an older version; a test is never sent late
         text = f"First raised {_local(a.get('raised'))}, when it could not be sent.\n{a.get('text', '')}"
-        if not notify.send(site.alerts, str(a.get("subject")), text, account=site.name):
+        if not notify.send(site.alerts, subject, text, account=site.name):
+            try:
+                hist.set_meta(UNSENT, json.dumps([a, *_unsent(hist)][-UNSENT_KEEP:]))
+            except sqlite3.Error as exc:
+                log.warning("Could not keep the unsent alert to send later: %s", type(exc).__name__)
             break
         done += 1
-    if done:
-        hist.set_meta(UNSENT, json.dumps(kept[done:]) if kept[done:] else None)
     return done
 
 
@@ -305,11 +319,13 @@ def _site_rel(site: Site, path: Path) -> str:
     return path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
 
 
-def audit_settings(site: Site, hist: History) -> list[str]:
+def audit_settings(site: Site, hist: History, written: set[str] | None = None) -> list[str]:
     """Audit hand edits to site.yaml, the feed files and the site's own recipe files since the last check (the
     files hold no secrets). A file added or removed is audited with its settings, except on a new site's first
-    audit, which only records what is there."""
+    audit, which only records what is there, and a file in ``written`` (site-relative paths the caller just
+    wrote and audited itself), whose first snapshot is stored silently."""
     changed: list[str] = []
+    written = {Path(p).as_posix() for p in written or ()}
     feeds = feed_paths(site)
     known = dict(hist.db.execute("SELECT key, value FROM meta WHERE key GLOB 'settings:*' AND value IS NOT NULL"))
     established = bool(known) or hist.get_meta(SETTINGS_AUDITED) is not None
@@ -328,7 +344,7 @@ def audit_settings(site: Site, hist: History) -> list[str]:
             continue
         hist.set_meta(key, snapshot)
         if stored is None:
-            if established:
+            if established and rel not in written:
                 hist.audit(None, path.stem if path in feeds else None, "settings file added",
                            {"file": rel, "settings": current})
                 changed.append(rel)
@@ -381,7 +397,8 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
     out_base = site.out_dir / feed.name
     run_dir = _new_run_dir(out_base, hist=hist)
     dest = delivery.destination_key(feed.delivery)
-    previous = hist.last_run(feed.name)
+    # what the alerts compare with: never a preview, whose warnings come from a sample
+    previous = next((r for r in hist.runs(feed.name, 100) if r.get("status") != "preview"), None)
     source = folio_source(site)
     run_id = hist.start_run(feed.name, feed.recipe.id, feed.recipe.version_str, opts.trigger, run_dir, dest,
                             folio_source=source)
@@ -397,6 +414,7 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
     rep: BuildReport | None = None
     digests: list[dict] = []
     sent: list[str] = []
+    would_hold: str | None = None          # why a delivery would wait; kept on built and blocked runs too
     try:
         if sync_report is not None:
             report["sync"] = sync_report
@@ -433,6 +451,7 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
                 log.warning("%s", w)
         digests = [file_digest(run_dir / name) for name in rep.files]
         report["files"] = digests
+        would_hold = hold_reason(hist, feed, source) if feed.delivers else None
         checks.required_fields(feed, rep)
         last = hist.last_delivered(feed.name, dest)
         report["last_delivered_items"] = last.get("items") if last else None
@@ -440,6 +459,8 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
             checks.item_ratio(feed, rep.items_written, last.get("items") if last else None)
         if opts.no_deliver:
             status = "built"
+            if would_hold:
+                report["would_hold"] = would_hold
             log.info("--no-deliver: files left in %s", run_dir)
         elif not feed.delivers:
             log.info("Feed %s has transport none; files stay in %s", feed.name, run_dir)
@@ -447,17 +468,20 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
             clash = delivery_clash(site, feed)
             if clash:
                 raise FxError(f"Nothing was sent: {clash}")
-            reason = hold_reason(hist, feed, source)
-            if reason:
+            if would_hold:
                 status, code = "held", 2
-                report["held"] = reason
-                log.warning("Held for review (%s). %s", reason, next_step(feed, "held", run_dir))
+                report["held"] = would_hold
+                log.warning("Held for review (%s). %s", would_hold, next_step(feed, "held", run_dir))
             else:
                 sent = delivery.deliver([run_dir / n for n in rep.files], feed.delivery, feed.name)
                 report["delivered"] = sent
     except SafetyCheckFailed as exc:
         status, code = "blocked", 2
-        error = (f"{exc} The files are in {run_dir}. If the drop is not expected, fix it in FOLIO and run "
+        also = ""
+        if would_hold:
+            report["would_hold"] = would_hold
+            also = f" It would also have been held for review: {would_hold}."
+        error = (f"{exc}{also} The files are in {run_dir}. If the drop is not expected, fix it in FOLIO and run "
                  f"`folio-exchange run {feed.name}` again; this run is then never sent.")
         log.error("%s", error)
     except DeliveryError as exc:
@@ -851,13 +875,21 @@ def _release_ready(site: Site, hist: History, feed: Feed, run_dir: Path | None, 
     last = hist.last_delivered(feed.name, dest)
     if row["status"] == "built" and not force:
         checks.item_ratio(feed, int(row.get("items") or 0), last.get("items") if last else None)
+    rep = row.get("report") or {}
+    would = rep.get("would_hold")
+    note = layout_note(last, rep.get("layout"))
+    reasons: list[str] = []                  # each said once: a blocked run's error already names would_hold
+    for part, core in ((row.get("error"), row.get("error")), (rep.get("held"), rep.get("held")),
+                       (f"a delivery would be held for review: {would}", would), (note, note)):
+        if core and not any(core in r for r in reasons):
+            reasons.append(part)
     summary = {
         "feed": feed.name, "run_dir": str(rdir), "status": row["status"], "built": row.get("started"),
         "recipe": f"{row.get('recipe')}@{row.get('recipe_version')}", "bibs": row.get("bibs"),
         "items": row.get("items"), "last_delivered_items": last.get("items") if last else None,
         "last_delivered": last.get("started") if last else None,
-        "reason": row.get("error") or (row.get("report") or {}).get("held")
-        or layout_note(last, (row.get("report") or {}).get("layout")),
+        "reason": reasons[0] if len(reasons) == 1 else " ".join(
+            r[:1].upper() + r[1:] + ("" if r.endswith(".") else ".") for r in reasons) or None,
         "files": [(f["name"], f["bytes"]) for f in files], "destination": delivery.describe_destination(
             feed.delivery),
         "newer_runs": [r["run_dir"] for r in hist.runs(feed.name, 20)

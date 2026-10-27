@@ -115,6 +115,47 @@ def test_a_new_site_first_audit_records_nothing(site):
     assert audit(site) == []
 
 
+# ------------------------------------------------------------------ R-audit-1: a file the program wrote is not "added"
+def test_init_on_an_empty_folder_logs_no_added_file(tmp_path, folio, monkeypatch):
+    from sitekit import FOLIO_TEST_PASSWORD
+    from test_wizard import answers_until_delivery
+
+    from folio_exchange.wizard import ScriptedPrompter, run_wizard
+    monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
+    root = tmp_path / "site"
+    p = ScriptedPrompter(answers_until_delivery(folio.url) + ["local", str(tmp_path / "drop"), None, "none"])
+    assert run_wizard(root, p) == 0
+    assert entries(root, "settings file added") == [] and entries(root, "site settings written by init")
+    assert audit(root) == []                                       # every file the wizard wrote has its snapshot
+
+
+def test_a_feed_added_from_the_page_is_not_also_an_added_file(site):
+    audit(site)                                                      # an established site
+    s = load_site(site)
+    library = RecipeLibrary(s.recipe_dirs)
+    setupops.add_feed(s, library, "chq-2", "chq-academic")
+    assert [a["feed"] for a in entries(site, "feed added from the page (paused)")] == ["chq-2"]
+    assert entries(site, "settings file added") == []
+    v = setupops.feed_settings(s, library, "chq-2")["version"]
+    setupops.save_feed(s, library, "chq-2", {"title": "Second"}, version=v)
+    assert entries(site, "settings file added") == [] and audit(site) == []
+    (site / "feeds" / "hand.yaml").write_text((site / "feeds" / "chq.yaml").read_text(encoding="utf-8"),
+                                              encoding="utf-8")
+    assert audit(site) == ["feeds/hand.yaml"]                        # a hand-placed file is still audited
+
+
+def test_a_second_feed_from_the_page_on_a_new_site_is_not_an_added_file(tmp_path, folio, monkeypatch):
+    from sitekit import FOLIO_TEST_PASSWORD
+    monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
+    root = make_site(tmp_path / "new", folio.url)
+    s = load_site(root)
+    library = RecipeLibrary(s.recipe_dirs)
+    setupops.add_feed(s, library, "chq", "chq-academic")             # the site's first audit
+    setupops.add_feed(s, library, "chq-2", "chq-academic")
+    assert entries(root, "settings file added") == []
+    assert len(entries(root, "feed added from the page (paused)")) == 2
+
+
 def test_a_hand_placed_recipe_version_is_audited_and_warned_about(site):
     audit(site)
     path = write_yaml(site / "recipes" / "chq-academic" / "1.0.1.yaml", weakened("1.0.1"))

@@ -13,7 +13,7 @@ import logging
 import platform
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule
@@ -251,9 +251,16 @@ def cmd_check_delivery(args) -> int:
                 print(f"  Key not yet confirmed with the vendor; stored {d.get('host_key_fingerprint')}. "
                       "Nothing logs in until it is.")
                 try:
-                    seen = delivery.host_key_fingerprint(d["host"], int(d.get("port") or 22))
-                    print(f"  The server answers with {seen}"
-                          + (" (the same)." if seen == d.get("host_key_fingerprint") else " (DIFFERENT: ask the vendor)."))
+                    read = delivery.host_key_fingerprints(d["host"], int(d.get("port") or 22))
+                    offered = read.get("keys") or [read]
+                    same = [k for k in offered if k["sha256"] == d.get("host_key_fingerprint")]
+                    same.sort(key=lambda k: k["type"] != d.get("host_key_type"))     # the stored type first
+                    if same:
+                        print(f"  The server offers it as its {same[0]['type']} key (the same).")
+                    else:
+                        print("  The server offers none like it (DIFFERENT: ask the vendor). It offers:")
+                        for k in offered:
+                            print(f"    {k['type']}: {k['sha256']}")
                 except Exception as exc:  # noqa: BLE001 - network errors of every kind
                     print(f"  Could not read the server's key: {type(exc).__name__}: {str(exc)[:160]}")
                 print("  Compare it with the vendor's fingerprint, then run `folio-exchange init` again to confirm it.")
@@ -383,28 +390,25 @@ def _pass_failed(site: Site, exc: Exception, error: str, previous: dict) -> bool
     return bool(runner.alert(site, None, "failed", text))
 
 
-LOCK_STUCK_AFTER = timedelta(hours=4)
 LOCK_STUCK = "lock_stuck_since"            # history meta: the lock holder's start already alerted about
 
 
-def _lock_busy(site: Site, exc: LockBusy) -> int:
-    """A scheduled pass found the site's lock taken: skip this hour. When one run has held it for hours (a
-    stalled upload, a stuck process), alert once for that run."""
+def _lock_busy(site: Site, exc: LockBusy, feeds: list[Feed]) -> int:
+    """A scheduled pass found the site's lock taken: skip this hour. When one run (a manual run or a release
+    that stalled, a stuck process) has held it for hours while some feed is due, alert once for that run. A
+    scheduled pass that stalls never meets this (Task Scheduler starts no second one): `check` and the page say
+    it is stuck, the heartbeat stops, and once the task's 12-hour limit ends it the next pass reports it."""
     log.info("%s Skipping this hour; the next start will catch up.", exc)
     since = feedops.run_started(site.lock_path)
     now = datetime.now(timezone.utc)
-    if since is None or now - since < LOCK_STUCK_AFTER:
+    if since is None or now - since < feedops.LOCK_STUCK_AFTER:
         return 0
     stamp = since.isoformat(timespec="seconds")
     with History(site.history_path) as hist:
-        if hist.get_meta(LOCK_STUCK) == stamp:
-            return 0
+        if hist.get_meta(LOCK_STUCK) == stamp or not runner.due_feeds(site, feeds, now, hist):
+            return 0                         # alerted already, or nothing would have run this hour anyway
         hist.set_meta(LOCK_STUCK, stamp)
-    text = (f"Scheduled runs are being skipped: one run has held this site's lock since "
-            f"{since.astimezone():%Y-%m-%d %H:%M} ({feedops.ago(now - since)}), so no feed has run on its schedule "
-            "since. A first full download of a large catalogue can take this long; otherwise the run may be stuck "
-            "(a stalled upload, say). Look at logs/folio-exchange.log; if nothing is moving, end that FOLIO-Exchange "
-            "process or restart the computer, and the next hourly start catches up.")
+    text = "Scheduled runs are being skipped. " + feedops.stuck_text(since, now)
     log.warning("%s", text)
     runner.alert(site, None, "failed", text)
     return 0
@@ -429,7 +433,7 @@ def _run(args, site: Site) -> int:
                     if late and f not in chosen:
                         log.warning("Feed %s is %s", f.name, late)
         except LockBusy as exc:
-            return _lock_busy(site, exc)
+            return _lock_busy(site, exc, feeds)
         if not chosen and not bad:
             log.info("No feed is due.")
             return 0
@@ -444,7 +448,7 @@ def _run(args, site: Site) -> int:
         results = runner.run_many(site, chosen, opts, all_feeds=feeds, bad_feeds=bad)
     except LockBusy as exc:
         if args.due:
-            return _lock_busy(site, exc)
+            return _lock_busy(site, exc, feeds)
         raise
     if args.due:
         with History(site.history_path) as hist:
@@ -581,7 +585,8 @@ def cmd_feeds(args) -> int:
     with History(site.history_path) as hist:
         task = feedops.task_status(hist, feeds, now, lock_path=site.lock_path)
         if task["state"] != "unneeded":
-            label = {"ok": "", "running": "", "stale": "WARNING  ", "never": "NOTE     "}[task["state"]]
+            warn = "WARNING  "
+            label = {"ok": "", "running": "", "stuck": warn, "stale": warn, "never": "NOTE     "}[task["state"]]
             print(f"{label}{task['text']}\n")
         for f in feeds:
             s = schedule.parse(f.schedule)

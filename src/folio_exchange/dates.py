@@ -65,14 +65,21 @@ def legacy(value: str, naive_tz, date_format: str | None = None, now: datetime |
 
     Accepts ISO 8601, then ``date_format`` when given, else free text with a day, month and year.
     A leading label such as "Created: " is ignored, two-digit years fall in the past, and dates
-    before 1800 or after tomorrow are rejected."""
-    text = LABEL.sub("", str(value).strip(), count=1)
+    before 1800 or after tomorrow are rejected. A ``date_format`` that starts with the label itself
+    ("Created: %d/%m/%Y") reads notes with that label, with another one or with none."""
+    raw = str(value).strip()
+    text = LABEL.sub("", raw, count=1)
     dt = _iso(text)
     two_digit = False
     if dt is None and date_format:
-        try:
-            dt = datetime.strptime(text, date_format)
-        except ValueError:
+        bare = LABEL.sub("", date_format, count=1)
+        for note, pattern in dict.fromkeys([(raw, date_format), (text, date_format), (text, bare)]):
+            try:
+                dt = datetime.strptime(note, pattern)
+                break
+            except ValueError:
+                continue
+        if dt is None:
             return None
         two_digit = "%y" in date_format
     elif dt is None:

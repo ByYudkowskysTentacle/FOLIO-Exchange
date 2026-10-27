@@ -195,7 +195,7 @@ def _audit(root: Path, feed: str | None, action: str, detail: dict) -> None:
         return
     with History(site.history_path) as hist:
         hist.audit(None, feed, action, detail)
-        runner.audit_settings(site, hist)
+        runner.audit_settings(site, hist, {detail["file"]} if detail.get("file") else set())
 
 
 def _paused_by_person(root: Path, name: str) -> bool:

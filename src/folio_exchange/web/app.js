@@ -2112,6 +2112,9 @@ function runSummary(run, rep) {
       b.bibs_written !== undefined ? ["Bibs", `${num(b.bibs_written)} (${num(b.bibs_from_srs)} from MARC, ${num(b.bibs_generated)} generated)`] : null,
       ["Folder", h("span", { class: "mono", text: run.folder || "" })],
     ]),
+    // The run's own warnings (records sent as brief MARC, migrated notes that could not be read), runs and previews alike.
+    (rep.warnings || []).length ? [h("div", { class: "section-title", text: "Warnings" }),
+      h("ul", { class: "warnings", id: "run-warnings" }, rep.warnings.map((w) => h("li", {}, badge("held", "Check"), h("p", { text: pageWords(w) }))))] : null,
     h("div", { class: "section-title", text: "Files" }),
     (run.files || []).length ? h("ul", { class: "file-list" }, run.files.map((x) => h("li", { text: `${x.name}  ${bytes(x.bytes)}` }))) : h("p", { class: "muted", text: "None." }),
     (run.destinations || []).length ? [h("div", { class: "section-title", text: "Sent to" }),

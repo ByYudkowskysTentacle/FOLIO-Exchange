@@ -108,7 +108,8 @@ def write_settings(path: Path, data: dict, header: str) -> Path | None:
 def _audit(site: Site, feed: str | None, action: str, detail: dict) -> None:
     with History(site.history_path) as hist:
         hist.audit(None, feed, action, detail)
-        runner.audit_settings(site, hist)          # a change made here is not a hand edit
+        written = {detail["file"]} if detail.get("file") else set()
+        runner.audit_settings(site, hist, written)          # a change made here is not a hand edit
 
 
 # ------------------------------------------------------------------ the FOLIO connection

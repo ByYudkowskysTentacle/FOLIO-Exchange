@@ -2,6 +2,8 @@
 
 The first review (`review-2026-10-27.md`) named four areas it covered thinly. Four reviewers each read one of them: the values in the output files, unattended scheduled running on a Windows PC, living with the tool over time, and feed settings as a safety boundary. A second reviewer then tried to refute every finding, reproducing it where possible. Of 20 findings, 19 held up (several at a lower severity than first reported, as shown) and 1 was refuted. None is high. Severities below are the verifier's.
 
+**Status, 27 October 2026:** all 19 are fixed, with regression tests in `tests/test_review2_*.py`. Four reviewers then read the fixes together and a second reviewer tried to refute each of their findings: 15 held up (4 medium, the rest low, none high), and those are fixed too – among them the release summary and blocked-run alert now name a change of FOLIO or a new major's changed settings, a failed test alert is never queued, a stuck lock shows as a warning, `check --delivery` and the page compare every key the server offers, and history's new column is added under a write lock. FOLIOHQ's legacy tool still reads legacy notes leniently (see `notes.md`).
+
 ## Groups
 
 1. **Data sent to collectionHQ** (FIELD-legacy-note-parsing, HOLD-other-folio-unheld, FIELD-legacy-date-overflow-crash; up to medium). The files can carry wrong dates or counts, or another FOLIO's catalogue, while every run reports success.

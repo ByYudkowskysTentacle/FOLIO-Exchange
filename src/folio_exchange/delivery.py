@@ -10,6 +10,9 @@ import hashlib
 import logging
 import os
 import shutil
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +32,34 @@ def sha256_fingerprint(key) -> str:
 def md5_fingerprint(key) -> str:
     """The older aa:bb:... form some vendors still quote."""
     return ":".join(f"{b:02x}" for b in hashlib.md5(key.asbytes(), usedforsecurity=False).digest())
+
+
+_quiet_lock = threading.Lock()
+_quiet_depth = [0, logging.NOTSET]       # handshakes being probed now, and the level to put back after them
+
+
+@contextmanager
+def _quiet_handshakes() -> Iterator[None]:
+    """Keep paramiko from logging an error with a traceback for each key type a probing handshake finds missing
+    (an expected answer, not a fault), even when several probes overlap."""
+    logger = logging.getLogger("paramiko.transport")
+    with _quiet_lock:
+        if not _quiet_depth[0]:
+            _quiet_depth[1] = logger.level
+            logger.setLevel(logging.CRITICAL)
+        _quiet_depth[0] += 1
+    try:
+        yield
+    finally:
+        with _quiet_lock:
+            _quiet_depth[0] -= 1
+            if not _quiet_depth[0]:
+                logger.setLevel(_quiet_depth[1])
+
+
+def _probe_order() -> list[str]:
+    """The key types to probe, the common ones (Ed25519, then RSA, the usual older pin) before ECDSA."""
+    return sorted(KEY_TYPES, key=lambda kind: kind.startswith("ecdsa"))
 
 
 def _read_host_key(host: str, port: int, timeout: float, key_type: str | None = None) -> dict[str, str]:
@@ -56,11 +87,12 @@ def host_key_fingerprints(host: str, port: int = 22, timeout: float = 30) -> dic
     port = int(port or 22)
     first = _read_host_key(host, port, timeout)
     offered = [first]
-    for kind in KEY_TYPES:
+    for kind in _probe_order():
         if kind == first["type"]:
             continue
         try:
-            key = _read_host_key(host, port, min(timeout, 10), kind)
+            with _quiet_handshakes():
+                key = _read_host_key(host, port, min(timeout, 10), kind)
         except (paramiko.SSHException, EOFError, OSError):     # the server has no key of this type
             continue
         if key["type"] == kind and all(key["sha256"] != k["sha256"] for k in offered):
@@ -95,37 +127,65 @@ def disabled_host_key_algorithms(key_type: str) -> list[str]:
 
 def _connect_pinned(login: dict, expected: str, key_type: str | None):
     """Log in only to a server whose host key has the pinned SHA-256 value; any other key is refused before
-    logging in. With the pinned key's type only that type is negotiated. A pin without a type (from before types
-    were kept) is tried in paramiko's own order first, then once for each other key type."""
+    logging in. With the pinned key's type only that type is negotiated, and a server that no longer offers that
+    type is reported as a changed key. A pin without a type (from before types were kept) is tried in paramiko's
+    own order first, then once for each other key type it has not yet seen."""
     import paramiko
 
     class Mismatch(paramiko.SSHException):
         pass
 
+    seen: set[str] = set()
+
     class Pinned(paramiko.MissingHostKeyPolicy):
         def missing_host_key(self, _client, hostname, key):
+            seen.add(key.get_name())
             got = sha256_fingerprint(key)
             if got != expected:
                 raise Mismatch(f"Host key for {hostname} is {got}, expected {expected}")
 
-    tries: list[str | None] = [key_type] if key_type else [None, *KEY_TYPES]
+    tries: list[str | None] = [key_type] if key_type else [None, *_probe_order()]
     first: Exception | None = None
     for kind in tries:
+        if kind in seen:                       # the server already showed its key of this type
+            continue
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(Pinned())
         extra = {"disabled_algorithms": {"keys": disabled_host_key_algorithms(kind)}} if kind else {}
         try:
-            client.connect(**login, **extra)
+            if kind and not key_type:
+                with _quiet_handshakes():
+                    client.connect(**login, **extra)
+            else:
+                client.connect(**login, **extra)
             return client
-        except (Mismatch, paramiko.IncompatiblePeer) as exc:     # another key, or a type the server lacks
+        except paramiko.IncompatiblePeer as exc:        # the server has no key of this type
             client.close()
-            if len(tries) == 1:
+            if key_type:
+                raise Mismatch(f"Host key for {login['hostname']}: the server no longer offers the pinned {key_type} key "
+                               f"(pinned {expected}){_offered_now(login)}") from exc
+            first = first or exc
+        except Mismatch as exc:
+            client.close()
+            if key_type:
                 raise
             first = first or exc
         except BaseException:
             client.close()
             raise
     raise first or paramiko.SSHException(f"Host key for {login['hostname']}: none matches {expected}")
+
+
+def _offered_now(login: dict) -> str:
+    """'; it now offers <type> SHA256:...' naming the server's preferred key, or '' when it cannot be read."""
+    import paramiko
+
+    try:
+        with _quiet_handshakes():
+            key = _read_host_key(login["hostname"], int(login.get("port") or 22), 10)
+    except (paramiko.SSHException, EOFError, OSError):
+        return ""
+    return f"; it now offers {key['type']} {key['sha256']}"
 
 
 def _secret(d: dict) -> str | None:

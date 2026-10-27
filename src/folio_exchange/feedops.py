@@ -74,7 +74,8 @@ def _resume_checked(site: Site, name: str, path) -> None:
 
 LAST_DUE_START = "last_due_start"          # history meta: when `run --due` last started (UTC, ISO)
 TASK_STALE_AFTER = timedelta(hours=2)
-LAST_PASS = "last-pass.json"               # beside the run lock: when `run --due` last started, and how it ended
+LOCK_STUCK_AFTER = timedelta(hours=4)      # a run holding the site's lock longer than this may be stuck
+LAST_PASS = "last-pass.json"              # beside the run lock: when `run --due` last started, and how it ended
 LOW_DISK = 1_000_000_000                   # bytes free on the data folder's drive below which check warns
 
 
@@ -197,13 +198,14 @@ def _lock_held(path: Path) -> bool:
 
 
 def task_status(hist: History, feeds: list[Feed], now: datetime, *, lock_path: Path | None = None) -> dict:
-    """How the hourly scheduled task is doing: {state: running | ok | stale | never | unneeded, last, text}
-    (and ``since`` while running).
+    """How the hourly scheduled task is doing: {state: running | stuck | ok | stale | never | unneeded, last,
+    text} (and ``since`` while running or stuck).
 
     It matters only while an enabled feed runs on a schedule; otherwise a stopped task is no warning. While a
     pass holds the site's lock (``lock_path``), Task Scheduler does not start the task again, so a long pass (a
-    first full sync can take hours) is "running", not "stale". A run that took the lock more than two hours
-    after the task last started is not that pass (a manual run while the task is stopped), so it hides nothing."""
+    first full sync can take hours) is "running", not "stale"; after LOCK_STUCK_AFTER it is "stuck", a warning
+    worded as the stuck-lock alert. A run that took the lock more than two hours after the task last started is
+    not that pass (a manual run while the task is stopped), so it hides nothing."""
     scheduled = any(f.enabled and schedule.parse(f.schedule).kind != "manual" for f in feeds)
     recorded = last_due_start(hist)
     marked, ended = last_pass(lock_path) if lock_path is not None else (None, {})
@@ -211,6 +213,9 @@ def task_status(hist: History, feeds: list[Feed], now: datetime, *, lock_path: P
     since = run_started(lock_path) if lock_path is not None else None
     if since is not None and (last is None or since - last <= TASK_STALE_AFTER):
         stamp = last.astimezone(timezone.utc).isoformat(timespec="seconds") if last else None
+        if scheduled and now - since > LOCK_STUCK_AFTER:
+            return {"state": "stuck", "last": stamp, "since": since.isoformat(timespec="seconds"),
+                    "text": stuck_text(since, now)}
         text = (f"A run has been going since {since:%Y-%m-%d %H:%M} UTC ({ago(now - since)}); the hourly task "
                 "starts again once it finishes. A first sync of a large catalogue can take several hours.")
         return {"state": "running", "last": stamp, "since": since.isoformat(timespec="seconds"), "text": text}
@@ -236,6 +241,15 @@ def task_status(hist: History, feeds: list[Feed], now: datetime, *, lock_path: P
                 "has the details.")
         return {"state": "stale", "failing": True, "last": stamp, "text": text}
     return {"state": "ok", "last": stamp, "text": f"The scheduled task last ran {ago(age)} ago."}
+
+
+def stuck_text(since: datetime, now: datetime) -> str:
+    """What the stuck-lock alert, `check`, `feeds` and the page say about a run that has held the lock for hours."""
+    return (f"One run has held this site's lock since {since.astimezone():%Y-%m-%d %H:%M} ({ago(now - since)}), "
+            "so no other run can start until it ends, and a feed that falls due meanwhile is skipped. "
+            "A first full download of a large catalogue can take this long; otherwise the run may be stuck (a "
+            "stalled upload, say). Look at logs/folio-exchange.log; if nothing is moving, end that FOLIO-Exchange "
+            "process or restart the computer, and the next hourly start catches up.")
 
 
 def _failing(recorded: datetime | None, marked: datetime | None, ended: dict) -> str | None:
@@ -299,6 +313,8 @@ def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors:
     task = task_status(hist, feeds, now, lock_path=site.lock_path)
     if task["state"] == "stale":
         out.append(_w("warning", "task-failing" if task.get("failing") else "task-stale", task["text"]))
+    elif task["state"] == "stuck":
+        out.append(_w("warning", "task-stuck", task["text"]))
     elif task["state"] == "never":
         out.append(_w("note", "task-never", task["text"]))
     free = free_bytes(site.history_path.parent)

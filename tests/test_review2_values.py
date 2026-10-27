@@ -230,3 +230,13 @@ def test_unusable_notes_reach_the_run_report_and_preview(site, folio, capsys):
     assert main(["-s", str(site), "preview", "chq", "-n", "5"]) == 0
     out = capsys.readouterr().out
     assert "WARNING" in out and "legacy.created_date_note_type" in out and "legacy.circ_count_note_type" in out
+
+
+# ------------------------------------------------------------ R-dates-1: a date_format with the label in it
+def test_a_date_format_that_includes_the_label_reads_the_notes():
+    pattern = "Created: %d/%m/%Y"
+    assert legacy_format_problem(pattern) is None
+    for note in ("Created: 15/03/1998", "15/03/1998", "Old created: 15/03/1998"):
+        assert leg(note, date_format=pattern) == "1998-03-15T05:00:00", note
+    assert leg("Created: 15/03/1998", date_format="%d/%m/%Y") == "1998-03-15T05:00:00"   # the plain pattern too
+    assert leg("Created: 1998/15/03", date_format=pattern) is None
