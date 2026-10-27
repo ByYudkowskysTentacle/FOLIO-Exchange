@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -25,10 +26,12 @@ import traceback
 import uuid
 import webbrowser
 from datetime import datetime, timezone
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.request import ProxyHandler, build_opener
 
 from . import __version__, delivery, feedops, reads, runner, schedule
 from .client import probe
@@ -506,19 +509,58 @@ def make_handler(app: App):
     return Handler
 
 
-def serve(site_root: Path, port: int = 8765, open_browser: bool = True) -> None:
-    """Serve the page until Ctrl+C. Port 0 picks a free port."""
+DEFAULT_PORT = 8765
+
+
+class _Server(ThreadingHTTPServer):
+    """Owns its port alone. On Windows, SO_REUSEADDR (http.server's default) lets a second server bind a port
+    that is already listening, and requests then reach either one; SO_EXCLUSIVEADDRUSE refuses that."""
+
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+def _open_for(port: int, site_root: Path) -> bool:
+    """Whether the page already listening on ``port`` is this site's."""
+    try:
+        with build_opener(ProxyHandler({})).open(f"http://127.0.0.1:{port}/api/site", timeout=5) as r:
+            root = json.loads(r.read()).get("root")
+    except (OSError, HTTPException, ValueError, AttributeError):
+        return False
+    return bool(root) and os.path.normcase(str(Path(root).resolve())) == os.path.normcase(str(site_root.resolve()))
+
+
+def serve(site_root: Path, port: int | None = None, open_browser: bool = True) -> None:
+    """Serve the page until Ctrl+C. Port 0 picks a free port; no port means 8765, or a free one if that is taken.
+    When this site's page is already open on the port, open the browser on it instead of starting another."""
+    want_browser = open_browser and not os.environ.get("FOLIO_EXCHANGE_NO_BROWSER")
     app = App(site_root)
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app))
+        httpd = _Server(("127.0.0.1", DEFAULT_PORT if port is None else port), make_handler(app))
     except OSError as exc:
-        raise FxError(f"Could not listen on 127.0.0.1:{port} ({exc.strerror or exc}). Try another port with "
-                      "--port.") from None
-    httpd.daemon_threads = True
+        taken = DEFAULT_PORT if port is None else port
+        if taken and _open_for(taken, Path(site_root)):
+            url = f"http://127.0.0.1:{taken}/"
+            print(f"The page for this site is already open at {url}" + ("; opening it in your browser." if
+                  want_browser else "."), flush=True)
+            if want_browser:
+                webbrowser.open(url)
+            return
+        if port is not None:
+            raise FxError(f"Could not listen on 127.0.0.1:{port} ({exc.strerror or exc}). Try another port with "
+                          "--port.") from None
+        httpd = _Server(("127.0.0.1", 0), make_handler(app))
+        print(f"Port {DEFAULT_PORT} is in use by another program, so the page uses port "
+              f"{httpd.server_address[1]}.", flush=True)
     app.port = httpd.server_address[1]
     url = f"http://127.0.0.1:{app.port}/"
     print(f"FOLIO-Exchange is open at {url}  (this computer only). Press Ctrl+C to stop.", flush=True)
-    if open_browser and not os.environ.get("FOLIO_EXCHANGE_NO_BROWSER"):
+    if want_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
@@ -548,8 +590,7 @@ def _finish_running_job(app: App) -> None:
 def start_in_thread(site_root: Path) -> tuple[ThreadingHTTPServer, App]:
     """For tests: serve on a free port in a background thread."""
     app = App(site_root)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app))
-    httpd.daemon_threads = True
+    httpd = _Server(("127.0.0.1", 0), make_handler(app))
     app.port = httpd.server_address[1]
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, app

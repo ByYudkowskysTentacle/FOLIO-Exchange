@@ -176,7 +176,7 @@ def task_name(site_root: Path) -> str:
     return f"FOLIO-Exchange ({label})".replace('"', "")
 
 
-def _win_quote(arg: str) -> str:
+def win_quote(arg: str) -> str:
     """One argument in double quotes, escaped by the Windows C runtime rules: a quote becomes \\", and
     backslashes are doubled where they come before a quote (so C:\\ stays C:\\ rather than escaping it)."""
     out, slashes = "", 0
@@ -201,11 +201,11 @@ def os_command(site_root: Path, executable: str, system: str, user: str | None =
     site = str(Path(site_root).resolve())
     exe = executable or "folio-exchange"
     if system.lower().startswith("win"):
-        action = f"{_win_quote(exe.replace(chr(34), ''))} --site {_win_quote(site)} run --due"
+        action = f"{win_quote(exe.replace(chr(34), ''))} --site {win_quote(site)} run --due"
         who = f' /RU "{user}" /RP' if user else ""
         via = "cmd --% /c " if shell == "powershell" else ""
         return (f'{via}schtasks /Create /TN "{task_name(site)}" /SC HOURLY /MO 1 /ST 00:07 '
-                f"/TR {_win_quote(action)}{who} /F")
+                f"/TR {win_quote(action)}{who} /F")
     q = lambda v: "'" + v.replace("'", "'\"'\"'") + "'"
     log = str(Path(site) / "logs" / "cron.log")
     return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"
