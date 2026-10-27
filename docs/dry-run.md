@@ -138,6 +138,9 @@ If someone is helping you review the results, share the console output and `run-
 | `FOLIO refused the login …` | Check the user name and tenant id; during setup run `init` again and answer **n** to "Keep it?" to type the password again (or, once setup is done, `folio-exchange -s … secret set folio`). FOLIO-Exchange tries a refused password only once per run, so it cannot lock the account. |
 | `DENIED … the account lacks …` | Send the listed permissions to your administrator. |
 | `Item note type … not found` | The legacy note type name does not match FOLIO; re-run `init` and pick it from the list. |
+| `WARNING  … notes (legacy.…) could not be read …` | Some migrated notes are not in a form FOLIO-Exchange reads, so those items carry FOLIO's own date or loan count. Dates need a day, a month and a year (`1998-03-15`, `3/15/1998`, or `Created: 1998-03-15`); counts need one whole number (`12`, `Checkouts: 1,234`). If your dates are written day first, add `date_format: "%d/%m/%Y"` under `legacy:` in `feeds\chq.yaml`. The warning lists a few items to look at. |
+| `FOLIO's login service did not answer as expected …` | FOLIO may be part way through an upgrade or restart; the password was not checked. Run again later (a scheduled run tries again at the next hourly start). If it continues, check the API address and ask your FOLIO host. |
+| `The disk is full …` | Free some space on the drive that holds the site folder (and on the system drive), then run again. The local cache is kept, so the next run carries on from it. |
 
 ## Afterwards
 
@@ -194,9 +197,11 @@ The run builds the files as in the dry run, then stops before sending: the first
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary release chq
 ```
 
-It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Later runs to the same destination are sent without waiting, unless the item count drops sharply (that run is blocked for you to look at), the recipe moves to a new major version, or the files' layout changes.
+It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Leaving the question open does not hold up scheduled runs; if a run happens meanwhile, `release` sends nothing and asks you to run it again, so you see what it would send now. Later runs to the same destination are sent without waiting, unless the item count drops sharply (that run is blocked for you to look at), the recipe moves to a new major version, or the files' layout changes.
 
 **After changing columns or formats.** If you edit the `outputs` in `feeds\chq.yaml` (columns, headers, delimiter, date format, empty value, file names), the next delivery is held, and the hold message says what changed, for example `items file: columns changed: 'Item record ID' renamed to 'Item ID'`. Check the vendor expects the change, then send it with `release chq` as above.
+
+**After pointing the site at another FOLIO.** If you change the FOLIO address or tenant (with `init`, the page's Connection view, or the `FOLIO_URL` and `FOLIO_TENANT` environment variables), for example to try a test tenant, the next run downloads everything from that FOLIO and its delivery is held: `first delivery from FOLIO <new>; the last came from <old>`. Release it only if you mean to send that FOLIO's catalogue to the vendor. When you point the site back, the next run downloads everything again; its delivery is held too if you released one from the other FOLIO.
 
 **5. Resume the feed and schedule it.** If setup left the feed paused, resume it once `check --delivery` passes:
 
@@ -210,15 +215,15 @@ Feeds only run on their schedule when Windows starts FOLIO-Exchange every hour. 
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary schedule
 ```
 
-It prints two versions of the same `schtasks` command. Copy the one under **In PowerShell** (it starts `cmd --% /c schtasks`) if you are in PowerShell, or the **Command Prompt** one if you are in a Command Prompt; the other one fails in the wrong window. Run it once, signed in to Windows as the person who stored the passwords, since Credential Manager entries belong to that Windows user. It asks for your Windows password, so the task can run while nobody is signed in. Then check it with the `last result` command printed below it: "Task To Run" should show the folio-exchange.exe path and the `--site` folder, each in quotes. (`schedule --register` does the same in one step: it registers the task and Windows asks for your password.)
+It prints the command that registers the task, `schedule --register`, in two forms. Copy the one under **In PowerShell** (it starts `& '`) if you are in PowerShell, or the **Command Prompt** one if you are in a Command Prompt. Run it once, signed in to Windows as the person who stored the passwords, since Credential Manager entries belong to that Windows user. It asks for your Windows password, so the task can run while nobody is signed in. The task also runs on battery power, and catches up after the PC was off or asleep. (Below that, `schedule` also prints PowerShell lines that register the same task by hand, with the same settings, if you prefer to see each step.) Then check it with the `last result` command printed below it: "Task To Run" should show the folio-exchange.exe path and the `--site` folder, each in quotes.
 
-**When your Windows password changes,** the task stops starting, because it still holds the old password. Register it again:
+**When your Windows password changes,** the task stops starting, because it still holds the old password. A task registered by an earlier version of FOLIO-Exchange also never starts while a laptop runs on battery power. In either case, register it again:
 
 ```powershell
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary schedule --register
 ```
 
-**Noticing when the task stops.** `check` and `feeds` say when the task last ran. After more than two hours without a run, they and the page's Connection view warn that no feed has run and no alert could be sent since: the PC may be asleep or off, the task may be disabled in Task Scheduler, or the Windows password changed. A stopped task cannot send an alert itself, so you can also use a heartbeat monitor (a "dead man's switch" service, such as Healthchecks.io): it gives you a web address to call and emails you when the calls stop. FOLIO-Exchange calls the address when every hourly run starts and again when it ends. Set the monitor to expect a call every hour, with a grace time long enough for your longest run: the first full sync of a large catalogue can take several hours, with no call in between. While such a run is going, `check`, `feeds` and the Connection view say "A run has been going since …" instead of warning that the task stopped. The address is a secret, so store it in Windows Credential Manager:
+**Noticing when the task stops.** `check` and `feeds` say when the task last ran. After more than two hours without a run, they and the page's Connection view warn that no feed has run and no alert could be sent since: the PC may be asleep, off or on battery (for a task registered by an earlier version), the task may be disabled in Task Scheduler, or the Windows password changed. They also warn when the task runs but fails, for example because the disk is full and the run history cannot be written, and when less than 1 GB of disk space is free. A scheduled pass that fails that way sends an alert itself, once per distinct error. A stopped task cannot send an alert itself, so you can also use a heartbeat monitor (a "dead man's switch" service, such as Healthchecks.io): it gives you a web address to call and emails you when the calls stop. FOLIO-Exchange calls the address when every hourly run starts and again when it ends. Set the monitor to expect a call every hour, with a grace time long enough for your longest run: the first full sync of a large catalogue can take several hours, with no call in between. While such a run is going, `check`, `feeds` and the Connection view say "A run has been going since …" instead of warning that the task stopped. The address is a secret, so store it in Windows Credential Manager:
 
 ```powershell
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary secret set heartbeat
@@ -232,7 +237,19 @@ Then add `heartbeat: keyring` under `alerts:` in `site.yaml`. The address must s
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary check --alerts
 ```
 
-If you skipped alerts during the dry run, run `init` again and choose email or webhook at the alerts question. From now on, `folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary feeds` shows each feed's last run and next step, and `history` lists every run.
+If you skipped alerts during the dry run, run `init` again and choose email or webhook at the alerts question.
+
+An alert that cannot be sent when it is raised (the PC's network was down, say) is kept and sent at the next hourly run that can reach the channel, starting `First raised <time>`, so it may arrive late. When a feed's scheduled run fails on every attempt its slot allows (`runs.max_attempts_per_slot`, 3 by default), you get one alert saying the slot was given up and when the next one is; run the feed by hand once the problem is fixed.
+
+From now on, `folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary feeds` shows each feed's last run and next step, and `history` lists every run.
+
+## Moving the site folder
+
+If you move or rename the site folder (for example into `%LOCALAPPDATA%\FOLIO-Exchange`, as `check` may suggest), runs held before the move can still be released and their folders are still kept. Afterwards:
+
+- Register the hourly task again for the new folder with `schedule --register`. The task is named after the folder (`FOLIO-Exchange (mylibrary)`), so if the name changed, delete the old task in Task Scheduler.
+- Store the webhook and heartbeat addresses again with `secret set webhook` and `secret set heartbeat`: Windows Credential Manager keeps them under the folder's name, so after a rename they are not found. Until then `check` and the page warn that alerts or the heartbeat cannot be sent.
+- If you had set `FOLIO_EXCHANGE_SITE`, set it again with `setx` for the new folder.
 
 ## Updating FOLIO-Exchange
 

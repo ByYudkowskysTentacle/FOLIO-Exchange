@@ -136,15 +136,54 @@ def test_the_wizard_names_check_delivery_for_a_paused_feed(tmp_path, folio, monk
 EXE = r"C:\Program Files\FOLIO Exchange\venv\Scripts\folio-exchange.exe"
 
 
-def test_the_schtasks_line_has_a_powershell_and_a_command_prompt_form(tmp_path):
+def _ps_strings(line: str) -> list[str]:
+    """The single-quoted PowerShell string literals in a line, unquoted the way PowerShell's tokenizer does it:
+    ' and the typographic single quotes all open and close a literal, and two of them in a row stand for the
+    second one."""
+    quotes, out, i = "'‘’‚‛", [], 0
+    while i < len(line):
+        if line[i] not in quotes:
+            i += 1
+            continue
+        i, text = i + 1, ""
+        while True:
+            c = line[i]
+            if c in quotes:
+                if line[i + 1:i + 2] == "" or line[i + 1] not in quotes:
+                    break
+                i += 1
+                c = line[i]
+            text, i = text + c, i + 1
+        out.append(text)
+        i += 1
+    return out
+
+
+def test_the_manual_windows_task_has_the_same_settings_as_schedule_register(tmp_path):
     site = tmp_path / "my library"
-    ps = schedule.os_command(site, EXE, "Windows", "LIB\\fx", shell="powershell")
-    cmd = schedule.os_command(site, EXE, "Windows", "LIB\\fx")
-    # schtasks --% breaks in PowerShell 7.3+, which re-quotes the rest; cmd --% /c works in 5.1 and 7
-    assert ps.startswith("cmd --% /c schtasks /Create ") and cmd.startswith("schtasks /Create ")
-    assert ps.removeprefix("cmd --% /c ") == cmd
-    action = f'/TR "\\"{EXE}\\" --site \\"{site.resolve()}\\" run --due"'
-    assert action in cmd
+    text = schedule.os_command(site, EXE, "Windows", "LIB\\fx")
+    assert "schtasks" not in text and "cmd --%" not in text          # /TR leaves Task Scheduler's defaults
+    for switch in ("-AllowStartIfOnBatteries", "-DontStopIfGoingOnBatteries", "-StartWhenAvailable",
+                   "-ExecutionTimeLimit (New-TimeSpan -Hours 12)", "-RepetitionInterval (New-TimeSpan -Hours 1)",
+                   "-At '2020-01-01 00:07'", "-MultipleInstances IgnoreNew"):
+        assert switch in text
+    assert schedule.TASK_TIME_LIMIT == "PT12H"
+    lines = text.splitlines()
+    assert lines[-1].startswith(f"Register-ScheduledTask -TaskName '{schedule.task_name(site.resolve())}' ")
+    assert lines[-1].endswith(" -Force") and "-User $cred.UserName" in lines[-1]
+    assert "Get-Credential -UserName 'LIB\\fx'" in text               # the password is asked for, never typed in
+    assert "/RU" not in text and "/RP" not in text
+    without = schedule.os_command(site, EXE, "Windows")
+    assert "Get-Credential" not in without and "-User" not in without
+
+
+def test_the_schedule_register_line_has_a_powershell_and_a_command_prompt_form(tmp_path):
+    site = tmp_path / "it's a library"
+    ps = schedule.register_command(site, EXE, "powershell")
+    cmd = schedule.register_command(site, EXE, "cmd")
+    assert ps.startswith("& '") and ps.endswith(" schedule --register")
+    assert _ps_strings(ps) == [EXE, str(site.resolve())]
+    assert _crt_args(cmd) == [EXE, "--site", str(site.resolve()), "schedule", "--register"]
 
 
 def test_win_quote_keeps_a_trailing_backslash_from_eating_the_quote():
@@ -187,24 +226,28 @@ def _crt_args(line: str) -> list[str]:
     return args
 
 
-@pytest.mark.parametrize("site", ["C:/FOLIO-Exchange/my library (main)", "C:/"])
-def test_schtasks_receives_the_task_action_intact(site, monkeypatch):
+@pytest.mark.parametrize("site", ["C:/FOLIO-Exchange/my library (main)", "C:/", "C:/O\u2019Brien's library"])
+def test_the_manual_task_receives_the_task_action_intact(site, monkeypatch):
     monkeypatch.setattr(schedule.Path, "resolve", lambda self: self)    # Windows paths on any test machine
     site_path = Path(site)
-    args = _crt_args(schedule.os_command(site_path, EXE, "Windows", "LIB\\fx", shell="powershell"))
-    assert args[:3] == ["cmd", "--%", "/c"]
-    action = args[args.index("/TR") + 1]
-    assert _crt_args(action) == [EXE, "--site", str(site_path), "run", "--due"]
-    assert args[args.index("/TN") + 1] == f"FOLIO-Exchange ({site_path.name or 'C'})"   # never "()"
+    text = schedule.os_command(site_path, EXE, "Windows", "LIB\\fx")
+    action = next(line for line in text.splitlines() if line.startswith("$action = "))
+    command, arguments = _ps_strings(action)
+    assert (command, arguments) == schedule.windows_task_action(site_path, EXE)
+    assert _crt_args(f"{command} {arguments}") == [EXE, "--site", str(site_path), "run", "--due"]
+    register = text.splitlines()[-1]
+    assert _ps_strings(register)[0] == f"FOLIO-Exchange ({site_path.name or 'C'})"   # never "()"
 
 
-def test_schedule_prints_both_windows_forms_labelled(site, capsys, monkeypatch):
+def test_schedule_prints_schedule_register_and_the_manual_task(site, capsys, monkeypatch):
     monkeypatch.setattr(cli.platform, "system", lambda: "Windows")
     assert main(["-s", str(site), "schedule"]) == 0
     out = capsys.readouterr().out
-    assert "In PowerShell" in out and "cmd --% /c schtasks /Create" in out
-    assert "Command Prompt (cmd.exe)" in out
-    assert out.count("schtasks /Create") == 2 and "schtasks /Query" in out and "Task To Run" in out
+    assert "In PowerShell" in out and "Command Prompt (cmd.exe)" in out
+    assert out.count("schedule --register") == 2 and "& '" in out
+    assert "Register-ScheduledTask" in out and "-AllowStartIfOnBatteries" in out
+    assert "schtasks /Create" not in out and "cmd --%" not in out
+    assert "schtasks /Query" in out and "Task To Run" in out
 
 
 # ------------------------------------------------------------------ OPS-10: wording

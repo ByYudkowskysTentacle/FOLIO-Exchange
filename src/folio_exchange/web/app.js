@@ -1359,9 +1359,16 @@ function deliveryTab(f) {
   }
   out.push(kv(rows));
   if (D.serverKey) {
-    out.push(h("div", { class: "notice notice-info" }, h("p", {}, h("b", { text: "The server's key, as read when you saved: " }),
-      h("span", { class: "mono fingerprint", text: D.serverKey.sha256 }), " (older form: ",
-      h("span", { class: "mono fingerprint", text: D.serverKey.md5 }), ")")));
+    const offered = Array.isArray(D.serverKey.keys) && D.serverKey.keys.length > 1 ? D.serverKey.keys : null;
+    const keyLine = (k) => [h("span", { class: "mono fingerprint", text: k.sha256 }), " (older form: ",
+      h("span", { class: "mono fingerprint", text: k.md5 }), ")"];
+    out.push(offered
+      ? h("div", { class: "notice notice-info" },
+        h("p", {}, h("b", { text: "The server offers several keys, as read when you saved. " }),
+          `The ${D.serverKey.type || "first"} key is the one kept for this feed.`),
+        h("ul", {}, ...offered.map((k) => h("li", {}, `${k.type || "key"}: `, ...keyLine(k)))))
+      : h("div", { class: "notice notice-info" }, h("p", {}, h("b", { text: "The server's key, as read when you saved: " }),
+        ...keyLine(D.serverKey))));
   }
   if (F.delivery) {
     out.push(F.delivery);

@@ -468,22 +468,39 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         d["username"] = p.ask("SFTP user name (from the vendor)", d.get("username"), _required)
         d["remote_dir"] = p.ask("Folder on the server (the vendor says which; . is the login folder)",
                                 d.get("remote_dir") or ".")
-        key_type = None
         try:
-            key = read_host_key(d["host"], d["port"])
+            read = read_host_key(d["host"], d["port"])
         except Exception as exc:  # noqa: BLE001 - network errors of every kind
             p.say(f"Could not reach {d['host']}:{d['port']} ({type(exc).__name__}: {exc}).")
-            key = None
-        if isinstance(key, dict):                      # {sha256, md5, type}
-            key, key_type = key["sha256"], key.get("type")
-        if key:
-            p.say(f"The server's {key_type + ' ' if key_type else ''}key fingerprint is {key}")
-            confirmed_before = d.get("host_key_fingerprint") == key and d.get("host_key_confirmed", True) is not False
-            pin = p.choose("Does it match the fingerprint the vendor gave you?", [
-                ("yes", "yes, it matches"),
-                ("unconfirmed", "I don't have the vendor's value yet: keep it, but don't connect until I confirm it"),
-                ("no", "no, it differs: don't trust this server"),
-            ], "yes" if confirmed_before else "unconfirmed")
+            read = None
+        # every key the server offers, as {sha256, md5?, type?}, the one it prefers first
+        offered: list[dict] = []
+        if isinstance(read, dict):
+            offered = list(read.get("keys") or [read])
+        elif read:
+            offered = [{"sha256": read}]
+        if offered:
+            pinned_before = (d.get("host_key_fingerprint") if d.get("host_key_confirmed", True) is not False
+                             else None)
+            unsure = ("unconfirmed", "I don't have the vendor's value yet: keep it, but don't connect until I "
+                      "confirm it")
+            if len(offered) == 1:
+                key_type = offered[0].get("type")
+                p.say(f"The server's {key_type + ' ' if key_type else ''}key fingerprint is {offered[0]['sha256']}")
+                choices = [("yes", "yes, it matches"), unsure, ("no", "no, it differs: don't trust this server")]
+                picks = {"yes": offered[0]}
+                question = "Does it match the fingerprint the vendor gave you?"
+            else:
+                p.say(f"The server offers {len(offered)} keys; the vendor's fingerprint should match one of them:")
+                for k in offered:
+                    md5 = f" (MD5 {k['md5']})" if k.get("md5") else ""
+                    p.say(f"  {k.get('type') or 'key'}: {k['sha256']}{md5}")
+                picks = {f"yes:{k.get('type') or n}": k for n, k in enumerate(offered, 1)}
+                choices = [*((c, f"the {k.get('type') or 'key'} key matches") for c, k in picks.items()), unsure,
+                           ("no", "none of them matches: don't trust this server")]
+                question = "Which key matches the fingerprint the vendor gave you?"
+            before = next((c for c, k in picks.items() if k["sha256"] == pinned_before), None)
+            pin = p.choose(question, choices, before or "unconfirmed")
             if pin == "no":
                 p.say("Stopped: a different key can mean the wrong server. Ask the vendor before going on.")
                 d.pop("host_key_fingerprint", None)
@@ -493,9 +510,10 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                 raw["delivery"] = d
                 save_feed("feed delivery left off by init (host key mismatch)")
                 return 1
-            d["host_key_fingerprint"] = key
-            if key_type in delivery.KEY_TYPES:
-                d["host_key_type"] = key_type
+            chosen = picks.get(pin, offered[0])
+            d["host_key_fingerprint"] = chosen["sha256"]
+            if chosen.get("type") in delivery.KEY_TYPES:
+                d["host_key_type"] = chosen["type"]
             else:
                 d.pop("host_key_type", None)
             if pin == "unconfirmed":

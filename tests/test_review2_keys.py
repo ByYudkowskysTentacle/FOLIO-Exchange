@@ -363,6 +363,133 @@ def test_the_key_type_is_kept_with_the_fingerprint(site, keyring):
     assert any("delivery.host_key_type" in p for p in problems)
 
 
+
+# ---------------------------------------------------- SFTP-pin-reads-only-the-preferred-key
+def delivery_form(port, **kw):
+    return {"transport": "sftp", "host": "127.0.0.1", "port": port, "username": "u", "remote_dir": ".", **kw}
+
+
+def test_every_offered_key_is_read(host_keys):
+    rsa, ed = host_keys["rsa"], host_keys["ed25519"]
+    with ssh_server(rsa, ed) as port:
+        keys = delivery.host_key_fingerprints("127.0.0.1", port)
+    assert keys["type"] == "ssh-ed25519" and keys["sha256"] == delivery.sha256_fingerprint(ed)
+    assert [(k["type"], k["sha256"], k["md5"]) for k in keys["keys"]] == [
+        ("ssh-ed25519", delivery.sha256_fingerprint(ed), delivery.md5_fingerprint(ed)),
+        ("ssh-rsa", delivery.sha256_fingerprint(rsa), delivery.md5_fingerprint(rsa))]
+    with ssh_server(rsa) as port:
+        assert [k["type"] for k in delivery.host_key_fingerprints("127.0.0.1", port)["keys"]] == ["ssh-rsa"]
+
+
+def test_the_vendors_rsa_fingerprint_is_pinned_when_the_server_leads_with_ed25519(site, keyring, host_keys,
+                                                                                    monkeypatch):
+    monkeypatch.setenv("PW", "pw")
+    s = load_site(site)
+    library = RecipeLibrary(s.recipe_dirs)
+    rsa, ed = host_keys["rsa"], host_keys["ed25519"]
+    with ssh_server(rsa, ed) as port:
+        v = setupops.feed_settings(s, library, "chq")["version"]
+        out = setupops.save_delivery(s, library, "chq", delivery_form(port, vendor_fingerprint=delivery.md5_fingerprint(rsa)),
+                                     version=v)
+        d = read_yaml(site / "feeds" / "chq.yaml")["delivery"]
+        assert d["host_key_fingerprint"] == delivery.sha256_fingerprint(rsa) and d["host_key_type"] == "ssh-rsa"
+        assert "host_key_confirmed" not in d and out["delivery"]["host_key_confirmed"]
+        server_key = out["server_key"]
+        assert server_key["type"] == "ssh-rsa" and server_key["sha256"] == d["host_key_fingerprint"]
+        assert [k["type"] for k in server_key["keys"]] == ["ssh-ed25519", "ssh-rsa"]
+        client = delivery._connect({**d, "secret": "env:PW"})
+        assert client.get_transport().get_remote_server_key().get_name() == "ssh-rsa"
+        client.close()
+        # saving again without a vendor value keeps the confirmed RSA pin
+        setupops.save_delivery(s, library, "chq", delivery_form(port, remote_dir="in"), version=out["version"])
+        d = read_yaml(site / "feeds" / "chq.yaml")["delivery"]
+        assert d["remote_dir"] == "in" and d["host_key_type"] == "ssh-rsa"
+        assert d["host_key_fingerprint"] == delivery.sha256_fingerprint(rsa) and "host_key_confirmed" not in d
+
+
+def test_a_fingerprint_matching_no_offered_key_lists_them_all(site, keyring, host_keys):
+    import paramiko
+
+    s = load_site(site)
+    library = RecipeLibrary(s.recipe_dirs)
+    rsa, ed = host_keys["rsa"], host_keys["ed25519"]
+    path = site / "feeds" / "chq.yaml"
+    before = path.read_bytes()
+    v = setupops.feed_settings(s, library, "chq")["version"]
+    other = delivery.sha256_fingerprint(paramiko.RSAKey.generate(2048))
+    with ssh_server(rsa, ed) as port, pytest.raises(FxError) as err:
+        setupops.save_delivery(s, library, "chq", delivery_form(port, vendor_fingerprint=other), version=v)
+    text = str(err.value)
+    assert "not the fingerprint you entered" not in text and "None of them is the fingerprint you entered" in text
+    assert f"ssh-ed25519 {delivery.sha256_fingerprint(ed)}" in text and f"ssh-rsa {delivery.sha256_fingerprint(rsa)}" in text
+    assert path.read_bytes() == before
+
+
+def test_a_key_confirmed_later_can_be_another_offered_type(site, keyring, host_keys):
+    s = load_site(site)
+    library = RecipeLibrary(s.recipe_dirs)
+    rsa, ed = host_keys["rsa"], host_keys["ed25519"]
+    path = site / "feeds" / "chq.yaml"
+    with ssh_server(rsa, ed) as port:
+        v = setupops.feed_settings(s, library, "chq")["version"]
+        out = setupops.save_delivery(s, library, "chq", delivery_form(port, confirm_later=True), version=v)
+        raw = read_yaml(path)
+        assert raw["enabled"] is False and raw["delivery"]["host_key_confirmed"] is False
+        assert raw["delivery"]["host_key_fingerprint"] == delivery.sha256_fingerprint(ed)   # the preferred key
+        assert len(out["server_key"]["keys"]) == 2
+        with pytest.raises(FxError, match="or choose to confirm it later"):          # unconfirmed is not "known"
+            setupops.save_delivery(s, library, "chq", delivery_form(port), version=out["version"])
+        setupops.save_delivery(s, library, "chq", delivery_form(port, vendor_fingerprint=delivery.sha256_fingerprint(rsa)),
+                               version=out["version"])
+    d = read_yaml(path)["delivery"]
+    assert d["host_key_fingerprint"] == delivery.sha256_fingerprint(rsa) and d["host_key_type"] == "ssh-rsa"
+    assert "host_key_confirmed" not in d
+
+
+def two_keys():
+    rsa = {"sha256": "SHA256:" + "r" * 43, "md5": "aa:" * 15 + "aa", "type": "ssh-rsa"}
+    ed = {"sha256": "SHA256:" + "e" * 43, "md5": "bb:" * 15 + "bb", "type": "ssh-ed25519"}
+    return rsa, ed, {**ed, "keys": [ed, rsa]}
+
+
+def wizard_answers(url, pin):
+    return [url, "diku", "fx_reader", False,          # keep the FOLIO password in FOLIO_PASSWORD only
+            None, None, [], [], False, False, "sftp", "h.example", None, "u", None, pin]
+
+
+def test_the_wizard_pins_the_offered_key_the_person_picks(tmp_path, folio, keyring, monkeypatch):
+    from sitekit import FOLIO_TEST_PASSWORD
+
+    from folio_exchange.wizard import ScriptedPrompter, run_wizard
+
+    monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
+    monkeypatch.setattr(delivery, "check_delivery", lambda d: [])
+    rsa, ed, read = two_keys()
+    root = tmp_path / "site"
+    p = ScriptedPrompter(wizard_answers(folio.url, "yes:ssh-rsa") + ["", None, "none"])   # no SFTP password yet
+    assert run_wizard(root, p, read_host_key=lambda h, port: read) == 0, "\n".join(p.transcript)
+    text = "\n".join(p.transcript)
+    assert "The server offers 2 keys" in text and f"ssh-rsa: {rsa['sha256']}" in text
+    assert f"ssh-ed25519: {ed['sha256']}" in text
+    d = read_yaml(root / "feeds" / "chq.yaml")["delivery"]
+    assert d["host_key_fingerprint"] == rsa["sha256"] and d["host_key_type"] == "ssh-rsa"
+    assert "host_key_confirmed" not in d
+
+
+def test_the_wizard_stops_when_no_offered_key_matches(tmp_path, folio, keyring, monkeypatch):
+    from sitekit import FOLIO_TEST_PASSWORD
+
+    from folio_exchange.wizard import ScriptedPrompter, run_wizard
+
+    monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
+    _rsa, _ed, read = two_keys()
+    root = tmp_path / "site"
+    p = ScriptedPrompter(wizard_answers(folio.url, "no"))
+    assert run_wizard(root, p, read_host_key=lambda h, port: read) == 1
+    feed = read_yaml(root / "feeds" / "chq.yaml")
+    assert feed["delivery"]["transport"] == "none" and "host_key_fingerprint" not in feed["delivery"]
+
+
 # ------------------------------------------------------------------ MOVE-absolute-run-dirs
 def test_held_runs_survive_a_moved_site_folder(site, tmp_path):
     edit_site(site, runs={"keep_local_runs": 1})

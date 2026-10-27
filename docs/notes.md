@@ -1,6 +1,6 @@
 # Working notes
 
-_Last updated: 27 October 2026, after batch 1 of the improvement plan. Read with `docs/spec.md` and `docs/design.md`._
+_Last updated: 27 October 2026, after the second review round's fixes. Read with `docs/spec.md` and `docs/design.md`._
 
 ## Where things stand
 
@@ -23,6 +23,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - A design and function review on 27 Oct (`docs/review-2026-10-27.md`) verified 71 findings; the 27 in "Fix now" are fixed, and the rest are planned in `docs/improvement-plan.md`.
 - Batch 1 of the plan is done: any change to a feed's delivered layout holds the next delivery and says what changed; `check`, `feeds` and the page warn when the hourly task has not run for two hours, and an optional heartbeat URL tells an outside monitor; `check` warns about folders other Windows users can change, and the guide installs under `%LOCALAPPDATA%`; `folio.ca_bundle` (a PEM file or the Windows certificate store) replaces turning TLS checks off; the page opens only through a one-time link; staff data is dropped from cached records; dependencies are pinned in `constraints.txt`. No release tag yet: the guide and installer still install `main`.
 - Batch 2 of the plan is done: a shared feed-operations core (`feedops.py`), paused and dry-run feeds handled plainly on the command line, a schedule command that works in PowerShell, guide sections for going live and updating, and a keyboard-usable, self-refreshing page.
+- A second review round on 27 Oct (`docs/review-2026-10-27-round-2.md`) verified 19 findings in the areas the first covered thinly: values in the files, unattended runs, living with the tool over time, and settings as a safety boundary. All 19 are fixed on the branch `claude/review-2`: legacy notes read strictly, a hold on the first delivery from another FOLIO, alerts for failing or given-up passes, a task that runs on battery, typed SFTP key pins, and a fuller settings audit among them.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data. Since 27 Oct 2026, FOLIOHQ's CI checks it on every change.
 - 202 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
@@ -59,6 +60,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 | 2026-10-26 | Recipe minor and patch versions never change an output's bytes; any layout change is a new major | `^1.0` updates automatically, so a vendor must never see an unreviewed change |
 | 2026-10-26 | A shared recipe sets only how files travel (transport, upload mode); hosts, folders and server keys are local | A recipe from another site must not choose where files go or which server to trust |
 | 2026-10-27 | FOLIOHQ becomes the home of the `chq-academic` recipe and its documentation; its tool moves to `legacy/` as a fallback, and gate 1 runs on FOLIO-Exchange | One engine to maintain. The recipe and the collectionHQ docs live with what was learned about collectionHQ, and byte parity, checked in FOLIOHQ's CI, lets a library switch either way |
+| 2026-10-27 | Legacy item notes are read strictly here (ISO 8601, `legacy.date_format`, or free text with a day, month and year; dates from 1800 to tomorrow; one whole number for counts), while FOLIOHQ's legacy tool still reads them leniently. FOLIOHQ's setup docs should state the accepted note formats, and add `host_key_type: ssh-rsa` to collectionHQ's pin | Lenient reading sent wrong dates and counts with no warning (second review round). The legacy tool is a fallback, not worth changing; byte parity runs without legacy settings, so it still holds. collectionHQ's server key is RSA, and a typed pin keeps deliveries working if the server adds a newer key type |
 
 Still open: patron data, upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
 

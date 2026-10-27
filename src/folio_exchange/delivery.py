@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from . import credentials
 from .errors import ConfigError, DeliveryError, FxError
@@ -30,19 +31,41 @@ def md5_fingerprint(key) -> str:
     return ":".join(f"{b:02x}" for b in hashlib.md5(key.asbytes(), usedforsecurity=False).digest())
 
 
-def host_key_fingerprints(host: str, port: int = 22, timeout: float = 30) -> dict[str, str]:
-    """Read the server's host key without logging in: {"sha256": "SHA256:...", "md5": "aa:bb:...", "type":
-    "ssh-ed25519"}, for a person to compare with the vendor's. The SHA-256 value is pinned with the key's type
-    (``host_key_type``), so later logins ask for a key of that type even if the server adds a newer kind."""
+def _read_host_key(host: str, port: int, timeout: float, key_type: str | None = None) -> dict[str, str]:
     import paramiko
 
-    transport = paramiko.Transport((host, int(port or 22)))
+    off = {"keys": disabled_host_key_algorithms(key_type)} if key_type else None
+    transport = paramiko.Transport((host, port), disabled_algorithms=off)
     try:
         transport.start_client(timeout=timeout)
         key = transport.get_remote_server_key()
         return {"sha256": sha256_fingerprint(key), "md5": md5_fingerprint(key), "type": key.get_name()}
     finally:
         transport.close()
+
+
+def host_key_fingerprints(host: str, port: int = 22, timeout: float = 30) -> dict[str, Any]:
+    """Read the server's host keys without logging in, for a person to compare with the vendor's. The result
+    describes the key the server prefers, {"sha256": "SHA256:...", "md5": "aa:bb:...", "type": "ssh-ed25519"}, and
+    lists under "keys" every key it offers (that one first, then one per other type in ``KEY_TYPES``), since a
+    vendor may quote the fingerprint of an older kind than the one the server leads with. The SHA-256 value is
+    pinned with the key's type (``host_key_type``), so later logins ask for a key of that type even if the server
+    adds a newer kind."""
+    import paramiko
+
+    port = int(port or 22)
+    first = _read_host_key(host, port, timeout)
+    offered = [first]
+    for kind in KEY_TYPES:
+        if kind == first["type"]:
+            continue
+        try:
+            key = _read_host_key(host, port, min(timeout, 10), kind)
+        except (paramiko.SSHException, EOFError, OSError):     # the server has no key of this type
+            continue
+        if key["type"] == kind and all(key["sha256"] != k["sha256"] for k in offered):
+            offered.append(key)
+    return {**first, "keys": offered}
 
 
 def host_key_fingerprint(host: str, port: int = 22, timeout: float = 30) -> str:

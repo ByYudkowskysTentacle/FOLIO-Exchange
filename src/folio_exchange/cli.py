@@ -913,15 +913,19 @@ def cmd_schedule(args) -> int:
     if system != "Windows":
         print("  " + schedule.os_command(site.root, exe, system, user))
     else:
-        print("  In PowerShell (cmd --% /c passes the quotes through unchanged):")
-        print("  " + schedule.os_command(site.root, exe, system, user, shell="powershell"))
+        print("  In PowerShell:")
+        print("  " + schedule.register_command(site.root, exe, "powershell"))
         print("\n  Or in Command Prompt (cmd.exe):")
-        print("  " + schedule.os_command(site.root, exe, system, user))
+        print("  " + schedule.register_command(site.root, exe, "cmd"))
         if any(c in exe + str(site.root) for c in "&^|<>%"):
             print("\n  WARNING  The program or site path contains one of & ^ | < > %, which Command Prompt treats "
-                  "specially. Move the program or the site to a folder without them first.")
-        print("\n  Use one of the two, as the user who stored the secrets. It asks for that user's Windows "
-              "password, so the task runs even when nobody is logged on. These work in either window:\n")
+                  "specially. Use the PowerShell form.")
+        print("\n  Run it as the user who stored the secrets. It asks for that user's Windows password, so the task "
+              "runs even when nobody is signed in. The task also runs on battery power and catches up after the "
+              "computer was off or asleep.")
+        print("\n  To register the same task by hand instead, paste these lines into PowerShell:\n")
+        print("\n".join("  " + line for line in schedule.os_command(site.root, exe, system, user).splitlines()))
+        print("\n  These work in PowerShell or Command Prompt:\n")
     for label, cmd in schedule.os_helpers(site.root, system).items():
         print(f"  {label + ':':<13} {cmd}")
     if system == "Windows":

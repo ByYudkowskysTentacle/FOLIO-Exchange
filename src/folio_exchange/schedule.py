@@ -189,29 +189,57 @@ def win_quote(arg: str) -> str:
     return f'"{out}{chr(92) * slashes * 2}"'
 
 
-def os_command(site_root: Path, executable: str, system: str, user: str | None = None, *,
-               shell: str = "cmd") -> str:
-    """The command that registers an hourly ``run --due`` with the OS scheduler. Shown, never run.
+def ps_quote(text: str) -> str:
+    """One PowerShell string literal in single quotes: nothing inside is expanded. PowerShell also takes the
+    typographic single quotes as quote marks, so each of them is doubled like ' is."""
+    return "'" + "".join(c * 2 if c in "'‘’‚‛" else c for c in text) + "'"
 
-    On Windows the task runs as ``user`` whether or not anyone is logged on (schtasks asks for that
-    user's Windows password), because secrets in Credential Manager belong to the user who stored them.
-    ``shell="powershell"`` hands the line to Command Prompt with ``cmd --% /c``, which reaches schtasks
-    unchanged from Windows PowerShell 5.1 and PowerShell 7 alike. (``schtasks --% ...`` does not: since 7.3,
-    PowerShell re-quotes the text after ``--%`` for most programs, which breaks the escaped quotes in /TR.)"""
+
+def register_command(site_root: Path, executable: str, shell: str = "powershell") -> str:
+    """``folio-exchange schedule --register`` for this site, for PowerShell (``& '...'``) or Command Prompt.
+    It registers the same task as ``windows_task_xml``; schtasks asks for the Windows password itself."""
+    site = str(Path(site_root).resolve())
+    exe = (executable or "folio-exchange").replace(chr(34), "")
+    if shell == "powershell":
+        return f"& {ps_quote(exe)} --site {ps_quote(site)} schedule --register"
+    return f"{win_quote(exe)} --site {win_quote(site)} schedule --register"
+
+
+def os_command(site_root: Path, executable: str, system: str, user: str | None = None) -> str:
+    """The commands that register an hourly ``run --due`` with the OS scheduler by hand. Shown, never run.
+
+    On Windows: PowerShell lines (Windows PowerShell 5.1 and PowerShell 7) that register the same task as
+    ``windows_task_xml``, so it also starts on battery power, starts as soon as it can after a missed start and
+    stops after TASK_TIME_LIMIT; schtasks /Create /TR would leave Task Scheduler's defaults, which skip a laptop's
+    runs on battery. The task runs as ``user`` whether or not anyone is signed in, since secrets in Credential
+    Manager belong to the user who stored them: Get-Credential asks for that user's Windows password, which never
+    appears in the command or its history. Elsewhere: a crontab line at minute 7."""
     site = str(Path(site_root).resolve())
     exe = executable or "folio-exchange"
     if system.lower().startswith("win"):
-        action = f"{win_quote(exe.replace(chr(34), ''))} --site {win_quote(site)} run --due"
-        who = f' /RU "{user}" /RP' if user else ""
-        via = "cmd --% /c " if shell == "powershell" else ""
-        return (f'{via}schtasks /Create /TN "{task_name(site)}" /SC HOURLY /MO 1 /ST 00:07 '
-                f"/TR {win_quote(action)}{who} /F")
+        command, arguments = windows_task_action(site, exe)
+        lines = [
+            f"$action = New-ScheduledTaskAction -Execute {ps_quote(command)} -Argument {ps_quote(arguments)}",
+            "$trigger = New-ScheduledTaskTrigger -Once -At '2020-01-01 00:07' -RepetitionInterval "
+            "(New-TimeSpan -Hours 1)",
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+            "-StartWhenAvailable -DontStopOnIdleEnd -MultipleInstances IgnoreNew "
+            f"-ExecutionTimeLimit (New-TimeSpan -Hours {TASK_TIME_LIMIT_HOURS})",
+        ]
+        register = (f"Register-ScheduledTask -TaskName {ps_quote(task_name(Path(site)))} -Action $action "
+                    "-Trigger $trigger -Settings $settings")
+        if user:
+            lines.append(f"$cred = Get-Credential -UserName {ps_quote(user)} -Message "
+                         "'Your Windows password, so the task runs while nobody is signed in'")
+            register += " -User $cred.UserName -Password $cred.GetNetworkCredential().Password"
+        return "\n".join(lines + [register + " -Force"])
     q = lambda v: "'" + v.replace("'", "'\"'\"'") + "'"
     log = str(Path(site) / "logs" / "cron.log")
     return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"
 
 
-TASK_TIME_LIMIT = "PT12H"      # a pass still going after this is stopped (Task Scheduler's own default is 72 hours)
+TASK_TIME_LIMIT_HOURS = 12
+TASK_TIME_LIMIT = f"PT{TASK_TIME_LIMIT_HOURS}H"   # a pass still going after this is stopped (Task Scheduler's default: 72 hours)
 
 
 def windows_task_action(site_root: Path, executable: str) -> tuple[str, str]:
