@@ -100,6 +100,13 @@
             "string",
             "null"
           ]
+        },
+        "date_format": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "How legacy date notes are written when not ISO 8601, as a strftime pattern with a day, month and year, e.g. %d/%m/%Y"
         }
       }
     },

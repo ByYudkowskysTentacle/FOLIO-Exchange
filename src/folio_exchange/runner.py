@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import __version__, checks, credentials, delivery, notify, schedule
-from .build import BuildReport, build
+from .build import BuildReport, build, legacy_warnings
 from .cache import Cache
 from .client import FolioClient, FolioError, LoginFailed, tls_verify
 from .config import BUNDLED_RECIPES, Site, read_yaml
@@ -302,7 +302,7 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         finally:
             cache.close()
         report["build"] = as_dict(rep)
-        warnings = marc_warnings(site, rep)
+        warnings = marc_warnings(site, rep) + legacy_warnings(rep, feed.legacy)
         if warnings:
             report["warnings"] = warnings
             for w in warnings:
@@ -686,10 +686,13 @@ def preview(site: Site, feed: Feed, instances: int = 10) -> RunResult:
         samples = checks.sample_files(feed)
         if samples:
             report["conformance"] = checks.conformance(feed, run_dir, samples, rep.outputs)
+        warnings = legacy_warnings(rep, feed.legacy)
         try:
             checks.required_fields(feed, rep)
         except SafetyCheckFailed as exc:
-            report["warnings"] = [str(exc)]
+            warnings.append(str(exc))
+        if warnings:
+            report["warnings"] = warnings
     except FxError as exc:
         status, error = "failed", str(exc)
     except Exception as exc:  # noqa: BLE001 - report every failure the same way
