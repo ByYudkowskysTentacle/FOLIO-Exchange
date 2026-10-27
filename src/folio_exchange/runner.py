@@ -466,6 +466,12 @@ def releasable_run(hist: History, feed: Feed, run_dir: Path | None, force: bool 
             raise FxError(f"Feed {feed.name} has no held, blocked or built run newer than its last delivery. "
                           f"`folio-exchange history {feed.name}` lists its runs.")
         row = rows[0]
+        newer_failed = [r for r in hist.runs(feed.name, 200) if r["id"] > row["id"] and r.get("status") == "failed"]
+        if newer_failed:
+            raise FxError(
+                f"The newest run of {feed.name} ({_local(newer_failed[0]['started'])}) failed, and the run waiting "
+                f"for release is older ({_local(row['started'])}). Run the feed again rather than send older files; "
+                f"to send that older run anyway, name its folder: folio-exchange release {feed.name} {row['run_dir']}")
     if row["status"] not in RELEASABLE:
         raise FxError(
             f"Run {row['run_dir']} has status {row['status']!r}; only held, blocked or built runs can be released"

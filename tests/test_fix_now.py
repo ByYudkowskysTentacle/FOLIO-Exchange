@@ -184,3 +184,93 @@ def test_a_second_feed_on_the_same_recipe_gets_its_own_file_names(tmp_path, foli
     assert run_wizard(root, p) == 0, "\n".join(p.transcript)
     assert yaml.safe_load((root / "feeds" / "chq-sci.yaml").read_text(encoding="utf-8"))["file_prefix"] == "chq-sci"
     assert write_yaml and make_feed                                   # helpers used by later sections
+
+
+# ------------------------------------------------------------------ deliveries
+PIN = {"transport": "sftp", "host": "h", "username": "u", "host_key_fingerprint": "SHA256:x", "secret": "env:PW"}
+
+
+def two_files(tmp_path):
+    a, b = tmp_path / "a.mrc", tmp_path / "b.psv"
+    a.write_text("a")
+    b.write_text("b")
+    return a, b
+
+
+def test_a_failed_staged_upload_removes_its_temporary_files(tmp_path, monkeypatch):
+    from unittest import mock
+
+    from folio_exchange.errors import FxError
+
+    monkeypatch.setenv("PW", "pw")
+    a, b = two_files(tmp_path)
+    with mock.patch("paramiko.SSHClient") as ssh:
+        sftp = ssh.return_value.open_sftp.return_value
+        sftp.put.side_effect = [None, OSError("connection lost")]
+        with pytest.raises(FxError) as err:
+            delivery.deliver([a, b], PIN, "chq")
+    assert [c.args[0] for c in sftp.remove.call_args_list] == ["./a.mrc.part", "./b.psv.part"]
+    assert "No file was put in place" in str(err.value) and "may remain" not in str(err.value)
+    with mock.patch("paramiko.SSHClient") as ssh:
+        sftp = ssh.return_value.open_sftp.return_value
+        sftp.put.side_effect = [None, OSError("connection lost")]
+        sftp.remove.side_effect = OSError("gone")
+        with pytest.raises(FxError, match="may remain there: a.mrc.part, b.psv.part"):
+            delivery.deliver([a, b], PIN, "chq")
+
+
+def test_sftp_sessions_time_out_instead_of_hanging(tmp_path, monkeypatch):
+    from unittest import mock
+
+    monkeypatch.setenv("PW", "pw")
+    a, _b = two_files(tmp_path)
+    with mock.patch("paramiko.SSHClient") as ssh:
+        delivery.deliver([a], PIN, "chq")
+    ssh.return_value.get_transport.return_value.set_keepalive.assert_called_once_with(30)
+    channel = ssh.return_value.open_sftp.return_value.get_channel.return_value
+    channel.settimeout.assert_called_once_with(delivery.SFTP_TIMEOUT)
+
+
+def test_the_pinned_key_is_compared_exactly(monkeypatch):
+    from unittest import mock
+
+    import paramiko
+
+    monkeypatch.setenv("PW", "pw")
+    key = mock.Mock()
+    key.asbytes.return_value = b"server-key"
+    good = delivery.sha256_fingerprint(key)
+    with mock.patch("paramiko.SSHClient") as ssh:
+        delivery._connect({**PIN, "host_key_fingerprint": good})
+        policy = ssh.return_value.set_missing_host_key_policy.call_args.args[0]
+    policy.missing_host_key(None, "h", key)                          # matches: accepted
+    with mock.patch("paramiko.SSHClient") as ssh:
+        delivery._connect({**PIN, "host_key_fingerprint": good.lower()})
+        policy = ssh.return_value.set_missing_host_key_policy.call_args.args[0]
+    with pytest.raises(paramiko.SSHException, match="expected"):
+        policy.missing_host_key(None, "h", key)
+
+
+def test_release_will_not_send_an_older_run_when_a_newer_one_failed(site, monkeypatch):
+    from folio_exchange.errors import FxError
+
+    assert main(["-s", str(site), "run", "chq"]) == 2                 # held
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    assert main(["-s", str(site), "build", "chq"]) == 0               # an older, built run
+
+    def broken(files, d, name):
+        raise FxError("Delivery failed (OSError: drive gone). No file was put in place at the destination.")
+
+    monkeypatch.setattr("folio_exchange.delivery.deliver", broken)
+    assert main(["-s", str(site), "run", "chq"]) == 1                 # the newest run failed
+    monkeypatch.undo()
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 1
+
+
+def test_two_feeds_cannot_overwrite_each_other_at_one_destination(site, capsys):
+    make_feed(site, name="sci", filters={"include_location_codes": ["SCI-STACKS"]})
+    assert main(["-s", str(site), "feeds"]) == 1
+    out = capsys.readouterr().out
+    assert "one would overwrite the other" in out and "file_prefix: sci" in out
+    make_feed(site, name="sci", file_prefix="sci", filters={"include_location_codes": ["SCI-STACKS"]})
+    assert main(["-s", str(site), "feeds"]) == 0

@@ -97,7 +97,7 @@ def test_sftp_renames_only_after_all_uploads(tmp_path, monkeypatch):
     with mock.patch("paramiko.SSHClient") as ssh:
         sftp = ssh.return_value.open_sftp.return_value
         sftp.put.side_effect = [None, OSError("connection lost")]
-        with pytest.raises(FxError, match="before any file reached") as err:
+        with pytest.raises(FxError, match="No file was put in place") as err:
             delivery.deliver([a, b], {**PIN, "transport": "sftp", "secret": "env:SFTP_PW"}, "x")
     sftp.posix_rename.assert_not_called()
     assert not isinstance(err.value, DeliveryError)
@@ -110,7 +110,7 @@ def test_direct_mode_login_failure_is_not_a_partial_delivery(tmp_path, monkeypat
     (tmp_path / "a.mrc").write_text("a")
     with mock.patch("paramiko.SSHClient") as ssh:
         ssh.return_value.connect.side_effect = paramiko.SSHException("Host key for h is SHA256:y, expected x")
-        with pytest.raises(FxError, match="before any file reached") as err:
+        with pytest.raises(FxError, match="No file was put in place") as err:
             delivery.deliver([tmp_path / "a.mrc"], {**PIN, "transport": "sftp", "upload_mode": "direct",
                                                     "secret": "env:SFTP_PW"}, "x")
     assert not isinstance(err.value, DeliveryError)
@@ -164,7 +164,7 @@ def test_direct_mode_failure_reports_what_the_vendor_already_has(tmp_path, monke
             delivery.deliver([a, b], {**PIN, "transport": "sftp", "upload_mode": "direct",
                                       "secret": "env:SFTP_PW"}, "chq")
     assert err.value.sent == ["sftp://u@h:22/./a.mrc"]
-    assert "a.mrc" in str(err.value) and "release chq" in str(err.value)
+    assert "a.mrc" in str(err.value) and "run chq" in str(err.value)
 
 
 def test_sftp_check_lists_without_writing(monkeypatch):

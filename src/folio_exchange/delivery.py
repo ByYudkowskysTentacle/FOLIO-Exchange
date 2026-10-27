@@ -17,6 +17,8 @@ from .errors import ConfigError, DeliveryError, FxError
 
 log = logging.getLogger(__name__)
 
+SFTP_TIMEOUT = 300   # seconds without progress before an SFTP read or write gives up
+
 
 def sha256_fingerprint(key) -> str:
     digest = hashlib.sha256(key.asbytes()).digest()
@@ -89,8 +91,23 @@ def _connect(d: dict):
         look_for_keys=False,
         allow_agent=False,
         timeout=60,
+        banner_timeout=60,
+        auth_timeout=60,
     )
+    transport = client.get_transport()
+    if transport is not None:
+        transport.set_keepalive(30)               # notice a connection that has silently gone away
     return client
+
+
+def _open_sftp(client):
+    """An SFTP session whose reads and writes give up after SFTP_TIMEOUT seconds without progress, so a
+    stalled transfer becomes an ordinary failed delivery instead of holding the run (and the lock) for days."""
+    sftp = client.open_sftp()
+    channel = sftp.get_channel()
+    if channel is not None:
+        channel.settimeout(SFTP_TIMEOUT)
+    return sftp
 
 
 def _remote_dir(d: dict) -> str:
@@ -116,7 +133,7 @@ def check_delivery(d: dict) -> list[str] | None:
         return []
     client = _connect(d)
     try:
-        sftp = client.open_sftp()
+        sftp = _open_sftp(client)
         try:
             names: list[str] | None = sorted(sftp.listdir(_remote_dir(d)))
         except PermissionError:
@@ -132,7 +149,7 @@ def _deliver_sftp(files: list[Path], d: dict, sent: list[str], touched: list[str
     upload started, or a staged rename); ``sent`` gets each destination once it is complete."""
     client = _connect(d)
     try:
-        sftp = client.open_sftp()
+        sftp = _open_sftp(client)
         remote_dir = _remote_dir(d)
         if (d.get("upload_mode") or "staged") == "direct":
             # Upload-only accounts can't stat or rename. On object-store-backed
@@ -148,12 +165,29 @@ def _deliver_sftp(files: list[Path], d: dict, sent: list[str], touched: list[str
         # Phase 1: upload everything as .part, so a dropped connection never
         # leaves new bibs next to an old items file (or vice versa).
         staged = []
-        for f in files:
-            final = f"{remote_dir}/{f.name}"
-            tmp = final + ".part"
-            log.info("Uploading %s (%s bytes) to %s:%s", f.name, f.stat().st_size, d["host"], tmp)
-            sftp.put(str(f), tmp, confirm=True)
-            staged.append((tmp, final, f.name))
+        inflight = None
+        try:
+            for f in files:
+                final = f"{remote_dir}/{f.name}"
+                tmp = final + ".part"
+                log.info("Uploading %s (%s bytes) to %s:%s", f.name, f.stat().st_size, d["host"], tmp)
+                inflight = tmp
+                sftp.put(str(f), tmp, confirm=True)
+                staged.append((tmp, final, f.name))
+                inflight = None
+        except Exception as exc:
+            # Nothing was renamed into place. Remove the temporary files, and say which may remain.
+            left = []
+            for tmp in [s[0] for s in staged] + ([inflight] if inflight else []):
+                try:
+                    sftp.remove(tmp)
+                except Exception:  # noqa: BLE001 - the connection may be gone; report, do not mask the cause
+                    left.append(tmp.rsplit("/", 1)[-1])
+            try:
+                exc.fx_leftovers = left
+            except AttributeError:
+                pass
+            raise
         # Phase 2: all uploads succeeded; rename them into place.
         for tmp, final, name in staged:
             touched.append(name)
@@ -219,15 +253,18 @@ def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]:
         raise
     except Exception as exc:  # noqa: BLE001 - paramiko, sockets and file systems raise many types
         reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+        again = (f"Fix the problem, then run `folio-exchange run {feed_name}` (a scheduled run also tries again "
+                 "on its own).")
         if not touched:
-            raise FxError(f"Delivery failed before any file reached the destination ({reason}). Nothing was "
-                          f"changed there; fix the problem and send the run with `folio-exchange release "
-                          f"{feed_name}`.") from exc
+            left = getattr(exc, "fx_leftovers", None)
+            where = ("No file was put in place at the destination" if not left else
+                     "No file was put in place at the destination, but these temporary files may remain there: "
+                     + ", ".join(left))
+            raise FxError(f"Delivery failed ({reason}). {where}. {again}") from exc
         done = ", ".join(s.rsplit("/", 1)[-1] for s in sent) or "none complete"
         raise DeliveryError(
             f"Delivery stopped part way ({reason}). Files already at the vendor: {done}; {touched[-1]} may be "
-            "incomplete. The vendor may hold a mixed or partial set; send the whole run again with "
-            f"`folio-exchange release {feed_name}` once the problem is fixed.", sent,
+            f"incomplete, so the vendor may hold a mixed or partial set. {again}", sent,
         ) from exc
 
 
