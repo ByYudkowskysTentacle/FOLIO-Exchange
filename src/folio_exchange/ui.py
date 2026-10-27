@@ -329,7 +329,7 @@ def read_rows(site: Site, feed: Feed, row: dict, output: str | None, limit: int 
     name = outputs[o["name"]][0]
     if name not in {f["name"] for f in row.get("files") or []}:
         raise ConfigError("That file is not part of this run.")
-    path = Path(row["run_dir"]) / name
+    path = runner.run_path(site, row["run_dir"]) / name
     if not path.is_file():
         return {"output": o["name"], "file": name, "header": [], "rows": [], "total": 0, "missing": True}
     with open(path, newline="", encoding="utf-8") as fh:
@@ -349,7 +349,7 @@ def run_folder(site: Site, row: dict) -> Path:
     if not row.get("run_dir"):
         raise ConfigError("This run has no folder.")
     out = site.out_dir.resolve()
-    path = Path(row["run_dir"]).resolve()
+    path = runner.run_path(site, row["run_dir"]).resolve()     # history may name the place before a move
     if path == out or not path.is_relative_to(out):
         raise ConfigError("That folder is outside the site's output folder, so the page will not open it.")
     if not path.is_dir():

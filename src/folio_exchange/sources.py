@@ -31,7 +31,7 @@ from . import __version__
 from .config import BUNDLED_RECIPES, Site
 from .errors import ConfigError, FxError, RecipeError
 from .history import History
-from .recipe import ID_RE, RecipeLibrary, load_recipe_file, parse_uses, version_matches
+from .recipe import ID_RE, Feed, Recipe, RecipeLibrary, load_recipe_file, parse_uses, version_matches
 
 SOURCES_FILE = Path(__file__).parent / "recipe_sources.yaml"
 PROVENANCE_FILE = "sources.json"
@@ -47,8 +47,8 @@ _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 _FOLDER = re.compile(r"^[A-Za-z0-9._/-]*$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 # What a person reads about a recipe, not what it does: the only parts a minor or patch version may change for
-# feeds that already use it. (default_schedule only applies to new feeds.)
-_WORDING = {"version", "changelog", "description", "title", "spec_source", "default_schedule"}
+# feeds that already use it. (default_schedule is not wording: a feed file without a schedule of its own follows it.)
+_WORDING = {"version", "changelog", "description", "title", "spec_source"}
 _FILE = re.compile(r"^([a-z0-9][a-z0-9-]*)/(\d+\.\d+\.\d+)\.yaml$")
 
 
@@ -234,6 +234,39 @@ def _changes_substance(new: dict, old: dict) -> list[str]:
     """The parts of a recipe, other than its wording, that differ between two versions."""
     keys = (set(new) | set(old)) - _WORDING
     return sorted(k for k in keys if new.get(k) != old.get(k))
+
+
+def _downloaded(site: Site, recipe: Recipe) -> bool:
+    """True when sources.json records downloading this recipe file and the file is still as downloaded."""
+    name = f"{recipe.id}/{recipe.version_str}.yaml"
+    try:
+        digest = hashlib.sha256(recipe.path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return any(isinstance(e, dict) and ((e.get("files") or {}).get(name) or {}).get("sha256") == digest
+               for e in provenance(site).values())
+
+
+def local_minor_warning(site: Site, library: RecipeLibrary, feed: Feed) -> str | None:
+    """A warning when ``feed`` uses a recipe version placed in the site's recipes folder by hand (not downloaded
+    from a recipe source, or changed since) that changes more than wording compared with the version the feed
+    would use otherwise. A downloaded minor version like that is refused; a hand-placed one is taken from the
+    next run, without the review and held first delivery a new major version gets."""
+    r = feed.recipe
+    if r.path.resolve().is_relative_to(BUNDLED_RECIPES.resolve()) or _downloaded(site, r):
+        return None
+    _rid, spec = parse_uses(feed.uses)
+    lower = [x for x in library.versions(r.id) if x.version < r.version and version_matches(x.version, spec)]
+    if not lower:
+        return None
+    differs = _changes_substance(r.data, lower[-1].data)
+    if not differs:
+        return None
+    return (f"{r.path} ({r.ref}) was not downloaded from a recipe source, and it changes {', '.join(differs)} "
+            f"compared with {lower[-1].ref}, which {feed.name} would use otherwise. As a minor version it is used "
+            "from the next run, without the review and held first delivery a new major version gets. If the change "
+            f"is meant, give it the version {r.version[0] + 1}.0.0 and run `folio-exchange upgrade {feed.name}`; if "
+            "not, delete the file.")
 
 
 def check(site: Site, library: RecipeLibrary, source_id: str, *, commit: str | None = None,

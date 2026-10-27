@@ -142,6 +142,7 @@ class MockFolio:
         self.requests: list[str] = []
         self.fail_next: list[int] = []   # status codes to return for the next N data requests
         self.fail_login: list[int] = []  # status codes to return for the next N logins
+        self.legacy_login = 404          # what the legacy /authn/login answers: a missing route, as in real Okapi
         self.expire_tokens = False
         self.valid_tokens: set[str] = set()
         handler = self._handler()
@@ -212,6 +213,8 @@ class MockFolio:
                     mock.expire_tokens = False
                     return self._send(201, {"accessTokenExpiration": "2099-01-01T00:00:00Z"},
                                       {"Set-Cookie": f"folioAccessToken={tok}; Path=/"})
+                if u.path == "/authn/login":                # the legacy endpoint (no module serves it by default)
+                    return self._send(mock.legacy_login, {"error": "No suitable module found for path /authn/login"})
                 if not self._authed():
                     return self._send(401, {"error": "unauthorized"})
                 if u.path == "/source-storage/source-records":

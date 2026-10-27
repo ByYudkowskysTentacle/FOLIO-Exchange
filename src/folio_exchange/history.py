@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS runs (
     feed TEXT NOT NULL, recipe TEXT, recipe_version TEXT, trigger TEXT, run_dir TEXT,
     started TEXT NOT NULL, finished TEXT, status TEXT NOT NULL DEFAULT 'running',
     items INTEGER, bibs INTEGER, delivered INTEGER NOT NULL DEFAULT 0,
-    files TEXT, destinations TEXT, error TEXT, report TEXT, actor TEXT, destination TEXT);
+    files TEXT, destinations TEXT, error TEXT, report TEXT, actor TEXT, destination TEXT, folio_source TEXT);
 CREATE INDEX IF NOT EXISTS runs_feed ON runs(feed, started);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
+
+# Columns added after the first release, created on older history files when they are opened.
+ADDED_COLUMNS = {"runs": {"folio_source": "TEXT"}}
 
 STATUSES = ("running", "success", "built", "blocked", "held", "failed", "preview")
 
@@ -68,7 +71,30 @@ class History:
         self.db = sqlite3.connect(self.path)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._add_columns()
         self.db.commit()
+
+    def _missing_columns(self) -> list[tuple[str, str, str]]:
+        out = []
+        for table, columns in ADDED_COLUMNS.items():
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            out.extend((table, name, kind) for name, kind in columns.items() if name not in have)
+        return out
+
+    def _add_columns(self) -> None:
+        """Add the columns newer versions keep to an older file. The check is made again under the write lock,
+        so two programs opening the same old file at once (the page and the hourly task) add each column once."""
+        if not self._missing_columns():
+            return
+        self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for table, name, kind in self._missing_columns():
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")  # noqa: S608 (fixed names)
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def close(self) -> None:
         self.db.close()
@@ -85,12 +111,12 @@ class History:
 
     # ------------------------------------------------------------------ runs
     def start_run(self, feed: str, recipe: str, recipe_version: str, trigger: str, run_dir: Path | None,
-                  destination: str | None = None) -> int:
+                  destination: str | None = None, *, folio_source: str | None = None) -> int:
         cur = self.db.execute(
-            """INSERT INTO runs(feed, recipe, recipe_version, trigger, run_dir, started, actor, destination)
-               VALUES (?,?,?,?,?,?,?,?)""",
+            """INSERT INTO runs(feed, recipe, recipe_version, trigger, run_dir, started, actor, destination,
+               folio_source) VALUES (?,?,?,?,?,?,?,?,?)""",
             (feed, recipe, recipe_version, trigger, str(run_dir) if run_dir else None, _now(), current_user(),
-             destination),
+             destination, folio_source),
         )
         self.db.commit()
         return int(cur.lastrowid)
@@ -116,8 +142,18 @@ class History:
         self.db.commit()
 
     def run_by_dir(self, run_dir: Path) -> dict | None:
+        """The run recorded for a folder. A run recorded before the site folder moved names the old place, so a
+        folder is also found by its last two parts, <feed>/<stamp>."""
         rows = self._query("SELECT * FROM runs WHERE run_dir=? ORDER BY id DESC LIMIT 1", (str(run_dir),))
-        return rows[0] if rows else None
+        if rows:
+            return rows[0]
+        path = Path(run_dir)
+        if not path.name or not path.parent.name:
+            return None
+        like = "%" + path.name.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        rows = self._query("SELECT * FROM runs WHERE feed=? AND run_dir LIKE ? ESCAPE '!' ORDER BY id DESC",
+                           (path.parent.name, like))
+        return next((r for r in rows if Path(r["run_dir"]).parts[-2:] == path.parts[-2:]), None)
 
     def get(self, run_id: int) -> dict | None:
         rows = self._query("SELECT * FROM runs WHERE id=?", (run_id,))
@@ -167,6 +203,10 @@ class History:
                 (feed, destination),
             )
         return rows[0] if rows else None
+
+    def delivered_feeds(self) -> list[str]:
+        """The feeds that have delivered files at least once."""
+        return [r[0] for r in self.db.execute("SELECT DISTINCT feed FROM runs WHERE delivered=1 ORDER BY feed")]
 
     def runs(self, feed: str | None = None, limit: int = 20) -> list[dict]:
         if feed:

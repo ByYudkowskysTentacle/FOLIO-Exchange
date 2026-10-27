@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import credentials, schedule
 from .config import BUNDLED_RECIPES, merge, read_yaml, reject_secrets
+from .dates import legacy_format_problem
+from .delivery import KEY_TYPES
 from .errors import ConfigError, RecipeError
 from .fields import FIELDS, suggest
 from .reads import READS
@@ -58,11 +60,12 @@ SELECTION_DEFAULTS: dict[str, Any] = {
 OPTIONS_DEFAULTS: dict[str, Any] = {"last_circ_date_from": "checkout", "loan_window_months": 12, "timezone": "UTC"}
 LEGACY_DEFAULTS: dict[str, Any] = {
     "created_date_note_type": None, "circ_count_note_type": None, "last_circ_date_note_type": None,
+    "date_format": None,
 }
 CHECKS_DEFAULTS: dict[str, Any] = {"min_item_ratio": 0.9, "must_be_filled": []}
 DELIVERY_DEFAULTS: dict[str, Any] = {
     "transport": "none", "upload_mode": "staged", "host": None, "port": 22, "username": None, "remote_dir": ".",
-    "host_key_fingerprint": None, "host_key_confirmed": True, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
+    "host_key_fingerprint": None, "host_key_type": None, "host_key_confirmed": True, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
 }
 # A shared recipe may only say how files travel; where they go and which server key to trust are local.
 RECIPE_DELIVERY_KEYS = ("transport", "upload_mode")
@@ -464,11 +467,18 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
     fp = dlv.get("host_key_fingerprint")
     if fp is not None and not (isinstance(fp, str) and fp.startswith("SHA256:") and len(fp) > 20):
         c.add("delivery.host_key_fingerprint", "must look like SHA256:... (run `folio-exchange check --delivery`)")
+    kind = dlv.get("host_key_type")
+    if kind is not None and kind not in KEY_TYPES:
+        c.add("delivery.host_key_type", f"must be one of {', '.join(KEY_TYPES)}, got {kind!r}")
     if "host_key_confirmed" in dlv:
         c.boolean(dlv["host_key_confirmed"], "delivery.host_key_confirmed")
     for key in ("host", "username", "remote_dir", "known_hosts", "private_key", "directory"):
         if dlv.get(key) is not None and not isinstance(dlv[key], str):
             c.add(f"delivery.{key}", "must be text")
+    for key in ("private_key", "known_hosts"):
+        if key_text(dlv.get(key)):
+            c.add(f"delivery.{key}", "holds the key itself, not the path of a file; give the path of the key "
+                                     "file, or store the key from the page")
 
     if data.get("default_schedule") is not None:
         try:
@@ -476,6 +486,11 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
         except ConfigError as exc:
             c.add("default_schedule", str(exc))
     return c.problems
+
+
+def key_text(value: object) -> bool:
+    """True when a delivery path setting holds key text (a line break, or PEM armour) instead of a file path."""
+    return isinstance(value, str) and ("\n" in value or "\r" in value or "PRIVATE KEY" in value)
 
 
 def load_recipe_file(path: Path) -> Recipe:
@@ -727,7 +742,11 @@ def load_feed_data(raw: dict, path: Path, library: RecipeLibrary, root: Path | N
     legacy = c.mapping(raw.get("legacy"), "legacy")
     c.keys(legacy, LEGACY_DEFAULTS, "legacy")
     for key, value in legacy.items():
-        if value is not None and not isinstance(value, str):
+        if key == "date_format":
+            problem = legacy_format_problem(value) if value not in (None, "") else None
+            if problem:
+                c.add("legacy.date_format", problem)
+        elif value is not None and not isinstance(value, str):
             c.add(f"legacy.{key}", "must be an item note type name, or empty")
     checks = c.mapping(raw.get("checks"), "checks")
     c.keys(checks, CHECKS_DEFAULTS, "checks")
@@ -938,6 +957,39 @@ def layout_changes(before: dict, after: dict) -> list[str]:
     return out
 
 
+def _plain(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(map(str, value)) or "none"
+    return _show(value)
+
+
+def settings_changes(before: Feed, after: Feed) -> list[str]:
+    """What a recipe change does to a feed besides its file layout, in plain words: the checks, which records
+    are selected, the options, what is read from FOLIO, the schedule, the delivery method and the item link."""
+    out: list[str] = []
+    for label, a, b in (
+        ("check", before.checks, after.checks),
+        ("selection", before.selection, after.selection),
+        ("option", before.options, after.options),
+        ("delivery", {k: before.delivery.get(k) for k in RECIPE_DELIVERY_KEYS},
+         {k: after.delivery.get(k) for k in RECIPE_DELIVERY_KEYS}),
+    ):
+        out += [f"{label} {k} changed from {_plain(a.get(k))} to {_plain(b.get(k))}"
+                for k in dict.fromkeys([*a, *b]) if a.get(k) != b.get(k)]
+    gone = [r for r in before.reads if r not in after.reads]
+    added = [r for r in after.reads if r not in before.reads]
+    if gone:
+        out.append(f"no longer reads {', '.join(gone)} from FOLIO"
+                   + (" (bibs go out as brief records, without their MARC)" if "marc" in gone else ""))
+    if added:
+        out.append(f"now reads {', '.join(added)} from FOLIO")
+    if before.schedule != after.schedule:
+        out.append(f"schedule changed from {before.schedule} to {after.schedule}")
+    if before.link != after.link:
+        out.append(_changed(LAYOUT_LABELS["link"], before.link, after.link))
+    return out
+
+
 def _fields_only(columns: list) -> list:
     return [[None, c[1]] for c in columns or []]
 
@@ -956,12 +1008,35 @@ def file_collisions(feeds: list[Feed]) -> dict[str, str]:
         for name in output_names(f):
             other = seen.setdefault((dest, name), f.name)
             if other != f.name:
-                text = (f"feeds/{other}.yaml and feeds/{f.name}.yaml both send {name} to {dest}, so one would "
-                        f"overwrite the other at the vendor. Give one of them its own file_prefix (for example "
-                        f"file_prefix: {f.name}) or a different folder.")
+                text = _collision_text(other, f.name, name, dest)
                 problems.setdefault(other, text)
                 problems.setdefault(f.name, text)
     return problems
+
+
+def _collision_text(first: str, second: str, name: str, dest: str) -> str:
+    return (f"feeds/{first}.yaml and feeds/{second}.yaml both send {name} to {dest}, so one would overwrite the "
+            f"other at the vendor. Give one of them its own file_prefix (for example file_prefix: {second}) or a "
+            "different folder.")
+
+
+def collision_with(feed: Feed, feeds: list[Feed]) -> str | None:
+    """Whether another delivering feed in ``feeds``, paused or not, sends one of ``feed``'s file names to the same
+    place. file_collisions compares enabled feeds only (a clash there stops both from loading), so a paused copy
+    is checked with this before it sends anything."""
+    from .delivery import destination_key
+
+    if not feed.delivers:
+        return None
+    dest = destination_key(feed.delivery)
+    mine = set(output_names(feed))
+    for other in feeds:
+        if other.name == feed.name or not other.delivers or destination_key(other.delivery) != dest:
+            continue
+        same = [n for n in output_names(other) if n in mine]
+        if same:
+            return _collision_text(other.name, feed.name, same[0], dest)
+    return None
 
 
 def load_feeds(site: Site, library: RecipeLibrary | None = None) -> list[Feed]:

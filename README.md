@@ -51,7 +51,7 @@ The guided setup asks for the FOLIO API address, tenant and a read-only service 
 | --- | --- |
 | `folio-exchange run chq` | Sync, build and check; the first delivery is held for you |
 | `folio-exchange release chq` | Show the held run and send it once you confirm |
-| `folio-exchange schedule` | Print the command that runs `run --due` every hour, in a PowerShell and a Command Prompt form |
+| `folio-exchange schedule` | Print the command that sets up `run --due` every hour (also on battery power), in a PowerShell and a Command Prompt form |
 | `folio-exchange secret set chq` | Store a password again (`folio`, `smtp`, `webhook`, `heartbeat` or a feed name); `secret status` shows where each comes from |
 | `folio-exchange feeds` | When the hourly task last ran, then each feed's recipe, schedule, last run and next step |
 | `folio-exchange check` | Test the login, permissions and record counts (`--delivery` tests the vendor login, `--alerts` sends a test alert) |

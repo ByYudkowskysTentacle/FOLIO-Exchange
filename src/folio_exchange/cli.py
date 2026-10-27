@@ -29,6 +29,7 @@ from .recipe import (
     load_feed_data,
     load_recipe_file,
     parse_uses,
+    settings_changes,
 )
 
 log = logging.getLogger("folio_exchange")
@@ -250,9 +251,16 @@ def cmd_check_delivery(args) -> int:
                 print(f"  Key not yet confirmed with the vendor; stored {d.get('host_key_fingerprint')}. "
                       "Nothing logs in until it is.")
                 try:
-                    seen = delivery.host_key_fingerprint(d["host"], int(d.get("port") or 22))
-                    print(f"  The server answers with {seen}"
-                          + (" (the same)." if seen == d.get("host_key_fingerprint") else " (DIFFERENT: ask the vendor)."))
+                    read = delivery.host_key_fingerprints(d["host"], int(d.get("port") or 22))
+                    offered = read.get("keys") or [read]
+                    same = [k for k in offered if k["sha256"] == d.get("host_key_fingerprint")]
+                    same.sort(key=lambda k: k["type"] != d.get("host_key_type"))     # the stored type first
+                    if same:
+                        print(f"  The server offers it as its {same[0]['type']} key (the same).")
+                    else:
+                        print("  The server offers none like it (DIFFERENT: ask the vendor). It offers:")
+                        for k in offered:
+                            print(f"    {k['type']}: {k['sha256']}")
                 except Exception as exc:  # noqa: BLE001 - network errors of every kind
                     print(f"  Could not read the server's key: {type(exc).__name__}: {str(exc)[:160]}")
                 print("  Compare it with the vendor's fingerprint, then run `folio-exchange init` again to confirm it.")
@@ -340,18 +348,70 @@ def cmd_run(args) -> int:
     site = _site(args)
     if not args.due:
         return _run(args, site)
+    started = datetime.now(timezone.utc)
+    previous: dict = {}
+    try:                                   # beside the lock too, so a pass that cannot write history still shows
+        previous = feedops.mark_pass_start(site.lock_path, started)
+    except OSError as exc:
+        log.warning("Could not note the start of this scheduled pass beside the run lock: %s", exc)
     try:
         with History(site.history_path) as hist:
-            feedops.record_due_start(hist, datetime.now(timezone.utc))
+            feedops.record_due_start(hist, started)
     except sqlite3.Error as exc:
         log.warning("Could not record the start of this scheduled pass: %s", exc)
     # The heartbeat goes at the start of the pass as well as the end, so a monitor hears from a long pass (a
     # first full sync can take hours) as soon as it starts; its period must still allow for the longest pass.
     notify.heartbeat(site.alerts, site.name)
+    error, alerted = None, False
     try:
         return _run(args, site)
+    except Exception as exc:  # noqa: BLE001 - alert first (without the history: it may be what failed), then stop
+        error = f"{type(exc).__name__}: {exc}"
+        alerted = _pass_failed(site, exc, error, previous)
+        raise
     finally:
+        try:
+            feedops.mark_pass_end(site.lock_path, started, error, alerted)
+        except OSError as exc:
+            log.warning("Could not note how this scheduled pass ended: %s", exc)
         notify.heartbeat(site.alerts, site.name)
+
+
+def _pass_failed(site: Site, exc: Exception, error: str, previous: dict) -> bool:
+    """Alert that a scheduled pass failed, without needing the run history. The same failure as the last pass's,
+    already alerted, is not sent again every hour. Returns whether the alert went (now or before)."""
+    if not isinstance(exc, (FxError, OSError, sqlite3.Error)):
+        log.exception("The scheduled pass failed: %s", error)        # main shows the others plainly
+    if previous.get("error") == error and previous.get("alerted"):
+        return True
+    text = (f"The scheduled pass failed: {error}\nFeeds due in this pass may not have run or been recorded. If the "
+            "disk is full, free some space; logs/folio-exchange.log has the details, and `folio-exchange check` "
+            "shows the site's state.")
+    return bool(runner.alert(site, None, "failed", text))
+
+
+LOCK_STUCK = "lock_stuck_since"            # history meta: the lock holder's start already alerted about
+
+
+def _lock_busy(site: Site, exc: LockBusy, feeds: list[Feed]) -> int:
+    """A scheduled pass found the site's lock taken: skip this hour. When one run (a manual run or a release
+    that stalled, a stuck process) has held it for hours while some feed is due, alert once for that run. A
+    scheduled pass that stalls never meets this (Task Scheduler starts no second one): `check` and the page say
+    it is stuck, the heartbeat stops, and once the task's 12-hour limit ends it the next pass reports it."""
+    log.info("%s Skipping this hour; the next start will catch up.", exc)
+    since = feedops.run_started(site.lock_path)
+    now = datetime.now(timezone.utc)
+    if since is None or now - since < feedops.LOCK_STUCK_AFTER:
+        return 0
+    stamp = since.isoformat(timespec="seconds")
+    with History(site.history_path) as hist:
+        if hist.get_meta(LOCK_STUCK) == stamp or not runner.due_feeds(site, feeds, now, hist):
+            return 0                         # alerted already, or nothing would have run this hour anyway
+        hist.set_meta(LOCK_STUCK, stamp)
+    text = "Scheduled runs are being skipped. " + feedops.stuck_text(since, now)
+    log.warning("%s", text)
+    runner.alert(site, None, "failed", text)
+    return 0
 
 
 def _run(args, site: Site) -> int:
@@ -361,14 +421,19 @@ def _run(args, site: Site) -> int:
     bad: dict[str, str] = {}
     if args.due:
         bad = runner.active_problems(site, errors)
-        with History(site.history_path) as hist:
-            runner.audit_settings(site, hist)
-            now = datetime.now(timezone.utc)
-            chosen = runner.due_feeds(site, feeds, now, hist)
-            for f in feeds:
-                late = runner.overdue(site, f, hist, now)
-                if late and f not in chosen:
-                    log.warning("Feed %s is %s", f.name, late)
+        try:
+            with runner.RunLock(site.lock_path), History(site.history_path) as hist:
+                runner.start_pass(site, hist)        # a pass killed on a slot's last attempt is reported now
+                runner.audit_settings(site, hist)
+                now = datetime.now(timezone.utc)
+                runner.report_given_up(site, feeds, hist, now)
+                chosen = runner.due_feeds(site, feeds, now, hist)
+                for f in feeds:
+                    late = runner.overdue(site, f, hist, now)
+                    if late and f not in chosen:
+                        log.warning("Feed %s is %s", f.name, late)
+        except LockBusy as exc:
+            return _lock_busy(site, exc, feeds)
         if not chosen and not bad:
             log.info("No feed is due.")
             return 0
@@ -383,9 +448,11 @@ def _run(args, site: Site) -> int:
         results = runner.run_many(site, chosen, opts, all_feeds=feeds, bad_feeds=bad)
     except LockBusy as exc:
         if args.due:
-            log.info("%s Skipping this hour; the next start will catch up.", exc)
-            return 0
+            return _lock_busy(site, exc, feeds)
         raise
+    if args.due:
+        with History(site.history_path) as hist:
+            runner.report_given_up(site, feeds, hist, datetime.now(timezone.utc))
     print(json.dumps([_summary(r) for r in results] if len(results) != 1 else _summary(results[0]), indent=2))
     return runner.worst_code(results)
 
@@ -518,7 +585,8 @@ def cmd_feeds(args) -> int:
     with History(site.history_path) as hist:
         task = feedops.task_status(hist, feeds, now, lock_path=site.lock_path)
         if task["state"] != "unneeded":
-            label = {"ok": "", "running": "", "stale": "WARNING  ", "never": "NOTE     "}[task["state"]]
+            warn = "WARNING  "
+            label = {"ok": "", "running": "", "stuck": warn, "stale": warn, "never": "NOTE     "}[task["state"]]
             print(f"{label}{task['text']}\n")
         for f in feeds:
             s = schedule.parse(f.schedule)
@@ -553,6 +621,11 @@ def cmd_feeds(args) -> int:
             late = runner.overdue(site, f, hist, now)
             if late:
                 print(f"  WARNING   {late}")
+            from . import sources
+
+            local = sources.local_minor_warning(site, library, f)
+            if local:
+                print(f"  WARNING   {local}")
     for name, err in errors.items():
         print(f"{name}  PROBLEM\n  " + err.replace("\n", "\n  "))
     return 1 if errors else 0
@@ -680,6 +753,11 @@ def cmd_upgrade(args) -> int:
             a, b = [c["header"] for c in old["columns"]], [c["header"] for c in o["columns"]]
             if a != b:
                 print(f"  {o['name']}: columns change from\n    {a}\n  to\n    {b}")
+    changes = settings_changes(feed, new)
+    if changes:
+        print(f"  What else changes for {feed.name}:")
+        for text in changes:
+            print(f"    - {text}")
     if new.recipe.version[0] != feed.recipe.version[0] and feed.delivers:
         print("  This is a new major version: the next delivery is held until you release it.")
     if not (args.yes or _yes(f"Change {feed.path.name} to uses: {target}?")):
@@ -688,7 +766,9 @@ def cmd_upgrade(args) -> int:
     rewrite_key(feed.path, "uses", target)
     with History(site.history_path) as hist:
         hist.audit(None, feed.name, "recipe upgraded", {"from": feed.recipe.ref, "to": new.recipe.ref,
-                                                         "uses": target})
+                                                         "uses": target, "changes": changes})
+        hist.set_meta(f"{runner.UPGRADE_META}{feed.name}",
+                      json.dumps({"to": new.recipe.version_str, "changes": changes}))
         runner.audit_settings(site, hist)
     print(f"Done. Run `folio-exchange preview {feed.name}` to look at the new layout.")
     return 0
@@ -838,15 +918,19 @@ def cmd_schedule(args) -> int:
     if system != "Windows":
         print("  " + schedule.os_command(site.root, exe, system, user))
     else:
-        print("  In PowerShell (cmd --% /c passes the quotes through unchanged):")
-        print("  " + schedule.os_command(site.root, exe, system, user, shell="powershell"))
+        print("  In PowerShell:")
+        print("  " + schedule.register_command(site.root, exe, "powershell"))
         print("\n  Or in Command Prompt (cmd.exe):")
-        print("  " + schedule.os_command(site.root, exe, system, user))
+        print("  " + schedule.register_command(site.root, exe, "cmd"))
         if any(c in exe + str(site.root) for c in "&^|<>%"):
             print("\n  WARNING  The program or site path contains one of & ^ | < > %, which Command Prompt treats "
-                  "specially. Move the program or the site to a folder without them first.")
-        print("\n  Use one of the two, as the user who stored the secrets. It asks for that user's Windows "
-              "password, so the task runs even when nobody is logged on. These work in either window:\n")
+                  "specially. Use the PowerShell form.")
+        print("\n  Run it as the user who stored the secrets. It asks for that user's Windows password, so the task "
+              "runs even when nobody is signed in. The task also runs on battery power and catches up after the "
+              "computer was off or asleep.")
+        print("\n  To register the same task by hand instead, paste these lines into PowerShell:\n")
+        print("\n".join("  " + line for line in schedule.os_command(site.root, exe, system, user).splitlines()))
+        print("\n  These work in PowerShell or Command Prompt:\n")
     for label, cmd in schedule.os_helpers(site.root, system).items():
         print(f"  {label + ':':<13} {cmd}")
     if system == "Windows":
@@ -871,11 +955,15 @@ def _register_task(args, run=None) -> int:
         print("Add this line with `crontab -e`:\n")
         print("  " + schedule.os_command(root, program_path(), platform.system()))
         return 0
+    import tempfile
+
     user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
-    argv = schedule.windows_task_args(root, program_path(), user)
-    print(f"Registering \"{schedule.task_name(root)}\": every hour at minute 7, as {user}. Windows asks for "
-          "that user's password, so the task can run while nobody is signed in.")
-    done = (run or subprocess.run)(argv)
+    print(f"Registering \"{schedule.task_name(root)}\": every hour at minute 7, as {user}, also on battery power. "
+          "Windows asks for that user's password, so the task can run while nobody is signed in.")
+    with tempfile.TemporaryDirectory(prefix="fx-task-") as tmp:      # the task definition holds no secret
+        xml_file = Path(tmp) / "task.xml"
+        xml_file.write_text(schedule.windows_task_xml(root, program_path(), user), encoding="utf-16")
+        done = (run or subprocess.run)(schedule.windows_task_args(root, xml_file, user))
     if done.returncode != 0:
         print(f"schtasks did not register the task (exit {done.returncode}). Nothing else was changed; run "
               "this command again to retry.")
@@ -1059,6 +1147,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2 if exc.__class__.__name__ in ("SafetyCheckFailed", "HeldForRelease") else 1
     except OSError as exc:
         log.error("%s: %s", type(exc).__name__, exc)
+        return 1
+    except sqlite3.Error as exc:
+        log.error("A file in the site's data folder could not be read or written (%s: %s). Check that its drive "
+                  "has free space and that no other program (a backup or an antivirus scan) holds it open, then "
+                  "run again.", type(exc).__name__, exc)
         return 1
 
 

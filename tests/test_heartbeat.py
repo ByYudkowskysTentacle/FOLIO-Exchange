@@ -170,13 +170,13 @@ def lock_path(site):
 
 @can_see_locks
 def test_a_long_pass_is_running_not_stale(site, capsys):
-    start = (datetime.now(timezone.utc) - timedelta(hours=5, minutes=30)).replace(second=0, microsecond=0)
+    start = (datetime.now(timezone.utc) - timedelta(hours=3, minutes=30)).replace(second=0, microsecond=0)
     set_last_start(site, start)
     with RunLock(lock_path(site)):
         os.utime(lock_path(site), (start.timestamp() + 30, start.timestamp() + 30))   # took the lock at its start
         task = task_now(site)
         assert task["state"] == "running" and task["since"].startswith(f"{start:%Y-%m-%dT%H:%M}")
-        assert "A run has been going since" in task["text"] and "(5 hours)" in task["text"]
+        assert "A run has been going since" in task["text"] and "(3 hours)" in task["text"]
         assert not codes(warnings_for(site)) & {"task-never", "task-stale"}
         main(["-s", str(site), "feeds"])
         out = capsys.readouterr().out

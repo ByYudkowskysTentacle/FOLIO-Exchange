@@ -1359,9 +1359,16 @@ function deliveryTab(f) {
   }
   out.push(kv(rows));
   if (D.serverKey) {
-    out.push(h("div", { class: "notice notice-info" }, h("p", {}, h("b", { text: "The server's key, as read when you saved: " }),
-      h("span", { class: "mono fingerprint", text: D.serverKey.sha256 }), " (older form: ",
-      h("span", { class: "mono fingerprint", text: D.serverKey.md5 }), ")")));
+    const offered = Array.isArray(D.serverKey.keys) && D.serverKey.keys.length > 1 ? D.serverKey.keys : null;
+    const keyLine = (k) => [h("span", { class: "mono fingerprint", text: k.sha256 }), " (older form: ",
+      h("span", { class: "mono fingerprint", text: k.md5 }), ")"];
+    out.push(offered
+      ? h("div", { class: "notice notice-info" },
+        h("p", {}, h("b", { text: "The server offers several keys, as read when you saved. " }),
+          `The ${D.serverKey.type || "first"} key is the one kept for this feed.`),
+        h("ul", {}, ...offered.map((k) => h("li", {}, `${k.type || "key"}: `, ...keyLine(k)))))
+      : h("div", { class: "notice notice-info" }, h("p", {}, h("b", { text: "The server's key, as read when you saved: " }),
+        ...keyLine(D.serverKey))));
   }
   if (F.delivery) {
     out.push(F.delivery);
@@ -2105,6 +2112,9 @@ function runSummary(run, rep) {
       b.bibs_written !== undefined ? ["Bibs", `${num(b.bibs_written)} (${num(b.bibs_from_srs)} from MARC, ${num(b.bibs_generated)} generated)`] : null,
       ["Folder", h("span", { class: "mono", text: run.folder || "" })],
     ]),
+    // The run's own warnings (records sent as brief MARC, migrated notes that could not be read), runs and previews alike.
+    (rep.warnings || []).length ? [h("div", { class: "section-title", text: "Warnings" }),
+      h("ul", { class: "warnings", id: "run-warnings" }, rep.warnings.map((w) => h("li", {}, badge("held", "Check"), h("p", { text: pageWords(w) }))))] : null,
     h("div", { class: "section-title", text: "Files" }),
     (run.files || []).length ? h("ul", { class: "file-list" }, run.files.map((x) => h("li", { text: `${x.name}  ${bytes(x.bytes)}` }))) : h("p", { class: "muted", text: "None." }),
     (run.destinations || []).length ? [h("div", { class: "section-title", text: "Sent to" }),
@@ -2351,7 +2361,8 @@ function renderConnection() {
   const parts = [h("div", { class: "feed-head" }, h("div", { class: "title-row" }, h("h1", { text: "Connection" }),
       h("span", { class: "sub", text: "FOLIO" }), h("div", { class: "spacer" }), change, run))];
   const pw = secretWhere(s.folio.password);
-  const body = [S.connForm, kv([
+  const body = [S.connForm, S.connNotice && !S.connForm ? h("div", { class: "notice notice-held", id: "conn-notice" },
+    h("p", { text: S.connNotice })) : null, kv([
     ["Address", h("span", { class: "mono", text: s.folio.base_url })],
     ["Tenant", s.folio.tenant],
     ["Account", s.folio.username],
@@ -2405,9 +2416,10 @@ function openConnForm() {
     done: async (res) => {
       S.connForm = null;
       lastCheck = null;
+      S.connNotice = (res && res.notice) || null;      // pointed at another FOLIO: feeds hold their next run
       const where = res && res.folio && res.folio.password ? secretWhere(res.folio.password).text : "";
       toast("Connection saved.");
-      announce(`Logged in and saved.${where ? ` Password: ${where}.` : ""}`);
+      announce(`Logged in and saved.${where ? ` Password: ${where}.` : ""}${S.connNotice ? ` ${S.connNotice}` : ""}`);
       S.focus = "btn-change-conn";
       try {
         await loadSite();

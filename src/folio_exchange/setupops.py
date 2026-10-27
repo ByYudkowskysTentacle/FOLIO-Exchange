@@ -32,7 +32,7 @@ from .client import FolioClient, probe, tls_verify
 from .config import SITE_DEFAULTS, SITE_FILE, Site, load_site, merge, read_yaml, write_yaml
 from .errors import ConfigError, FxError, RecipeError
 from .history import History
-from .recipe import ID_RE, RESERVED_FEED_NAMES, Recipe, RecipeLibrary, load_all
+from .recipe import ID_RE, RESERVED_FEED_NAMES, Recipe, RecipeLibrary, collision_with, load_all
 
 SITE_HEADER = """FOLIO-Exchange site settings, written by `folio-exchange init`.
 No passwords live here: see `folio-exchange secret status`."""
@@ -108,7 +108,8 @@ def write_settings(path: Path, data: dict, header: str) -> Path | None:
 def _audit(site: Site, feed: str | None, action: str, detail: dict) -> None:
     with History(site.history_path) as hist:
         hist.audit(None, feed, action, detail)
-        runner.audit_settings(site, hist)          # a change made here is not a hand edit
+        written = {detail["file"]} if detail.get("file") else set()
+        runner.audit_settings(site, hist, written)          # a change made here is not a hand edit
 
 
 # ------------------------------------------------------------------ the FOLIO connection
@@ -155,7 +156,8 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
         except ConfigError as exc:
             raise ConfigError(f"{exc}\nsite.yaml could not be read, so nothing was changed. Fix the file (or move "
                               "it aside to start afresh), then try again.") from None
-    folio = dict(raw.get("folio") or {})
+    before = dict(raw.get("folio") or {})
+    folio = dict(before)
     folio.update(base_url=base_url, tenant=tenant, username=username)
     if password:
         folio["secret"] = "keyring"
@@ -191,7 +193,13 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
     if password:
         _audit(site, None, "secret stored", {"what": "FOLIO password", "service": credentials.FOLIO_SERVICE,
                                              "account": account, "from": via})
-    return site_state(root)
+    state = site_state(root)
+    note = runner.source_change_note(before, folio)
+    if note and site.history_path.exists():
+        with History(site.history_path) as hist:
+            if hist.delivered_feeds():
+                state["notice"] = note             # those feeds hold their next run (runner.hold_reason)
+    return state
 
 
 def _site_would_load(raw: dict) -> None:
@@ -282,7 +290,7 @@ def feed_settings(site: Site, library: RecipeLibrary, name: str) -> dict:
     filters = dict(feed.selection) if feed else {**defaults, **(raw.get("filters") or {})}
     d = dict(raw.get("delivery") or {})
     out_d: dict[str, Any] = {k: d.get(k) for k in ("transport", "host", "port", "username", "remote_dir",
-                                                     "directory", "host_key_fingerprint")}
+                                                     "directory", "host_key_fingerprint", "host_key_type")}
     out_d["transport"] = out_d["transport"] or "none"
     out_d["host_key_confirmed"] = d.get("host_key_confirmed", True) is not False
     out_d["auth"] = "key" if d.get("private_key") else "password"
@@ -396,10 +404,11 @@ def _save_checked(site: Site, library: RecipeLibrary, name: str, path: Path, raw
                 raise ConfigError(f"There is already a feed called {name}; choose another name.")
             raise ConfigError(f"feeds/{name}.yaml changed while this was being saved (by hand, or in another "
                               "window). Nothing was saved: reload the feed and make the change again.")
-        before = {n for n in load_all(site, library)[1] if n != name}   # feeds that were already broken
+        was_feeds, was_errors = load_all(site, library)
+        before = {n for n in was_errors if n != name}   # feeds that were already broken
         backup = write_settings(path, raw, FEED_HEADER)
         try:
-            _feeds, errors = load_all(site, library)
+            feeds, errors = load_all(site, library)
         except Exception:
             _restore(path, old, backup)
             raise
@@ -408,6 +417,15 @@ def _save_checked(site: Site, library: RecipeLibrary, name: str, path: Path, raw
             _restore(path, old, backup)
             problem = broken.get(name) or next(iter(broken.values()))
             raise ConfigError(f"Not saved, because the feed would not load:\n{problem}")
+        clash = _clash(name, feeds)          # loading compares enabled feeds only; a paused one is checked here
+        if clash and clash != _clash(name, was_feeds):
+            _restore(path, old, backup)
+            raise ConfigError(f"Not saved: {clash}")
+
+
+def _clash(name: str, feeds: list) -> str | None:
+    mine = next((f for f in feeds if f.name == name), None)
+    return collision_with(mine, feeds) if mine else None
 
 
 def _restore(path: Path, old: bytes | None, backup: Path | None) -> None:
@@ -444,6 +462,7 @@ def add_feed(site: Site, library: RecipeLibrary, name: str, uses: str, values: d
     if any(str(_quiet(q).get("uses", "")).split("@")[0] == recipe.id for q in others):
         raw["file_prefix"] = name                  # never overwrite another feed's files at the same vendor
     _apply(raw, dict(values or {}), recipe)
+    raw.setdefault("schedule", str(recipe.data.get("default_schedule") or "manual"))   # a later recipe never moves it
     raw["delivery"] = {"transport": "none"}
     site.feeds_dir.mkdir(parents=True, exist_ok=True)
     _save_checked(site, library, name, path, raw, None)
@@ -483,11 +502,22 @@ def fingerprint_matches(given: str, keys: dict[str, str]) -> bool:
     return bool(text) and text.rstrip("=") == keys["sha256"][7:]
 
 
+def offered_keys(keys: dict[str, Any]) -> list[dict[str, str]]:
+    """Every host key the server offered, the one it prefers first (``keys`` itself when only that was read)."""
+    return list(keys.get("keys") or [keys])
+
+
+def describe_keys(offered: list[dict[str, str]]) -> str:
+    return "; ".join(f"{k.get('type') or 'key'} {k['sha256']} (MD5 {k['md5']})" for k in offered)
+
+
 def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, version: str | None,
                   read_keys: Callable[[str, int], dict[str, str]] | None = None, via: str = "ui") -> dict:
-    """Set where a feed's files go. For SFTP the server's key is read now and compared with the fingerprint
-    the vendor gave; with no vendor value yet it is kept unconfirmed (nothing logs in, the feed is paused);
-    a different key refuses the change. Passwords and keys are stored separately."""
+    """Set where a feed's files go. For SFTP the server's keys (one per type it offers) are read now and the
+    fingerprint the vendor gave is looked for among them; the key it matches is pinned with its type. With no
+    vendor value yet the preferred key is kept unconfirmed (nothing logs in, the feed is paused); a value that
+    matches no key refuses the change. Passwords and keys are stored separately. ``server_key`` in the result is the
+    pinned key, with every offered key under ``keys`` when there were several."""
     path, raw, old = _open_feed(site, name, version)
     old_d = dict(raw.get("delivery") or {})
     transport = form.get("transport")
@@ -523,27 +553,36 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
         except Exception as exc:  # noqa: BLE001 - network errors of every kind
             raise ConfigError(f"Could not reach {host}:{port} ({type(exc).__name__}: {exc}). Nothing was saved: "
                               "check the server name and port.") from None
+        offered = offered_keys(keys)
         vendor_value = str(form.get("vendor_fingerprint") or "").strip()
         same_server = old_d.get("host") == host and int(old_d.get("port") or 22) == port
-        known = (same_server and old_d.get("host_key_fingerprint") == keys["sha256"]
-                 and old_d.get("host_key_confirmed", True) is not False)
+        known = next((k for k in offered if same_server and old_d.get("host_key_fingerprint") == k["sha256"]
+                      and old_d.get("host_key_confirmed", True) is not False), None)
         if vendor_value:
-            if not fingerprint_matches(vendor_value, keys):
-                kind = f"{keys['type']} " if keys.get("type") else ""
-                raise ConfigError(f"The server's {kind}key is {keys['sha256']} (MD5 {keys['md5']}), which is not the "
-                                  "fingerprint you entered. A different key can mean the wrong server, so nothing "
-                                  "was saved. Check the value with the vendor (if they gave a fingerprint for "
-                                  f"another kind of key, ask them for the {kind or 'matching '}one).")
+            chosen = next((k for k in offered if fingerprint_matches(vendor_value, k)), None)
+            if chosen is None:
+                if len(offered) == 1:
+                    kind = f"{keys['type']} " if keys.get("type") else ""
+                    raise ConfigError(f"The server's {kind}key is {keys['sha256']} (MD5 {keys['md5']}), which is not "
+                                      "the fingerprint you entered. A different key can mean the wrong server, so "
+                                      "nothing was saved. Check the value with the vendor (if they gave a fingerprint "
+                                      f"for another kind of key, ask them for the {kind or 'matching '}one).")
+                raise ConfigError(f"The server offers {len(offered)} keys: {describe_keys(offered)}. None of them is "
+                                  "the fingerprint you entered. A different key can mean the wrong server, so nothing "
+                                  "was saved. Check the value with the vendor.")
             confirmed = True
         elif known:
-            confirmed = True
+            chosen, confirmed = known, True
         elif form.get("confirm_later"):
-            confirmed = False
+            chosen, confirmed = offered[0], False
         else:
             raise ConfigError("Enter the server key fingerprint the vendor gave you, or choose to confirm it later.")
         d = {k: old_d[k] for k in ("upload_mode", "secret", "private_key") if old_d.get(k) is not None}
         d.update(transport="sftp", host=host, port=port, username=username, remote_dir=remote_dir,
-                 host_key_fingerprint=keys["sha256"])
+                 host_key_fingerprint=chosen["sha256"])
+        if chosen.get("type") in delivery.KEY_TYPES:
+            d["host_key_type"] = chosen["type"]
+        keys = {**chosen, "keys": offered} if len(offered) > 1 else chosen
         d.setdefault("secret", "keyring")
         if not confirmed:
             d["host_key_confirmed"] = False

@@ -100,6 +100,13 @@
             "string",
             "null"
           ]
+        },
+        "date_format": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "How legacy date notes are written when not ISO 8601, as a strftime pattern with a day, month and year, e.g. %d/%m/%Y"
         }
       }
     },
@@ -402,6 +409,21 @@
             "null"
           ],
           "pattern": "^SHA256:"
+        },
+        "host_key_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "ssh-rsa",
+            null
+          ],
+          "description": "The type of the pinned key (as check --delivery shows it); logins ask the server for a key of this type"
         },
         "host_key_confirmed": {
           "type": "boolean",

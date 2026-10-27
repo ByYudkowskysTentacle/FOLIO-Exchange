@@ -31,6 +31,7 @@ from .errors import ConfigError, FxError, PatronDataRefused
 log = logging.getLogger(__name__)
 
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+JUDGED = {400, 401, 403, 422}         # login answers that mean FOLIO looked at the user name and password
 # What FOLIO's certificate is checked against: True (the usual public certificates), False (not checked),
 # the path of a PEM file, or an SSL context (the Windows certificate store).
 Verify = bool | str | ssl.SSLContext
@@ -222,11 +223,14 @@ class FolioClient:
         _no_redirect(resp)
         if resp.status_code in RETRY_STATUSES:
             raise _TransientLoginError(f"login returned HTTP {resp.status_code}")
-        if resp.status_code == 404:
+        first = resp.status_code
+        if first == 404:
             # Very old FOLIO releases (pre-Poppy) only have the legacy endpoint.
             resp = self.session.post(f"{self.base_url}/authn/login", json=body, timeout=self.timeout,
                                      allow_redirects=False)
             _no_redirect(resp)
+            if resp.status_code in RETRY_STATUSES:
+                raise _TransientLoginError(f"login returned HTTP 404, then HTTP {resp.status_code}")
             if resp.ok:
                 self._token = resp.headers.get("x-okapi-token")
                 self._expires = datetime.now(timezone.utc) + timedelta(days=1)
@@ -234,9 +238,19 @@ class FolioClient:
             self._token = self.session.cookies.get("folioAccessToken") or resp.headers.get("x-okapi-token")
             exp = (resp.json() or {}).get("accessTokenExpiration")
             self._expires = _parse_dt(exp) or datetime.now(timezone.utc) + timedelta(minutes=10)
+        if not resp.ok and resp.status_code not in JUDGED:
+            # No password was judged (the login module is missing or restarting, say during an upgrade): not a
+            # refusal, so a later attempt may try again.
+            also = f", then /authn/login HTTP {resp.status_code}" if first == 404 else ""
+            raise FolioUnreachable(
+                f"FOLIO's login service did not answer as expected (/authn/login-with-expiry returned HTTP {first}"
+                f"{also}), so the password was not checked. FOLIO may be part way through an upgrade or restart: "
+                "run again later (a scheduled run tries again at its next hourly start). If it continues, check "
+                "folio.base_url in site.yaml and ask your FOLIO host.", status=first)
         if not resp.ok or not self._token:
+            where = " from /authn/login; /authn/login-with-expiry returned HTTP 404" if first == 404 else ""
             self._refused = LoginFailed(
-                f"FOLIO refused the login for user '{self.username}' (HTTP {resp.status_code}). Check the user "
+                f"FOLIO refused the login for user '{self.username}' (HTTP {resp.status_code}{where}). Check the user "
                 "name, folio.tenant and the password (`folio-exchange secret status`). To avoid locking the "
                 "account, FOLIO-Exchange does not try again until you run it again."
             )
