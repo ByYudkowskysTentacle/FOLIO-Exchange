@@ -1,6 +1,6 @@
 # Notices
 
-FOLIO-Exchange has not chosen its license yet (see `README.md`). Until it does, the notice below covers the code it adapts from its phase 0 tool.
+FOLIO-Exchange is released under the MIT License (see `LICENSE`). It adapts code from its phase 0 tool, whose own MIT notice is kept below, as that license requires.
 
 ## folio-chq-extract (FOLIOHQ)
 

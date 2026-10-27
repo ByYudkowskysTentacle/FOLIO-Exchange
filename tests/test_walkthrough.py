@@ -135,3 +135,13 @@ def test_check_delivery_names_the_local_folder(site, capsys):
     (site / "vendor-drop").mkdir()
     assert main(["-s", str(site), "check", "--delivery"]) == 0
     assert f"{site / 'vendor-drop'} has 0 entries" in capsys.readouterr().out
+
+
+def test_a_dry_run_without_delivery_does_not_suggest_release(site):
+    import json
+
+    make_feed(site, delivery={"transport": "none", "directory": None})
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    run = sorted(p for p in (site / "out" / "chq").iterdir() if p.name[:1].isdigit())[-1]
+    nxt = json.loads((run / "run-report.json").read_text(encoding="utf-8"))["next"]
+    assert "no delivery set up yet" in nxt and "release" not in nxt
