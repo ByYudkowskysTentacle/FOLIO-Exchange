@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__, credentials, delivery, reads, runner, schedule
-from .client import FolioError
+from .client import probe
 from .config import BUNDLED_RECIPES, Site, find_site, load_site, read_yaml
 from .errors import ConfigError, FxError, LockBusy, RecipeError
 from .fields import FIELDS
@@ -129,20 +129,6 @@ def _rewrite_key(path: Path, key: str, value: str) -> None:
 
 
 # ------------------------------------------------------------------ check
-def _probe(client, label: str, path: str, permission: str) -> tuple[bool, str, str | None]:
-    """(worked, line to print, the permission that was denied or None)."""
-    try:
-        if path == reads.READS["marc"].path:
-            client.get(path, {"limit": 0})
-            return True, f"  OK       {label}", None
-        return True, f"  OK       {label}: {client.count(path):,} records", None
-    except FolioError as exc:
-        text = str(exc)
-        if "-> 401" in text or "-> 403" in text:
-            return False, f"  DENIED   {label}: the account lacks {permission}", permission
-        return False, f"  FAILED   {label}: {_short(text)}", None
-
-
 def _env_password_note(site: Site) -> str | None:
     """When the FOLIO password comes from an environment variable, what the scheduled task needs to have it."""
     source = site.folio_password_source()
@@ -221,22 +207,24 @@ def cmd_check(args) -> int:
     if note:
         print(f"NOTE     {note}")
     client = runner.client_for(site)
-    client.login()
+    client.connect()
     print(f"Logged in to {client.base_url} (tenant {client.tenant}) as {client.username}")
     needed = set().union(*(set(f.reads) for f in chosen)) if chosen else set(reads.READS)
-    denied: list[str] = []
-    for name in reads.ENTITY_ORDER + ("marc",):
-        if name in needed:
-            r = reads.READS[name]
-            good, line, perm = _probe(client, f"{name} ({r.path})", r.path, r.permission)
-            ok &= good
-            denied.extend([perm] if perm else [])
-            print(line)
-    for kind, (path, _key, perm) in reads.REFDATA.items():
-        good, line, missing = _probe(client, f"{kind} ({path})", path, perm)
-        ok &= good
-        denied.extend([missing] if missing else [])
-        print(line)
+    results = probe(client, needed)
+    for r in results:
+        label = f"{r['name']} ({r['path']})"
+        if r["status"] == "ok":
+            print(f"  OK       {label}" + (f": {r['count']:,} records" if r["count"] is not None else ""))
+        elif r["status"] == "denied":
+            print(f"  DENIED   {label}: the account lacks {r['permission']}")
+        else:
+            print(f"  FAILED   {label}: {_short(r['error'] or '', 160)}")
+    ok = all(r["status"] == "ok" for r in results)
+    denied = [r["permission"] for r in results if r["status"] == "denied"]
+    offset = client.clock_offset
+    if offset is not None and abs(offset.total_seconds()) > 300:
+        print(f"WARNING  This computer's clock is {abs(int(offset.total_seconds() // 60))} minutes away from "
+              "FOLIO's. Syncing uses FOLIO's time, but schedules use this computer's: set the clock right.")
     if denied:
         print("\nAsk your FOLIO administrator to add these permissions to the account (on Eureka, the matching "
               "capabilities in its role):")
@@ -270,6 +258,18 @@ def cmd_check_delivery(args) -> int:
             else:
                 secret = "password: " + credentials.source(
                     d.get("secret"), credentials.SFTP_SERVICE, credentials.sftp_account(d["username"], d["host"]))
+            if d.get("host_key_confirmed") is False:
+                print(f"  Key not yet confirmed with the vendor; stored {d.get('host_key_fingerprint')}. "
+                      "Nothing logs in until it is.")
+                try:
+                    seen = delivery.host_key_fingerprint(d["host"], int(d.get("port") or 22))
+                    print(f"  The server answers with {seen}"
+                          + (" (the same)." if seen == d.get("host_key_fingerprint") else " (DIFFERENT: ask the vendor)."))
+                except Exception as exc:  # noqa: BLE001 - network errors of every kind
+                    print(f"  Could not read the server's key: {type(exc).__name__}: {str(exc)[:160]}")
+                print("  Compare it with the vendor's fingerprint, then run `folio-exchange init` again to confirm it.")
+                worst = 1
+                continue
             print(f"  Connecting to {d['host']}:{d.get('port') or 22} as {d['username']}")
             print(f"  host key {pin}; {secret}")
         elif d["transport"] == "none":
@@ -777,10 +777,16 @@ def cmd_ui(args) -> int:
 
 
 def cmd_init(args) -> int:
+    import os
+
     from .wizard import ConsolePrompter, run_wizard
 
-    root = Path(args.site or args.folder or ".").expanduser()
-    return run_wizard(root.resolve(), ConsolePrompter())
+    if args.site and args.folder and Path(args.site).expanduser().resolve() != Path(args.folder).expanduser().resolve():
+        raise ConfigError(f"Two different site folders were given ({args.site} and {args.folder}); give one.")
+    chosen = args.folder or args.site or os.environ.get("FOLIO_EXCHANGE_SITE") or "."
+    if not args.folder and not args.site and os.environ.get("FOLIO_EXCHANGE_SITE"):
+        print(f"Using the site folder from FOLIO_EXCHANGE_SITE: {chosen}")
+    return run_wizard(Path(chosen).expanduser().resolve(), ConsolePrompter())
 
 
 # ------------------------------------------------------------------ main

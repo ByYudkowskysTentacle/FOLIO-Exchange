@@ -141,6 +141,7 @@ class MockFolio:
         self.lock = threading.Lock()
         self.requests: list[str] = []
         self.fail_next: list[int] = []   # status codes to return for the next N data requests
+        self.fail_login: list[int] = []  # status codes to return for the next N logins
         self.expire_tokens = False
         self.valid_tokens: set[str] = set()
         handler = self._handler()
@@ -202,6 +203,8 @@ class MockFolio:
                 payload = json.loads(self.rfile.read(length) or b"null")
                 mock.requests.append(f"POST {u.path}")
                 if u.path == "/authn/login-with-expiry":
+                    if mock.fail_login:
+                        return self._send(mock.fail_login.pop(0), {"error": "gateway busy"})
                     if payload.get("password") != "secret":
                         return self._send(422, {"errors": [{"message": "bad password"}]})
                     tok = uuid.uuid4().hex

@@ -30,7 +30,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, delivery, reads, runner, schedule
-from .client import FolioError
+from .client import probe
 from .config import Site, load_site, read_yaml
 from .errors import ConfigError, FxError, LockBusy
 from .fields import FIELDS
@@ -232,27 +232,10 @@ def check_connection(site_root: Path) -> dict:
     out: dict[str, Any] = {"password": site.folio_password_source(), "note": _env_password_note(site),
                            "endpoints": [], "denied": [], "problems": errors, "logged_in": False}
     client = runner.client_for(site)
-    client.login()
+    client.connect()
     out["logged_in"] = True
-    targets = [(n, reads.READS[n].path, reads.READS[n].permission) for n in reads.ENTITY_ORDER + ("marc",)
-               if n in needed]
-    targets += [(kind, path, perm) for kind, (path, _key, perm) in reads.REFDATA.items()]
-    for name, path, perm in targets:
-        row: dict[str, Any] = {"name": name, "path": path, "permission": perm}
-        try:
-            if path == reads.READS["marc"].path:
-                client.get(path, {"limit": 0})
-                row["count"] = None
-            else:
-                row["count"] = client.count(path)
-            row["status"] = "ok"
-        except FolioError as exc:
-            text = str(exc)
-            row["status"] = "denied" if ("-> 401" in text or "-> 403" in text) else "failed"
-            row["error"] = text[:300]
-            if row["status"] == "denied":
-                out["denied"].append(perm)
-        out["endpoints"].append(row)
+    out["endpoints"] = probe(client, needed)
+    out["denied"] = [r["permission"] for r in out["endpoints"] if r["status"] == "denied"]
     out["ok"] = all(r["status"] == "ok" for r in out["endpoints"])
     return out
 

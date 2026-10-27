@@ -59,7 +59,7 @@ LEGACY_DEFAULTS: dict[str, Any] = {
 CHECKS_DEFAULTS: dict[str, Any] = {"min_item_ratio": 0.9, "must_be_filled": []}
 DELIVERY_DEFAULTS: dict[str, Any] = {
     "transport": "none", "upload_mode": "staged", "host": None, "port": 22, "username": None, "remote_dir": ".",
-    "host_key_fingerprint": None, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
+    "host_key_fingerprint": None, "host_key_confirmed": True, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
 }
 # A shared recipe may only say how files travel; where they go and which server key to trust are local.
 RECIPE_DELIVERY_KEYS = ("transport", "upload_mode")
@@ -461,6 +461,8 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
     fp = dlv.get("host_key_fingerprint")
     if fp is not None and not (isinstance(fp, str) and fp.startswith("SHA256:") and len(fp) > 20):
         c.add("delivery.host_key_fingerprint", "must look like SHA256:... (run `folio-exchange check --delivery`)")
+    if "host_key_confirmed" in dlv:
+        c.boolean(dlv["host_key_confirmed"], "delivery.host_key_confirmed")
     for key in ("host", "username", "remote_dir", "known_hosts", "private_key", "directory"):
         if dlv.get(key) is not None and not isinstance(dlv[key], str):
             c.add(f"delivery.{key}", "must be text")

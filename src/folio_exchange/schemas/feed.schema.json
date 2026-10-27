@@ -400,6 +400,10 @@
           ],
           "pattern": "^SHA256:"
         },
+        "host_key_confirmed": {
+          "type": "boolean",
+          "description": "false until the fingerprint is confirmed with the vendor; nothing logs in while it is false"
+        },
         "known_hosts": {
           "type": [
             "string",
