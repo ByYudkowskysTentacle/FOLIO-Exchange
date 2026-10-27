@@ -35,7 +35,7 @@ FOLIOHQ's `CLAUDE.md` lists the FOLIO API facts that code depends on.
 
 - **Eureka first.** Okapi-based FOLIO keeps working only while the same code serves both; no Okapi-only fixes, features or tests.
 - **Never read or export patron data** unless a recipe declares it and an admin approves it. Do not add user or patron endpoints casually.
-- **Secrets** come only from environment variables or the OS keyring. Never put them in recipes, config, logs, commits or chat. Tests never touch the real keyring.
+- **Secrets** come only from environment variables or the OS keyring. The one exception is an SFTP private key saved from the page: too large for Credential Manager, it is a file in the site's `keys` folder that only the Windows user can read. Never put secrets in recipes, config, logs, commits or chat. Tests never touch the real keyring.
 - **Signing in:** do not sign in to a production service (FOLIO tenant, vendor SFTP) with a password yourself. Give the person a command to run, and read only its output.
 - **This repo is public.** Never commit credentials, `config.yaml`, `.env`, cache data or output files, or personal names and emails. Commits use the GitHub noreply address.
 - **Recipes stay declarative:** no executable code in recipes.

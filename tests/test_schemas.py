@@ -25,7 +25,12 @@ def test_schema_keys_match_the_code():
     assert set(schema("recipe")["properties"]["delivery"]["properties"]) == set(recipe.RECIPE_DELIVERY_KEYS)
     site = schema("site")
     for section, defaults in config.SITE_DEFAULTS.items():
+        if isinstance(defaults, list):                       # recipe_sources: a list of entries
+            assert site["properties"][section]["type"] == "array", section
+            continue
         assert set(site["properties"][section]["properties"]) == set(defaults), section
+    entry = site["properties"]["recipe_sources"]["items"]["properties"]
+    assert set(entry) == {"id", "vendor", "title", "description", "repo", "branch", "path", "recipes", "homepage"}
 
 
 @pytest.mark.parametrize("path", sorted(BUNDLED_RECIPES.glob("*/*.yaml")), ids=lambda p: p.parent.name + "/" + p.name)

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import __version__, credentials, delivery, feedops, reads, runner, schedule
 from .client import probe
-from .config import BUNDLED_RECIPES, Site, find_site, load_site, password_note, read_yaml, rewrite_key
+from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError
 from .fields import FIELDS
 from .history import History
@@ -63,6 +63,20 @@ def _utf8_console() -> None:
 
 def _site(args) -> Site:
     return load_site(find_site(args.site))
+
+
+def _new_site_root(args) -> Path | None:
+    """The folder named with --site or FOLIO_EXCHANGE_SITE when it has no site.yaml yet (a site still to be set
+    up), else None. The current folder never counts, so a mistyped command cannot start a site anywhere."""
+    import os
+
+    named = args.site or os.environ.get("FOLIO_EXCHANGE_SITE")
+    if not named:
+        return None
+    root = Path(named).expanduser()
+    if root.name == SITE_FILE:
+        root = root.parent
+    return None if (root / SITE_FILE).is_file() else root.resolve()
 
 
 def _library(site: Site | None) -> RecipeLibrary:
@@ -262,7 +276,53 @@ def cmd_check_delivery(args) -> int:
 
 
 # ------------------------------------------------------------------ runs
+def _recipe_sources(args, site: Site | None, library: RecipeLibrary) -> int:
+    from . import sources
+
+    if args.action == "sources":
+        installed = sources.provenance(site) if site else {}
+        for s in sources.load_sources(site):
+            got = installed.get(s.id) or {}
+            print(f"{s.id:<16} {s.title}  ({s.repo}, {s.branch}; recipes: {', '.join(s.recipes)})")
+            print(f"{'':<16} " + (f"downloaded at commit {got['commit'][:12]} on {got.get('installed', '?')[:10]}"
+                                  if got.get("commit") else "not downloaded yet"))
+        return 0
+    if site is None:
+        raise ConfigError("Downloading recipes needs a site: give --site, or run it in the site folder.")
+    if not args.target:
+        raise ConfigError("Name the source to download from (see `folio-exchange recipes sources`).")
+    result = sources.check(site, library, args.target)
+    src = result["source"]
+    print(f"{src['title']}: {src['repo']} ({src['branch']}) at commit {result['commit'][:12]}")
+    for p in result["problems"]:
+        print(f"  NOTE     {p}")
+    for r in result["recipes"]:
+        label = {"new": "NEW", "installed": "have", "conflict": "REFUSED", "invalid": "REFUSED"}[r["status"]]
+        print(f"  {label:<8} {r['id']} {r['version']}" + (f": {r.get('title')}" if r.get("title") else ""))
+        if r["status"] == "new":
+            if r.get("changes"):
+                print(f"           {_short(str(r['changes']), 300)}")
+            print(f"           reads: {', '.join(r.get('reads') or [])}; patron data: {r.get('patron_data')}")
+            if r.get("picked_up_by"):
+                print(f"           feeds that use it from their next run: {', '.join(r['picked_up_by'])}")
+        if r.get("problem"):
+            print(f"           {_short(r['problem'], 400)}")
+    if not result["new"]:
+        print("Nothing new to install.")
+        return 0
+    if not (args.yes or _yes(f"Install {len(result['new'])} new version(s) into {site.recipe_dirs[0]}?")):
+        print("Nothing installed.")
+        return 2
+    done = sources.install(site, library, args.target, result["commit"], via="cli")
+    print(f"Installed: {', '.join(done['installed'])}. Recorded in the audit log.")
+    return 0
+
+
 def cmd_run(args) -> int:
+    new = _new_site_root(args) if args.due else None
+    if new is not None and new.is_dir():
+        print(f"{new} is not set up yet (no {SITE_FILE}), so nothing is due. Open the page to set it up.")
+        return 0
     site = _site(args)
     feeds, errors = _feeds(site)
     opts = runner.RunOptions(full=args.full, no_deliver=args.no_deliver, skip_sync=args.skip_sync,
@@ -512,6 +572,8 @@ def cmd_recipes(args) -> int:
         for p in library.problems():
             print("PROBLEM " + p)
         return 1 if library.problems() else 0
+    if action in ("sources", "get"):
+        return _recipe_sources(args, site, library)
     if action == "validate":
         if not args.target:
             raise ConfigError("Name the recipe file to validate.")
@@ -704,6 +766,8 @@ def cmd_secret(args) -> int:
 
 
 def cmd_schedule(args) -> int:
+    if args.register:
+        return _register_task(args)
     site = _site(args)
     feeds, _errors = _feeds(site)
     now = datetime.now(timezone.utc)
@@ -748,26 +812,62 @@ def cmd_schedule(args) -> int:
     return 0
 
 
+def _register_task(args, run=None) -> int:
+    """Register the hourly `run --due` with the Windows Task Scheduler. schtasks asks for the Windows password
+    itself; nothing here sees it. Works before the site is set up (the runs find nothing due until then)."""
+    import getpass
+    import os
+    import subprocess
+
+    from .launcher import program_path
+
+    root = _new_site_root(args) or find_site(args.site).resolve()
+    if not root.is_dir():
+        raise ConfigError(f"No folder {root}")
+    if platform.system() != "Windows":
+        print("Add this line with `crontab -e`:\n")
+        print("  " + schedule.os_command(root, program_path(), platform.system()))
+        return 0
+    user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
+    argv = schedule.windows_task_args(root, program_path(), user)
+    print(f"Registering \"{schedule.task_name(root)}\": every hour at minute 7, as {user}. Windows asks for "
+          "that user's password, so the task can run while nobody is signed in.")
+    done = (run or subprocess.run)(argv)
+    if done.returncode != 0:
+        print(f"schtasks did not register the task (exit {done.returncode}). Nothing else was changed; run "
+              "this command again to retry.")
+        return 1
+    print("Registered. `folio-exchange schedule` shows how to run it now, see its last result or remove it.")
+    return 0
+
+
 def cmd_ui(args) -> int:
     from .ui import serve
 
-    serve(find_site(args.site), port=args.port, open_browser=not args.no_browser)
+    root = _new_site_root(args)
+    if root is not None:
+        root.mkdir(parents=True, exist_ok=True)       # a new site: the page starts with the FOLIO connection
+    serve(root or find_site(args.site), port=args.port, open_browser=not args.no_browser)
     return 0
 
 
 def cmd_launcher(args) -> int:
     from . import launcher
 
-    site = _site(args)
+    root = _new_site_root(args)
+    if root is not None:
+        root.mkdir(parents=True, exist_ok=True)       # set up later, on the page the launcher opens
+    else:
+        root = _site(args).root
     if args.folder:
         folder = Path(args.folder).expanduser().resolve()
         if not folder.is_dir():
             raise ConfigError(f"No folder {folder}")
     else:
-        folder = launcher.desktop() or site.root
-    path = launcher.write(site.root, folder, launcher.program_path(), platform.system())
+        folder = launcher.desktop() or root
+    path = launcher.write(root, folder, launcher.program_path(), platform.system())
     print(f"Made {path}")
-    print(f"Double-click it to open the page for {site.root}. Its window keeps the page running; press Ctrl+C "
+    print(f"Double-click it to open the page for {root}. Its window keeps the page running; press Ctrl+C "
           "there to stop. If FOLIO-Exchange is installed somewhere else later, or the site folder moves, run "
           "this command again.")
     return 0
@@ -841,8 +941,11 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("action", nargs="?", choices=["list", "pause", "resume"], default="list")
     fd.add_argument("feed", nargs="?")
     rc = sub.add_parser("recipes", help="list recipes, show one, validate a file, or print a layout summary")
-    rc.add_argument("action", nargs="?", choices=["list", "show", "validate", "summary"], default="list")
-    rc.add_argument("target", nargs="?", help="recipe id (id@range), feed name, or a file to validate")
+    rc.add_argument("action", nargs="?", choices=["list", "show", "validate", "summary", "sources", "get"],
+                    default="list")
+    rc.add_argument("target", nargs="?", help="recipe id (id@range), feed name, a file to validate, or (for get) "
+                                              "a source from `recipes sources`")
+    rc.add_argument("--yes", action="store_true", help="get: install without asking")
     u = sub.add_parser("upgrade", help="move a feed to another recipe version, after showing what changes "
                        "(not an update of FOLIO-Exchange itself)")
     u.add_argument("feed")
@@ -857,7 +960,9 @@ def build_parser() -> argparse.ArgumentParser:
     se = sub.add_parser("secret", help="store a secret in the system keyring, or show where each comes from")
     se.add_argument("action", choices=["set", "status"])
     se.add_argument("target", nargs="?", help="folio, smtp, webhook, or a feed name")
-    sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
+    sc = sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
+    sc.add_argument("--register", action="store_true", help="register the hourly task now (Windows asks for "
+                                                             "your Windows password)")
     ui = sub.add_parser("ui", help="open a simple page in your browser to look at feeds and run them")
     ui.add_argument("--port", type=int, help="port on this computer (default 8765, or a free one if it is taken)")
     ui.add_argument("--no-browser", action="store_true", help="do not open the browser")

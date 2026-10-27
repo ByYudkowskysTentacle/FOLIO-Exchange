@@ -1,0 +1,16 @@
+# Vendor recipe sources: where the page and `folio-exchange recipes get` may download recipes from.
+#
+# Each source is a folder in a GitHub repository holding <recipe-id>/<version>.yaml files. A source may
+# only provide the recipe ids it lists. A download takes the branch as it is at that moment and records the
+# commit. Vendors (or their partner libraries) are added here by pull request; a site can add its own
+# sources under `recipe_sources:` in site.yaml.
+sources:
+  - id: foliohq
+    vendor: collectionHQ
+    title: collectionHQ (FOLIOHQ)
+    description: collectionHQ Academic, maintained in FOLIOHQ with collectionHQ's implementation team.
+    repo: ByYudkowskysTentacle/FOLIOHQ
+    branch: main
+    path: recipes
+    recipes: [chq-academic]
+    homepage: https://github.com/ByYudkowskysTentacle/FOLIOHQ

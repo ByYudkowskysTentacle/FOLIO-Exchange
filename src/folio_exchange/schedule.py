@@ -211,6 +211,15 @@ def os_command(site_root: Path, executable: str, system: str, user: str | None =
     return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"
 
 
+def windows_task_args(site_root: Path, executable: str, user: str | None = None) -> list[str]:
+    """The same schtasks command as ``os_command``, as arguments for running it directly (no shell). With a
+    user, schtasks itself asks for that user's Windows password."""
+    site = str(Path(site_root).resolve())
+    action = f"{win_quote(executable.replace(chr(34), ''))} --site {win_quote(site)} run --due"
+    args = ["schtasks", "/Create", "/TN", task_name(site), "/SC", "HOURLY", "/MO", "1", "/ST", "00:07", "/TR", action]
+    return args + (["/RU", user, "/RP", "*"] if user else []) + ["/F"]
+
+
 def os_helpers(site_root: Path, system: str) -> dict[str, str]:
     """Commands to run the task now, see its last result, and remove it (Windows); empty elsewhere."""
     if not system.lower().startswith("win"):

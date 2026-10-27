@@ -198,6 +198,62 @@
           ]
         }
       }
+    },
+    "recipe_sources": {
+      "type": "array",
+      "description": "This site's own vendor recipe sources, added to the curated list that ships with FOLIO-Exchange.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "vendor",
+          "title",
+          "repo",
+          "recipes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$",
+            "description": "A GitHub repository, owner/name."
+          },
+          "branch": {
+            "type": "string",
+            "description": "Default main."
+          },
+          "path": {
+            "type": "string",
+            "description": "The folder holding <recipe-id>/<version>.yaml; default recipes."
+          },
+          "recipes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            },
+            "description": "The recipe ids this source may provide."
+          },
+          "homepage": {
+            "type": "string",
+            "pattern": "^https://"
+          }
+        }
+      }
     }
   },
   "description": "FOLIO-Exchange site settings: site.yaml"

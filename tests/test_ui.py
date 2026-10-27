@@ -254,7 +254,12 @@ TEXT_PAIRS = [
     ("--neutral", "--neutral-bg"), ("--ok", "--ok-bg"), ("--held", "--held-bg"), ("--blocked", "--blocked-bg"),
     ("--failed", "--failed-bg"), ("--built", "--built-bg"),      # the small badges
     ("--failed", "--panel"), ("--text", "--panel"), ("--accent-text", "--accent-hover"),
+    ("--link", "--panel"), ("--link", "--panel-2"),               # repository links on the Recipes view
+    ("--text", "--ok-bg"), ("--text", "--held-bg"), ("--text", "--failed-bg"),   # notices and form errors
 ]
+# Borders that show where a control is (inputs, checkboxes, recipe cards) and the focus ring: 3:1 (WCAG 1.4.11).
+UI_PAIRS = [("--field-line", "--panel"), ("--field-line", "--panel-2"), ("--field-line", "--bg"),
+            ("--focus", "--panel"), ("--accent-strong", "--panel")]
 
 
 def test_text_colours_meet_wcag_aa_in_both_schemes():
@@ -263,6 +268,9 @@ def test_text_colours_meet_wcag_aa_in_both_schemes():
         low = [(fg, bg, round(_contrast(scheme[fg], scheme[bg]), 2)) for fg, bg in TEXT_PAIRS
                if _contrast(scheme[fg], scheme[bg]) < 4.5]
         assert not low, f"{name} scheme below 4.5:1: {low}"
+        low = [(fg, bg, round(_contrast(scheme[fg], scheme[bg]), 2)) for fg, bg in UI_PAIRS
+               if _contrast(scheme[fg], scheme[bg]) < 3]
+        assert not low, f"{name} scheme: control borders below 3:1: {low}"
 
 
 def test_the_page_speaks_its_own_language_and_works_by_keyboard():
@@ -301,3 +309,132 @@ def test_page_words_keeps_commands_the_page_cannot_stand_in_for():
     assert out[1] == "Item count fell. Files were built but not delivered."
     assert out[2] == "Login failed."
     assert out[3] == cases[3]
+
+
+# ------------------------------------------------------------------ the page's setup screens
+def _web(name: str) -> str:
+    return (WEB / name).read_text(encoding="utf-8")
+
+
+def test_setup_screens_build_the_page_safely():
+    js, html, css = _web("app.js"), _web("index.html"), _web("app.css")
+    # Strict CSP and no markup from strings: the DOM is built with h() and every value is set as text.
+    for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
+        assert banned not in js, banned
+    assert not re.search(r"\son[a-z]+=", html), "inline event handler in index.html"
+    # Every setup form is checked and sent by the page itself (the CSP's form-action 'none' blocks a real submit).
+    assert js.count("novalidate: true") >= 6 and js.count("e.preventDefault();") >= 6
+    # A link out of the page opens in a new tab that cannot reach back.
+    blanks = [m.start() for m in re.finditer(r'target: "_blank"', js)]
+    assert blanks and all('rel: "noopener noreferrer"' in js[i:i + 80] for i in blanks)
+    # Docs style for the page's own words.
+    for text in (js, html, css):
+        assert "\u2014" not in text                                # no em dashes
+    assert "folio-exchange init" not in js                         # the page now sets feeds up itself
+    # The new parts of the sidebar.
+    assert 'id="btn-add-feed"' in html and 'id="nav-recipes"' in html
+
+
+def test_secrets_typed_into_the_page_are_never_kept():
+    js = _web("app.js")
+    # One place makes a secret field, and browsers neither fill it in nor offer to remember it.
+    assert js.count('type: "password"') == 1
+    helper = js[js.index("function secretInput"):]
+    helper = helper[:helper.index("\n}\n")]
+    assert 'type: "password"' in helper and 'autocomplete: "new-password"' in helper
+    # FOLIO password, SFTP password, passphrase and key file: emptied as they are sent, the reference dropped after.
+    for cleared in ('pw.value = ""', 'pass.value = ""', 'keyFile.value = ""', "secret = null", "phrase = null",
+                    "text = null"):
+        assert cleared in js, cleared
+    assert "new FileReader()" in js and "readAsText" in js           # the key is read as text in the page
+    # Secrets travel only in POST bodies to their own endpoints, never in a URL.
+    assert not re.search(r"[?&](password|passphrase|key)=", js)
+    for endpoint in ("/api/setup/connection", "/password`", "/private-key`"):
+        assert endpoint in js, endpoint
+
+
+def test_the_refresh_leaves_setup_forms_alone():
+    js = _web("app.js")
+    quiet = js[js.index("function quiet()"):]
+    quiet = quiet[:quiet.index("\n}\n")]
+    assert '[data-form="open"]' in quiet and "[data-dirty]" in quiet and "S.site.setup" in quiet
+    # Open edit forms carry the marker; the always-shown login forms count once typed in.
+    assert js.count('"data-form": "open"') >= 4 and js.count('"data-form": "idle"') == 2
+    assert "oninput: markDirty" in js
+
+
+def test_setup_forms_tie_errors_to_their_fields_and_read_them_out():
+    js = _web("app.js")
+    for fn in ("function fieldError(", "function formError("):
+        body = js[js.index(fn):]
+        body = body[:body.index("\n}\n")]
+        assert "describe(" in body and "announce(" in body, fn
+    field = js[js.index("function field("):]
+    field = field[:field.index("\n}\n")]
+    assert 'h("label", { for: input.id' in field and "-help" in field and "errorSlot" in field
+    # Each step of Add a vendor feed, and each opened form, puts the focus on its heading.
+    for heading in ('"wz-heading"', '"set-heading"', '"dl-form-heading"', '"cx-heading"', '"dl-heading"'):
+        assert f'id: {heading}, tabindex: "-1"' in js, heading
+
+
+def _pure_helpers() -> str:
+    js = _web("app.js")
+    return js[js.index("// ---- pure helpers: begin"):js.index("// ---- pure helpers: end")]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node.js to run the page's script")
+def test_setup_helpers():
+    script = _pure_helpers() + """
+const base = { title: "CHQ", schedule: "Sun 03:30", file_prefix: "chq",
+  filters: { exclude_location_codes: ["B", "A"], exclude_item_statuses: [], include_location_codes: [],
+             include_suppressed_instances: false, include_suppressed_items: false, include_suppressed_holdings: true,
+             include_items_without_barcode: true, bibs_without_items: false },
+  checks: { min_item_ratio: 0.9 }, legacy: { circ_count_note_type: "Old count" } };
+const same = JSON.parse(JSON.stringify(base));
+same.filters.exclude_location_codes = ["A", "B"];                    // order does not matter
+const edited = JSON.parse(JSON.stringify(base));
+Object.assign(edited, { title: "CHQ weekly", schedule: "daily 03:30" });
+edited.filters.exclude_item_statuses = ["Withdrawn"];
+edited.filters.include_suppressed_items = true;
+edited.checks.min_item_ratio = 0;
+edited.legacy = { circ_count_note_type: null, created_date_note_type: "Old date" };
+console.log(JSON.stringify({
+  free: [freeName("chq", []), freeName("chq", ["chq", "chq-2"]), freeName("all", []), freeName("Coll HQ", [])],
+  names: [nameProblem("chq", []), nameProblem("Bad Name", []), nameProblem("chq", ["chq"]), nameProblem("smtp", []),
+          nameProblem("", [])],
+  presets: [schedulePreset("sun  03:30"), schedulePreset("Mon,Thu 06:00")],
+  urls: [urlProblem("https://kong.example.org"), urlProblem("http://127.0.0.1:9130"), urlProblem("http://folio.example.org"),
+         urlProblem("kong.example.org")],
+  folders: [folderProblem("D:\\\\Exports\\\\chq"), folderProblem("\\\\\\\\server\\\\share\\\\chq"), folderProblem("exports"),
+            folderProblem("")],
+  prints: [fingerprintProblem("SHA256:TESTKEYtestkeyTESTKEYtestkeyTESTKEYtestkey12"),
+           fingerprintProblem("00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"), fingerprintProblem(""),
+           fingerprintProblem("not a key")],
+  secrets: [secretWhere("system keyring (folio-exchange/sftp, a@b)"), secretWhere("environment (FOLIO_PASSWORD)"),
+            secretWhere("NOT FOUND (nothing stored)"), secretWhere(null)],
+  same: settingsChanges(base, same),
+  edited: settingsChanges(base, edited),
+}));
+"""
+    out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert out["free"] == ["chq", "chq-3", "all-2", "coll-hq"]
+    assert out["names"][0] is None and "lowercase" in out["names"][1] and "already a feed" in out["names"][2]
+    assert "reserved" in out["names"][3] and out["names"][4]
+    assert out["presets"] == ["Sun 03:30", None]
+    assert [u is None for u in out["urls"]] == [True, True, False, False]
+    assert [f is None for f in out["folders"]] == [True, True, False, False]
+    assert [p is None for p in out["prints"]] == [True, True, True, False]
+    assert out["secrets"][0] == {"stored": True, "text": "Stored in Windows Credential Manager (folio-exchange/sftp, a@b)"}
+    assert out["secrets"][1]["text"] == "From the environment variable FOLIO_PASSWORD"
+    assert [s["stored"] for s in out["secrets"][2:]] == [False, False]
+    assert out["same"] == {"values": {}, "changes": []}
+    values = out["edited"]["values"]
+    assert values == {"title": "CHQ weekly", "schedule": "daily 03:30",
+                      "filters": {"exclude_item_statuses": ["Withdrawn"], "include_suppressed_items": True},
+                      "checks": {"min_item_ratio": 0},
+                      "legacy": {"circ_count_note_type": None, "created_date_note_type": "Old date"}}
+    changes = {c["what"]: (c["before"], c["after"]) for c in out["edited"]["changes"]}
+    assert changes["Title"] == ("CHQ", "CHQ weekly")
+    assert changes["Item statuses left out"] == ("none", "Withdrawn")
+    assert changes["Block a delivery if the item count falls below"] == ("90% of the last one", "off")
+    assert changes["Loan count from the old system"] == ("Old count", "none")

@@ -26,9 +26,15 @@ def set_enabled(site: Site, name: str, enabled: bool, *, via: str = "cli") -> di
     if not path.is_file():
         raise ConfigError(f"No feed file {path}")
     try:
-        current = read_yaml(path).get("enabled", True)
+        raw = read_yaml(path)
     except ConfigError:
-        current = None                         # the file has a problem: set the line anyway
+        raw = None                             # the file has a problem: set the line anyway
+    current = raw.get("enabled", True) if raw is not None else None
+    d = (raw or {}).get("delivery") or {}
+    if enabled and isinstance(d, dict) and d.get("transport") == "sftp" and d.get("host_key_confirmed") is False:
+        raise ConfigError(f"The key of {d.get('host')} is not confirmed with the vendor yet, so {name} stays paused: "
+                          "nothing would log in to the server. Confirm the key first (the page's Delivery tab, or "
+                          "`folio-exchange init`).")
     if current is enabled:
         return {"name": name, "enabled": enabled, "changed": False}
     rewrite_key(path, "enabled", "true" if enabled else "false")
