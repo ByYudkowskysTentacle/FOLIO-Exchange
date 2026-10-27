@@ -1,6 +1,6 @@
 # FOLIO Integration Platform – Spec Sheet
 
-_Snapshot of the working spec as of 26 Oct 2026. The live, editable copy is a Claude Docs document (see `CLAUDE.md`); when the two differ, the live copy wins until this file is refreshed._
+_Snapshot of the working spec as of 27 Oct 2026. The live, editable copy is a Claude Docs document (see `CLAUDE.md`); when the two differ, the live copy wins until this file is refreshed._
 
 An open-source platform that lets library staff set up, test and run scheduled data exchanges between FOLIO and outside platforms – collectionHQ first – from tested recipes, without writing code. It generalizes what folio-chq-extract already does for one vendor, and keeps its safeguards.
 
@@ -53,7 +53,7 @@ Of nine candidate feeds, the platform should own the five outbound file feeds FO
 
 | Platform | What flows | Direction | Usual format and route | What FOLIO already does | Status |
 | --- | --- | --- | --- | --- | --- |
-| collectionHQ Academic | Bibs, items, loan and renewal counts | Out | MARC plus pipe-delimited items, SFTP | Nothing built in | First – recipe exists (folio-chq-extract) |
+| collectionHQ Academic | Bibs, items, loan and renewal counts | Out | MARC plus pipe-delimited items, SFTP | Nothing built in | First – recipe chq-academic, kept in FOLIOHQ |
 | Other collection-analysis tools (e.g. GreenGlass) | Bibs, items, circulation | Out | MARC plus CSV, SFTP | Data Export builds MARC; no schedule or delivery documented | Candidate – same shape as cHQ |
 | OCLC WorldCat holdings (Data Sync) | Bibs with holdings | Out | MARC, SFTP | Data Export builds MARC; no schedule or delivery documented | Candidate |
 | Discovery layers that need pushed files (EDS, Primo, Summon) | Full and changed MARC, plus deletes | Out | MARC, SFTP | OAI-PMH feed with `marc21_withholdings` for systems that harvest | Candidate – only where the vendor cannot harvest |
@@ -183,7 +183,7 @@ The four scope questions were settled on 26 Oct 2026; the rest can wait for the 
 - [x] **Writing into FOLIO:** in v2, behind a separate account and a second approver.
 - [x] **Your tenant:** on Eureka, so phase 0 ships and is tested on Eureka.
 - [ ] **Patron data:** does any feed you need carry it, and under what agreement?
-- [x] **Home:** a new repo, FOLIO-Exchange; FOLIOHQ stays as phase 0. Proposing it to the FOLIO community (Reporting SIG) is still open.
+- [x] **Home:** a new repo, FOLIO-Exchange. Since 27 Oct 2026 FOLIOHQ holds the collectionHQ Academic recipe and its setup guide, and keeps its phase 0 tool as a fallback until the first delivery through FOLIO-Exchange. Proposing it to the FOLIO community (Reporting SIG) is still open.
 - [ ] **License:** keep MIT, or move to Apache-2.0, which FOLIO's own modules use?
 - [ ] **Name:** FOLIO-Exchange for now. Before announcing it, check FOLIO's trademark guidance so the name does not imply the FOLIO project endorses it.
 - [ ] **Upkeep:** whose staff time or funding maintains it, and which partner libraries test recipes?

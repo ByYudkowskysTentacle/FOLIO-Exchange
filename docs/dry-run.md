@@ -2,7 +2,7 @@
 
 A dry run builds real collectionHQ files from your library's own FOLIO data and sends them nowhere. It tests the connection, the account's permissions and the data itself before anything goes to a vendor. It takes about half an hour, plus the first download, whose length depends on the size of the catalogue.
 
-You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing.
+You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing. The whole route to a live collectionHQ feed, from this dry run to the first delivery and the schedule, is FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md).
 
 ## Before you start
 
@@ -134,9 +134,11 @@ If someone is helping you review the results, share the console output and `run-
 
 Nothing is scheduled and nothing was sent. In `history` a dry run shows as `success (not sent: transport none)`, and `release` refuses the feed, because there is nothing to send. To undo everything, delete `C:\FOLIO-Exchange\mylibrary` and remove the entry whose name contains `folio-exchange/folio` from Windows Credential Manager (Control Panel > Credential Manager > Windows Credentials).
 
-The same address, tenant and account also serve FOLIOHQ (phase 0), which stores its password separately, under `folio-chq-folio`.
+The same address, tenant and account also serve FOLIOHQ's legacy tool, `folio-chq-extract`, which stores its password separately, under `folio-chq-folio`.
 
 ## From dry run to first delivery
+
+For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in more depth; the steps below are the short version.
 
 When the dry-run files look right and collectionHQ has sent you its SFTP details, switch the same feed to a real destination. Your FOLIO settings, the feed's filters and the local cache are all kept, so the first real run only fetches what changed. You need from the vendor:
 

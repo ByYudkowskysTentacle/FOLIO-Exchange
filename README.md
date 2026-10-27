@@ -2,7 +2,7 @@
 
 An open-source tool that lets libraries set up, test and run scheduled data exchanges between [FOLIO](https://www.folio.org/) and vendor platforms – collectionHQ first – from shared, tested recipes, without writing code.
 
-**Status:** v1 is in development (`0.1.0.dev0`). It runs end to end against a mock FOLIO and is not yet released. The collectionHQ Academic recipe writes byte-identical files to [FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ) (phase 0), which stays the tool for a library's first delivery. Read the [spec sheet](docs/spec.md), the [build design](docs/design.md) and the [working notes](docs/notes.md).
+**Status:** v1 is in development (`0.1.0.dev0`). It runs end to end against a mock FOLIO and is not yet released. The collectionHQ Academic recipe and its setup guide live in [FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ), whose original tool (phase 0, now in its `legacy/` folder) writes byte-identical files and stays as a fallback until the first real delivery. Read the [spec sheet](docs/spec.md), the [build design](docs/design.md) and the [working notes](docs/notes.md).
 
 ![Every feed runs one pipeline; only the recipe changes](docs/images/architecture.png)
 
@@ -37,7 +37,7 @@ python -m venv .venv
 
 ## Setting up a library (once released)
 
-To try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange.
+To try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange. For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in full.
 
 ```bash
 folio-exchange init C:\FOLIO-Exchange\mylibrary
