@@ -17,7 +17,7 @@ FOLIO (Eureka, Kong) ──> client ──> sync ──> cache (SQLite) ──> 
 
 A run is a batch job. The OS scheduler (Task Scheduler, cron or a systemd timer) starts `folio-exchange run --due` every hour; feeds whose slot has passed run, and missed slots catch up once at the next start. Nothing stays resident.
 
-**Done means byte parity.** With the `chq-academic` recipe and FOLIOHQ's `config.example.yaml` layout, FOLIO-Exchange writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data (checked on 26 Oct 2026 against the shared mock FOLIO).
+**Done means byte parity.** With the `chq-academic` recipe and FOLIOHQ's `config.example.yaml` layout (now `legacy/config.example.yaml`), FOLIO-Exchange writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data (checked on 26 Oct 2026 against the shared mock FOLIO). Since 27 Oct 2026 FOLIOHQ's CI checks it on every change (`tests/test_parity.py`, against its `legacy/` tool).
 
 ## What a library keeps: the site folder
 
@@ -100,7 +100,7 @@ A recipe is two files (spec, "What an integration recipe holds"): a shared one, 
 
 ### The recipe library
 
-Shared recipes live at `<library dir>/<recipe id>/<version>.yaml`, one file per published version, so a feed can stay on 1.x while 2.0 waits for review. The bundled library is `src/folio_exchange/recipes/` and never removes a published version. A site searches `paths.recipes` first, then the bundled library; on an identical id and version, the earlier folder wins. A recipe folder may also hold `README.md` (notes for recipe authors) and `samples/<output name>.<ext>` (the vendor's sample files, used by the conformance check).
+Shared recipes live at `<library dir>/<recipe id>/<version>.yaml`, one file per published version, so a feed can stay on 1.x while 2.0 waits for review. The bundled library is `src/folio_exchange/recipes/` and never removes a published version. A site searches `paths.recipes` first, then the bundled library; on an identical id and version, the earlier folder wins. A recipe folder may also hold `README.md` (notes for recipe authors) and `samples/<output name>.<ext>` (the vendor's sample files, used by the conformance check). A bundled recipe may have its source in another repository: `chq-academic` is a copy of FOLIOHQ's `recipes/chq-academic/`, which is changed first and copied here unchanged.
 
 `uses: <id>@<range>` picks the highest version that matches the range:
 
@@ -573,7 +573,7 @@ Started early (26 Oct 2026), ahead of the phase 2 web UI, as a simple companion 
 
 ## From FOLIOHQ
 
-FOLIO-Exchange reads none of FOLIOHQ's files; a library moving over runs `init` and maps its settings by hand. The item-ratio baseline does not carry over, and the first delivery is held, so the first run deserves a careful look.
+FOLIOHQ's original tool, `folio-chq-extract`, is now in its `legacy/` folder. FOLIO-Exchange reads none of its files; a library moving over runs `init` and maps its settings by hand (FOLIOHQ's `legacy/README.md` lists the steps). The item-ratio baseline does not carry over, and the first delivery is held, so the first run deserves a careful look.
 
 | FOLIOHQ (`config.yaml`) | FOLIO-Exchange |
 | --- | --- |
@@ -603,7 +603,7 @@ FOLIO-Exchange reads none of FOLIOHQ's files; a library moving over runs `init` 
 - Regression tests for the build review's findings (`test_regressions.py`) and the operator walkthrough (`test_walkthrough.py`).
 - New: recipes and overlay (`test_recipe.py`), patron and read-only guards, redirects, TLS and secrets (`test_safety.py`), schedules across daylight saving and the due rules (`test_schedule.py`), holds, release, scheduled runs, alerts, audit and crash recovery (`test_runner.py`), the wizard (`test_wizard.py`), schemas (`test_schemas.py`).
 - Every bundled recipe has a fixture test against the mock (`test_chq_academic_psv_layout`).
-- Byte parity with FOLIOHQ is checked by running both tools on the mock data; repeat it when the builders change.
+- Byte parity with FOLIOHQ's legacy tool is checked in FOLIOHQ's CI, which runs both tools on the same mock data with FOLIO-Exchange's main branch. Run it there when the builders change.
 - Every bug fix gets a regression test.
 
 ## Deliberately not in this build

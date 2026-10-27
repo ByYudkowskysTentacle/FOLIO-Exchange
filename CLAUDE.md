@@ -19,7 +19,9 @@ The editable spec is a Claude Docs document owned by the maintainer: https://cla
 
 ## Relation to FOLIOHQ
 
-[FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ) (`folio-chq-extract`) is phase 0: a working tool for collectionHQ Academic, and the reference implementation. Reuse its tested pieces rather than rewriting them:
+[FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ) is the home of the collectionHQ Academic recipe and its setup guide. Its `recipes/chq-academic/` is the source of the bundled `src/folio_exchange/recipes/chq-academic/`: change the recipe there first, then copy the folder here unchanged (FOLIOHQ's tests fail when the two differ). Its `docs/setup.md` and `docs/layout.md` are the collectionHQ documentation; keep commands and behaviour they describe in step with this code.
+
+FOLIOHQ's original tool, `folio-chq-extract` (phase 0, the reference implementation), now lives in its `legacy/` folder as a fallback until the first real delivery from FOLIO-Exchange. FOLIOHQ's CI checks that the recipe here writes byte-identical files to it. Reuse its tested pieces rather than rewriting them:
 - the client (login, retries, keyset paging)
 - sync and cache (deltas, deletion detection)
 - the field registry
@@ -27,7 +29,7 @@ The editable spec is a Claude Docs document owned by the maintainer: https://cla
 - delivery (pinned-key SFTP, staged or direct upload)
 - credentials (environment or OS keyring)
 
-Its `CLAUDE.md` lists the FOLIO API facts that code depends on.
+FOLIOHQ's `CLAUDE.md` lists the FOLIO API facts that code depends on.
 
 ## Ground rules
 
