@@ -939,7 +939,7 @@ def cmd_schedule(args) -> int:
     return 0
 
 
-def _register_task(args, run=None) -> int:
+def _register_task(args, run=None, root: Path | None = None) -> int:
     """Register the hourly `run --due` with the Windows Task Scheduler. schtasks asks for the Windows password
     itself; nothing here sees it. Works before the site is set up (the runs find nothing due until then)."""
     import getpass
@@ -948,7 +948,7 @@ def _register_task(args, run=None) -> int:
 
     from .launcher import program_path
 
-    root = _new_site_root(args) or find_site(args.site).resolve()
+    root = root or _new_site_root(args) or find_site(args.site).resolve()
     if not root.is_dir():
         raise ConfigError(f"No folder {root}")
     if platform.system() != "Windows":
@@ -980,6 +980,41 @@ def cmd_ui(args) -> int:
         _make_site_folder(root)                        # a new site: the page starts with the FOLIO connection
         print(f"New site at {root}: the page starts with the FOLIO connection.")
     serve(root or find_site(args.site), port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
+def cmd_rename_site(args, run=None) -> int:
+    """Rename the site folder (same parent). In a console the scheduled task can be registered again at once,
+    since schtasks can ask for the Windows password here; the old task is removed once the new one is in."""
+    import subprocess
+
+    from . import siteops
+
+    root = find_site(args.site).resolve()
+    problem = siteops.name_problem(args.name.strip())
+    if problem:
+        raise ConfigError(problem)
+    print(f"Rename the site folder {root} to {root.parent / args.name.strip()}?")
+    if not args.yes and not _yes("Rename it now?"):
+        print("Nothing was changed.")
+        return 2
+    res = siteops.rename_site(root, args.name, via="cli", run=run)
+    print(f"Renamed. The site folder is now {res['root']}.")
+    task = res["task"]
+    for note in res["notes"]:
+        if not (task and note.startswith("The scheduled task")):
+            print("  " + note)
+    if task is None:
+        return 0
+    print(f"The scheduled task \"{task['old']}\" still runs the old folder.")
+    if args.yes or not _yes("Register the task for the new folder now? Windows asks for your password."):
+        print(f"Register it later with: {task['register']}\nthen remove the old one with: {task['remove']}")
+        return 0
+    if _register_task(args, run=run, root=Path(res["root"])) != 0:
+        print(f"The old task is still there; remove it once the new one is registered: {task['remove']}")
+        return 1
+    done = (run or subprocess.run)(["schtasks", "/Delete", "/TN", task["old"], "/F"])
+    print("Removed the old task." if done.returncode == 0 else f"Remove the old task with: {task['remove']}")
     return 0
 
 
@@ -1110,6 +1145,9 @@ def build_parser() -> argparse.ArgumentParser:
     ui = sub.add_parser("ui", help="open a simple page in your browser to look at feeds and run them")
     ui.add_argument("--port", type=int, help="port on this computer (default 8765, or a free one if it is taken)")
     ui.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    rn = sub.add_parser("rename-site", help="rename the site folder (its name shows on the page and in alerts)")
+    rn.add_argument("name", help="the new folder name, in the same place")
+    rn.add_argument("--yes", action="store_true", help="do not ask first (the scheduled task is then left to you)")
     la = sub.add_parser("launcher", help="make a file to double-click that opens the page for this site")
     la.add_argument("--folder", help="where to put it (default: your desktop)")
     return p
@@ -1119,7 +1157,7 @@ HANDLERS = {
     "init": cmd_init, "check": cmd_check, "preview": cmd_preview, "run": cmd_run, "release": cmd_release,
     "deliver": cmd_release, "sync": cmd_sync, "build": cmd_build, "feeds": cmd_feeds, "recipes": cmd_recipes,
     "upgrade": cmd_upgrade, "fields": cmd_fields, "history": cmd_history, "secret": cmd_secret,
-    "schedule": cmd_schedule, "ui": cmd_ui, "launcher": cmd_launcher,
+    "schedule": cmd_schedule, "ui": cmd_ui, "launcher": cmd_launcher, "rename-site": cmd_rename_site,
 }
 NO_SITE = {"init", "fields", "recipes"}
 
