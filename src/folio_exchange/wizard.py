@@ -232,7 +232,7 @@ def _secret_ref(p: Prompter, service: str, account: str, what: str, env_default:
 
 # ------------------------------------------------------------------ wizard
 def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None = None,
-               read_host_key: Callable[[str, int], str] | None = None) -> int:
+               read_host_key: Callable[[str, int], str | dict] | None = None) -> int:
     try:
         return _run_wizard(root, prompter, library=library, read_host_key=read_host_key)
     except ConfigError as exc:
@@ -241,9 +241,9 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
 
 
 def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
-                read_host_key: Callable[[str, int], str] | None) -> int:
+                read_host_key: Callable[[str, int], str | dict] | None) -> int:
     root = Path(root)
-    read_host_key = read_host_key or delivery.host_key_fingerprint
+    read_host_key = read_host_key or delivery.host_key_fingerprints
     p.say("FOLIO-Exchange setup. Answers in [brackets] are the defaults; press Enter to keep them.")
     p.say(f"Site folder: {root}")
     if "onedrive" in str(root).lower() or "dropbox" in str(root).lower():
@@ -267,6 +267,7 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
             p.say(f"site.yaml has a problem, so its FOLIO connection is asked again:\n{exc}")
     if effective:
         p.say(f"Found site.yaml: {effective['base_url']} (tenant {effective['tenant']}, user {effective['username']}).")
+    before = dict(effective) if effective else None
     if not effective or p.confirm("Change the FOLIO connection?", False):
         p.say("\nFOLIO connection. Ask your FOLIO host for the API address (on Eureka, the Kong gateway), the "
               "tenant id, and a read-only service account.")
@@ -315,6 +316,9 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
               "tenant and account, then run init again.")
         return 1
     p.say(f"Logged in to {client.base_url} as {client.username}.")
+    moved = runner.source_change_note(before, effective)
+    if moved:
+        p.say(f"NOTE  {moved}")
     if typed:                                          # only a password FOLIO accepted is kept
         credentials.store(credentials.FOLIO_SERVICE, account, typed)
         p.say("  Stored in the system keyring.")
@@ -464,13 +468,16 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         d["username"] = p.ask("SFTP user name (from the vendor)", d.get("username"), _required)
         d["remote_dir"] = p.ask("Folder on the server (the vendor says which; . is the login folder)",
                                 d.get("remote_dir") or ".")
+        key_type = None
         try:
             key = read_host_key(d["host"], d["port"])
         except Exception as exc:  # noqa: BLE001 - network errors of every kind
             p.say(f"Could not reach {d['host']}:{d['port']} ({type(exc).__name__}: {exc}).")
             key = None
+        if isinstance(key, dict):                      # {sha256, md5, type}
+            key, key_type = key["sha256"], key.get("type")
         if key:
-            p.say(f"The server's key fingerprint is {key}")
+            p.say(f"The server's {key_type + ' ' if key_type else ''}key fingerprint is {key}")
             confirmed_before = d.get("host_key_fingerprint") == key and d.get("host_key_confirmed", True) is not False
             pin = p.choose("Does it match the fingerprint the vendor gave you?", [
                 ("yes", "yes, it matches"),
@@ -480,12 +487,17 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
             if pin == "no":
                 p.say("Stopped: a different key can mean the wrong server. Ask the vendor before going on.")
                 d.pop("host_key_fingerprint", None)
+                d.pop("host_key_type", None)
                 d.pop("host_key_confirmed", None)
                 d["transport"] = "none"
                 raw["delivery"] = d
                 save_feed("feed delivery left off by init (host key mismatch)")
                 return 1
             d["host_key_fingerprint"] = key
+            if key_type in delivery.KEY_TYPES:
+                d["host_key_type"] = key_type
+            else:
+                d.pop("host_key_type", None)
             if pin == "unconfirmed":
                 d["host_key_confirmed"] = False
                 keep_paused = True

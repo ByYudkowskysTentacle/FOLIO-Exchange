@@ -410,6 +410,21 @@
           ],
           "pattern": "^SHA256:"
         },
+        "host_key_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "ssh-rsa",
+            null
+          ],
+          "description": "The type of the pinned key (as check --delivery shows it); logins ask the server for a key of this type"
+        },
         "host_key_confirmed": {
           "type": "boolean",
           "description": "false until the fingerprint is confirmed with the vendor; nothing logs in while it is false"

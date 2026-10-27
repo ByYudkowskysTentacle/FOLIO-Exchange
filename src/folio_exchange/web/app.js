@@ -2351,7 +2351,8 @@ function renderConnection() {
   const parts = [h("div", { class: "feed-head" }, h("div", { class: "title-row" }, h("h1", { text: "Connection" }),
       h("span", { class: "sub", text: "FOLIO" }), h("div", { class: "spacer" }), change, run))];
   const pw = secretWhere(s.folio.password);
-  const body = [S.connForm, kv([
+  const body = [S.connForm, S.connNotice && !S.connForm ? h("div", { class: "notice notice-held", id: "conn-notice" },
+    h("p", { text: S.connNotice })) : null, kv([
     ["Address", h("span", { class: "mono", text: s.folio.base_url })],
     ["Tenant", s.folio.tenant],
     ["Account", s.folio.username],
@@ -2405,9 +2406,10 @@ function openConnForm() {
     done: async (res) => {
       S.connForm = null;
       lastCheck = null;
+      S.connNotice = (res && res.notice) || null;      // pointed at another FOLIO: feeds hold their next run
       const where = res && res.folio && res.folio.password ? secretWhere(res.folio.password).text : "";
       toast("Connection saved.");
-      announce(`Logged in and saved.${where ? ` Password: ${where}.` : ""}`);
+      announce(`Logged in and saved.${where ? ` Password: ${where}.` : ""}${S.connNotice ? ` ${S.connNotice}` : ""}`);
       S.focus = "btn-change-conn";
       try {
         await loadSite();

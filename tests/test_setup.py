@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from sitekit import FOLIO_TEST_PASSWORD, make_feed
@@ -446,12 +447,17 @@ def test_register_runs_schtasks_with_the_exact_task(tmp_path, monkeypatch, capsy
     seen = []
     monkeypatch.setattr("platform.system", lambda: "Windows")
     args = build_parser().parse_args(["-s", str(tmp_path), "schedule", "--register"])
-    assert _register_task(args, run=lambda argv: seen.append(argv) or types.SimpleNamespace(returncode=0)) == 0
-    argv = seen[0]
+
+    def run(argv):
+        seen.append((argv, Path(argv[argv.index("/XML") + 1]).read_text(encoding="utf-16")))
+        return types.SimpleNamespace(returncode=0)
+
+    assert _register_task(args, run=run) == 0
+    argv, xml = seen[0]
     assert argv[:2] == ["schtasks", "/Create"] and argv[argv.index("/TN") + 1] == schedule.task_name(tmp_path)
     assert argv[argv.index("/RP") + 1] == "*" and argv[-1] == "/F"
-    action = argv[argv.index("/TR") + 1]
-    assert action.endswith(f'--site "{tmp_path.resolve()}" run --due')
+    assert f'<Arguments>--site "{tmp_path.resolve()}" run --due</Arguments>' in xml
+    assert not Path(argv[argv.index("/XML") + 1]).exists()            # the definition is not left behind
     assert _register_task(args, run=lambda argv: types.SimpleNamespace(returncode=1)) == 1
     assert "did not register" in capsys.readouterr().out
 

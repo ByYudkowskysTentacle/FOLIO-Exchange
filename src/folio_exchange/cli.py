@@ -946,11 +946,15 @@ def _register_task(args, run=None) -> int:
         print("Add this line with `crontab -e`:\n")
         print("  " + schedule.os_command(root, program_path(), platform.system()))
         return 0
+    import tempfile
+
     user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
-    argv = schedule.windows_task_args(root, program_path(), user)
-    print(f"Registering \"{schedule.task_name(root)}\": every hour at minute 7, as {user}. Windows asks for "
-          "that user's password, so the task can run while nobody is signed in.")
-    done = (run or subprocess.run)(argv)
+    print(f"Registering \"{schedule.task_name(root)}\": every hour at minute 7, as {user}, also on battery power. "
+          "Windows asks for that user's password, so the task can run while nobody is signed in.")
+    with tempfile.TemporaryDirectory(prefix="fx-task-") as tmp:      # the task definition holds no secret
+        xml_file = Path(tmp) / "task.xml"
+        xml_file.write_text(schedule.windows_task_xml(root, program_path(), user), encoding="utf-16")
+        done = (run or subprocess.run)(schedule.windows_task_args(root, xml_file, user))
     if done.returncode != 0:
         print(f"schtasks did not register the task (exit {done.returncode}). Nothing else was changed; run "
               "this command again to retry.")

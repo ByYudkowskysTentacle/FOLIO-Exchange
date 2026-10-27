@@ -155,7 +155,8 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
         except ConfigError as exc:
             raise ConfigError(f"{exc}\nsite.yaml could not be read, so nothing was changed. Fix the file (or move "
                               "it aside to start afresh), then try again.") from None
-    folio = dict(raw.get("folio") or {})
+    before = dict(raw.get("folio") or {})
+    folio = dict(before)
     folio.update(base_url=base_url, tenant=tenant, username=username)
     if password:
         folio["secret"] = "keyring"
@@ -191,7 +192,13 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
     if password:
         _audit(site, None, "secret stored", {"what": "FOLIO password", "service": credentials.FOLIO_SERVICE,
                                              "account": account, "from": via})
-    return site_state(root)
+    state = site_state(root)
+    note = runner.source_change_note(before, folio)
+    if note and site.history_path.exists():
+        with History(site.history_path) as hist:
+            if hist.delivered_feeds():
+                state["notice"] = note             # those feeds hold their next run (runner.hold_reason)
+    return state
 
 
 def _site_would_load(raw: dict) -> None:
@@ -282,7 +289,7 @@ def feed_settings(site: Site, library: RecipeLibrary, name: str) -> dict:
     filters = dict(feed.selection) if feed else {**defaults, **(raw.get("filters") or {})}
     d = dict(raw.get("delivery") or {})
     out_d: dict[str, Any] = {k: d.get(k) for k in ("transport", "host", "port", "username", "remote_dir",
-                                                     "directory", "host_key_fingerprint")}
+                                                     "directory", "host_key_fingerprint", "host_key_type")}
     out_d["transport"] = out_d["transport"] or "none"
     out_d["host_key_confirmed"] = d.get("host_key_confirmed", True) is not False
     out_d["auth"] = "key" if d.get("private_key") else "password"
@@ -555,6 +562,8 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
         d = {k: old_d[k] for k in ("upload_mode", "secret", "private_key") if old_d.get(k) is not None}
         d.update(transport="sftp", host=host, port=port, username=username, remote_dir=remote_dir,
                  host_key_fingerprint=keys["sha256"])
+        if keys.get("type") in delivery.KEY_TYPES:
+            d["host_key_type"] = keys["type"]
         d.setdefault("secret", "keyring")
         if not confirmed:
             d["host_key_confirmed"] = False
