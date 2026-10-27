@@ -132,6 +132,102 @@ If someone is helping you review the results, share the console output and `run-
 
 ## Afterwards
 
-Nothing is scheduled and nothing was sent. To undo everything, delete `C:\FOLIO-Exchange\mylibrary` and remove the entry whose name contains `folio-exchange/folio` from Windows Credential Manager (Control Panel > Credential Manager > Windows Credentials).
+Nothing is scheduled and nothing was sent. In `history` a dry run shows as `success (not sent: transport none)`, and `release` refuses the feed, because there is nothing to send. To undo everything, delete `C:\FOLIO-Exchange\mylibrary` and remove the entry whose name contains `folio-exchange/folio` from Windows Credential Manager (Control Panel > Credential Manager > Windows Credentials).
 
 The same address, tenant and account also serve FOLIOHQ's legacy tool, `folio-chq-extract`, which stores its password separately, under `folio-chq-folio`.
+
+## From dry run to first delivery
+
+For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in more depth; the steps below are the short version.
+
+When the dry-run files look right and collectionHQ has sent you its SFTP details, switch the same feed to a real destination. Your FOLIO settings, the feed's filters and the local cache are all kept, so the first real run only fetches what changed. You need from the vendor:
+
+- the SFTP server name, port (usually 22), user name and password, and the folder to upload into;
+- the server's **host key fingerprint**, a line starting `SHA256:`. Ask for it in writing; it is how you know you are talking to the real server.
+
+**1. Set up the delivery.** In a new PowerShell window, first make the command available as in section 1. Then run the guided setup again on the same folder:
+
+```powershell
+folio-exchange init C:\FOLIO-Exchange\mylibrary
+```
+
+Your earlier answers are offered as defaults; press Enter to keep each one. Answer **n** to "Change the FOLIO connection?" and **y** to "A FOLIO password is already stored. Keep it?". Give the same short name (`chq`), so the existing feed is changed rather than a new one made. Then:
+
+| Question | Answer |
+| --- | --- |
+| How are the files delivered | **1, upload to the vendor's SFTP server** |
+| SFTP server name, port, user name, folder | from the vendor |
+| Does it match the fingerprint the vendor gave you? | compare the `SHA256:` line on screen with the vendor's, character by character. **yes** only if they are the same. If you don't have the vendor's value yet, pick the second answer: the feed is saved but stays paused, and nothing logs in until you run `init` again and confirm it. If they differ, answer **no** and ask the vendor |
+| SFTP password | typed at the prompt (not shown); it goes into Windows Credential Manager |
+| When should it run | the vendor's schedule, for example `weekly` or `Sun 03:30` |
+
+Setup tests the login without uploading anything. If the test fails, or the key is not yet confirmed, it leaves the feed paused and says so.
+
+**2. Test the delivery.**
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary check --delivery chq
+```
+
+It logs in to the vendor's server and lists the folder (or says that listing is not allowed, which is normal for upload-only accounts). It uploads nothing. If the feed is paused, the last line says whether it can be resumed. If the line says `FAILED`, fix that first: a wrong password can be stored again with `folio-exchange -s C:\FOLIO-Exchange\mylibrary secret set chq`.
+
+**3. Run it; the first delivery is held.**
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary run chq
+```
+
+The run builds the files as in the dry run, then stops before sending: the first delivery to a new destination always waits for a person. It ends with `"status": "held"` and a `next` line naming the run folder. Look at the files there as in section 4, and at the counts in `history`.
+
+**4. Release it.**
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary release chq
+```
+
+It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Later runs to the same destination are sent without waiting, unless the item count drops sharply (that run is blocked for you to look at) or the recipe moves to a new major version.
+
+**5. Resume the feed and schedule it.** If setup left the feed paused, resume it once `check --delivery` passes:
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary feeds resume chq
+```
+
+Feeds only run on their schedule when Windows starts FOLIO-Exchange every hour. Print the command that sets that up:
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary schedule
+```
+
+It prints two versions of the same `schtasks` command. Copy the one under **In PowerShell** (it starts `cmd --% /c schtasks`) if you are in PowerShell, or the **Command Prompt** one if you are in a Command Prompt; the other one fails in the wrong window. Run it once, signed in to Windows as the person who stored the passwords, since Credential Manager entries belong to that Windows user. It asks for your Windows password, so the task can run while nobody is signed in. Then check it with the `last result` command printed below it: "Task To Run" should show the folio-exchange.exe path and the `--site` folder, each in quotes.
+
+**6. Make sure you hear about failures.** If you set up email or a chat webhook for alerts, send a test:
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary check --alerts
+```
+
+If you skipped alerts during the dry run, run `init` again and choose email or webhook at the alerts question. From now on, `folio-exchange -s C:\FOLIO-Exchange\mylibrary feeds` shows each feed's last run and next step, and `history` lists every run.
+
+## Updating FOLIO-Exchange
+
+A new release only replaces the program in `C:\FOLIO-Exchange\venv`. Everything else stays as it is: the site folder (`site.yaml`, the feed files in `feeds\`, the cache and run history in `data\`, the files in `out\`, the logs) and the passwords in Windows Credential Manager. The scheduled task keeps working, because it points at the same `folio-exchange.exe`.
+
+To update, in PowerShell, at a time when no run is due (in a new window, first make the command available as in section 1):
+
+```powershell
+C:\FOLIO-Exchange\venv\Scripts\python -m pip install --upgrade "folio-exchange @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@main"
+folio-exchange --version
+folio-exchange -s C:\FOLIO-Exchange\mylibrary check
+```
+
+`--version` should show the new version, and `check` should end without problems.
+
+**Recipe updates.** The file layouts (recipes) come with the program. A feed names a range of recipe versions, such as `chq-academic@^1.0`. Fixes and small additions inside that range are used from the next run. A new major version (2.0 and up) changes the files the vendor receives, so it is never picked up on its own: `feeds` shows an `update` line saying the new version is available. To look at it and move to it:
+
+```powershell
+folio-exchange -s C:\FOLIO-Exchange\mylibrary upgrade chq
+folio-exchange -s C:\FOLIO-Exchange\mylibrary preview chq
+```
+
+`upgrade` lists what changes, including any column changes, and asks before it rewrites `feeds\chq.yaml`; the change is recorded in `history --audit`. Tell the vendor before the next delivery: the first delivery on the new version is held for you to `release`, as the very first one was. Despite the name, `upgrade` only moves a feed to another recipe version; it does not update FOLIO-Exchange itself.

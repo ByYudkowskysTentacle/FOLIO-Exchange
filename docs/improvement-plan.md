@@ -17,6 +17,8 @@ The changes most likely to prevent a bad delivery, or one that silently never ha
 
 ## Batch 2: command line, page and the shared core under them
 
+_Done on 27 October 2026 (branch `claude/batch-2`)._
+
 Make daily use comfortable, and give the page the same operations as the command line without copying code. About three days.
 
 | # | Change | Findings | Done when |

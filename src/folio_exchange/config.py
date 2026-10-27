@@ -330,3 +330,31 @@ def validate_site(cfg: dict) -> list[str]:
             if email.get("username") and not credentials.is_secret_ref(email.get("secret")):
                 p.append("alerts.email.secret: must be keyring or env:NAME")
     return p
+
+
+def rewrite_key(path: Path, key: str, value: str) -> None:
+    """Set a top-level ``key: value`` line in a settings file, keeping its comments and layout."""
+    text = path.read_text(encoding="utf-8-sig")
+    line = f"{key}: {value}"
+    pattern = re.compile(rf"^{re.escape(key)}:.*$", re.M)
+    text = pattern.sub(line, text, count=1) if pattern.search(text) else text.rstrip("\n") + f"\n{line}\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def password_note(site: Site) -> str | None:
+    """When the FOLIO password comes from an environment variable, what the scheduled task needs to have it."""
+    source = site.folio_password_source()
+    if not source.startswith("environment ("):
+        return None
+    name = source[len("environment ("):-1]
+    if str(site.folio.get("secret") or "").startswith("env:") and name != "FOLIO_PASSWORD":
+        return (f"The FOLIO password is read from the environment variable {name}. Set {name} for the user the "
+                "scheduled task runs as, too.")
+    if site.folio.get("secret") == "env:FOLIO_PASSWORD":
+        return ("The FOLIO password is read from the environment variable FOLIO_PASSWORD. Set it for the user the "
+                "scheduled task runs as, too.")
+    return ("The FOLIO password comes from this window's FOLIO_PASSWORD, not from the keyring that site.yaml "
+            "names. The scheduled task will not have it: run `folio-exchange secret set folio` (as the user the "
+            "task runs as), or set FOLIO_PASSWORD for that user.")
