@@ -25,16 +25,29 @@ def sha256_fingerprint(key) -> str:
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
-def host_key_fingerprint(host: str, port: int = 22, timeout: float = 30) -> str:
-    """Read the server's host key without logging in, for a person to compare with the vendor's."""
+def md5_fingerprint(key) -> str:
+    """The older aa:bb:... form some vendors still quote."""
+    return ":".join(f"{b:02x}" for b in hashlib.md5(key.asbytes(), usedforsecurity=False).digest())
+
+
+def host_key_fingerprints(host: str, port: int = 22, timeout: float = 30) -> dict[str, str]:
+    """Read the server's host key without logging in: {"sha256": "SHA256:...", "md5": "aa:bb:...", "type":
+    "ssh-ed25519"}, for a person to compare with the vendor's. Only the SHA-256 value is ever pinned. The key
+    type is the one a login negotiates, so it is the key the pin is later checked against."""
     import paramiko
 
     transport = paramiko.Transport((host, int(port or 22)))
     try:
         transport.start_client(timeout=timeout)
-        return sha256_fingerprint(transport.get_remote_server_key())
+        key = transport.get_remote_server_key()
+        return {"sha256": sha256_fingerprint(key), "md5": md5_fingerprint(key), "type": key.get_name()}
     finally:
         transport.close()
+
+
+def host_key_fingerprint(host: str, port: int = 22, timeout: float = 30) -> str:
+    """Read the server's host key without logging in, for a person to compare with the vendor's."""
+    return host_key_fingerprints(host, port, timeout)["sha256"]
 
 
 def _secret(d: dict) -> str | None:
@@ -116,6 +129,32 @@ def _remote_dir(d: dict) -> str:
 
 def _where(d: dict, name: str) -> str:
     return f"sftp://{d['username']}@{d['host']}:{int(d.get('port') or 22)}/{_remote_dir(d)}/{name}"
+
+
+def plain_error(exc: BaseException, d: dict) -> str:
+    """A delivery failure in words a librarian can act on (the page shows this instead of the raw error)."""
+    import socket
+
+    import paramiko
+
+    host, port, user = d.get("host") or "the server", int(d.get("port") or 22), d.get("username") or "the user"
+    if isinstance(exc, (ConfigError, DeliveryError)):
+        return str(exc)
+    if isinstance(exc, socket.gaierror):
+        return f"Could not find the server {host}: check the server name the vendor gave you."
+    if isinstance(exc, ConnectionRefusedError):
+        return f"{host} refused the connection on port {port}: check the port, and that this network may reach it."
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return (f"No answer from {host} on port {port}: a firewall, or a VPN that is not connected, may be blocking "
+                "it.")
+    if isinstance(exc, paramiko.AuthenticationException):
+        return f"{host} did not accept the login for {user}: check the user name and the stored password or key."
+    if isinstance(exc, paramiko.SSHException) and "Host key for" in str(exc):
+        return (f"{exc}. This may not be the vendor's server, so nothing was sent and nothing more will be: ask the "
+                "vendor before going on.")
+    if isinstance(exc, PermissionError):
+        return f"The folder cannot be written to ({exc.strerror or exc})."
+    return f"{type(exc).__name__}: {exc}"
 
 
 def check_delivery(d: dict) -> list[str] | None:

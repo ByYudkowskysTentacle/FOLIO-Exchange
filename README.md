@@ -8,7 +8,7 @@ An open-source tool that lets libraries set up, test and run scheduled data exch
 
 - **Eureka-based FOLIO** is the target. Okapi keeps working only where the same code covers it.
 - **Read-only, and never patron data.** The FOLIO client can only read the records a recipe names; user and patron endpoints are refused before any request is sent.
-- **No passwords in files.** Secrets live in the system keyring or environment variables.
+- **No passwords in files.** Secrets live in the system keyring or environment variables. (A vendor login's private key, too large for the keyring, is a file only your Windows user can read.)
 - **Nothing reaches a vendor unchecked.** The first delivery to a destination waits for a person to release it, and a sudden drop in items blocks a run.
 
 This is a community project. It is not affiliated with or endorsed by the FOLIO project or any vendor.
@@ -37,7 +37,9 @@ python -m venv .venv
 
 ## Setting up a library (once released)
 
-To try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange. For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in full.
+**On Windows, the easy way:** run the [installer](installer/README.md) (double-click `install.cmd`). It installs FOLIO-Exchange for your Windows user, puts a launcher on the desktop, offers to set up the hourly scheduled runs, and opens a page in your browser. On that page you connect to FOLIO, then add as many vendor feeds as you need: choose a vendor's recipe, the locations and statuses to leave out and a schedule, then the vendor's SFTP server, password or key. Passwords go straight into Windows Credential Manager. A new feed starts paused, as a dry run that sends nothing, and the first delivery to each vendor waits for you to review it. Vendors' recipes come from a curated list (today: collectionHQ, from FOLIOHQ); the page checks it for new versions and installs one only after you have seen what changed.
+
+**At the command line:** to try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange. For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in full.
 
 ```bash
 folio-exchange init C:\FOLIO-Exchange\mylibrary
@@ -58,6 +60,8 @@ The guided setup asks for the FOLIO API address, tenant and a read-only service 
 | `folio-exchange history --audit` | Who changed, released or upgraded what |
 | `folio-exchange ui` | A simple page in your browser to look at feeds, run them and review held runs |
 | `folio-exchange launcher` | Put a file on your desktop that opens that page with a double-click |
+| `folio-exchange recipes get foliohq` | Check a vendor's recipes on GitHub for new versions, and install them after you confirm (`recipes sources` lists the vendors) |
+| `folio-exchange schedule --register` | Set up the hourly scheduled runs now (Windows asks for your Windows password) |
 
 `examples/` has a commented `site.yaml` and feed file, and `src/folio_exchange/schemas/` has JSON Schemas so editors can check them.
 

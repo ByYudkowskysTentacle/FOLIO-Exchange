@@ -1,4 +1,7 @@
-"""Secrets come from the environment or the OS keyring, never from files.
+"""Secrets come from the environment or the OS keyring, never from settings files.
+
+(An SFTP private key is a file of its own, named by a feed's ``private_key``; the page keeps one it is given
+in the site's ``keys`` folder, readable only by this user. See ``setupops.store_private_key``.)
 
 Files hold a *secret reference* instead of a secret: ``keyring`` (Windows Credential
 Manager, macOS Keychain, Secret Service) or ``env:NAME``. Nothing here ever logs,

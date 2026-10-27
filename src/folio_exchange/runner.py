@@ -251,6 +251,10 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
             report["sync"] = sync(site, set(feed.reads), opts.full)
         cache = Cache(site.cache_path)
         try:
+            other = other_folio(cache, site)
+            if other:
+                raise FxError(f"The local cache holds records from {other}, not {folio_source(site)}. Run the feed "
+                              "without --skip-sync (or `folio-exchange sync`) to download this FOLIO's records.")
             not_ready = cache_not_ready(cache, feed)
             if not_ready:
                 raise FxError(f"The cache cannot be used for feed {feed.name} yet ({not_ready}). Run it without "
@@ -372,11 +376,11 @@ def _prune(site: Site, feed: Feed, hist: History) -> None:
     delivery.prune_runs(site.out_dir / feed.name, int(site.runs["keep_local_runs"]), protect)
 
 
-def quarantine_cache(site: Site) -> Path:
-    """Move a damaged cache (and its -wal/-shm files) aside; the next sync starts afresh with a full download.
-    History is never touched."""
+def quarantine_cache(site: Site, kind: str = "broken") -> Path:
+    """Move a damaged cache, or one filled from another FOLIO (``kind="other-folio"``), and its -wal/-shm
+    files aside; the next sync starts afresh with a full download. History is never touched."""
     stamp = now_utc().strftime("%Y%m%d-%H%M%S")
-    moved = site.cache_path.with_name(f"cache.broken-{stamp}.sqlite")
+    moved = site.cache_path.with_name(f"cache.{kind}-{stamp}.sqlite")
     for suffix in ("", "-wal", "-shm"):
         src = site.cache_path.with_name(site.cache_path.name + suffix)
         if src.exists():
@@ -384,13 +388,34 @@ def quarantine_cache(site: Site) -> Path:
     return moved
 
 
+def folio_source(site: Site) -> str:
+    """Which FOLIO the cache's records come from: the API address and the tenant."""
+    return f"{str(site.folio['base_url']).rstrip('/').lower()} tenant {site.folio['tenant']}"
+
+
+def other_folio(cache: Cache, site: Site) -> str | None:
+    """The FOLIO a cache was filled from, when it is not this site's (a changed address or tenant)."""
+    have = cache.get_meta("folio_source")
+    return have if have is not None and have != folio_source(site) else None
+
+
 def sync(site: Site, reads: set[str], full: bool = False) -> dict:
-    """Update the shared cache. A damaged cache is moved aside once and rebuilt with a full download."""
+    """Update the shared cache. A damaged cache is moved aside once and rebuilt with a full download, and so is
+    one filled from another FOLIO: a delta on top of it would mix two catalogues."""
     for attempt in (1, 2):
         cache = None
         try:
             cache = Cache(site.cache_path)
-            return as_dict(Syncer(client_for(site), cache, site).run(reads, force_full=full))
+            other = other_folio(cache, site)
+            if other:
+                cache.close()
+                moved = quarantine_cache(site, "other-folio")
+                log.warning("The local cache holds records from %s, not %s; moved aside to %s, downloading "
+                            "everything from this FOLIO", other, folio_source(site), moved.name)
+                cache, full = Cache(site.cache_path), True
+            result = Syncer(client_for(site), cache, site).run(reads, force_full=full)
+            cache.set_meta("folio_source", folio_source(site))
+            return as_dict(result)
         except sqlite3.DatabaseError as exc:
             if cache is not None:
                 cache.close()

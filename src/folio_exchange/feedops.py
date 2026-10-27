@@ -26,17 +26,45 @@ def set_enabled(site: Site, name: str, enabled: bool, *, via: str = "cli") -> di
     if not path.is_file():
         raise ConfigError(f"No feed file {path}")
     try:
-        current = read_yaml(path).get("enabled", True)
+        raw = read_yaml(path)
     except ConfigError:
-        current = None                         # the file has a problem: set the line anyway
+        raw = None                             # the file has a problem: set the line anyway
+    current = raw.get("enabled", True) if raw is not None else None
+    d = (raw or {}).get("delivery") or {}
+    if enabled and isinstance(d, dict) and d.get("transport") == "sftp" and d.get("host_key_confirmed") is False:
+        raise ConfigError(f"The key of {d.get('host')} is not confirmed with the vendor yet, so {name} stays paused: "
+                          "nothing would log in to the server. Confirm the key first (the page's Delivery tab, or "
+                          "`folio-exchange init`).")
     if current is enabled:
         return {"name": name, "enabled": enabled, "changed": False}
-    rewrite_key(path, "enabled", "true" if enabled else "false")
+    if enabled:
+        _resume_checked(site, name, path)
+    else:
+        rewrite_key(path, "enabled", "false")
     action = "feed resumed" if enabled else "feed paused"
     with History(site.history_path) as hist:
         hist.audit(None, name, action, {"file": str(path), "from": via})
         runner.audit_settings(site, hist)
     return {"name": name, "enabled": enabled, "changed": True}
+
+
+def _resume_checked(site: Site, name: str, path) -> None:
+    """Resume, unless that makes another feed fail to load (a paused feed is not checked for sending the same
+    file names to the same place as an enabled one, so the clash only shows once it runs)."""
+    from .recipe import RecipeLibrary, load_all
+
+    library = RecipeLibrary(site.recipe_dirs)
+    before = set(load_all(site, library)[1])
+    old = path.read_bytes()
+    rewrite_key(path, "enabled", "true")
+    after = load_all(site, library)[1]
+    newly = {n: e for n, e in after.items() if n not in before and n != name}
+    if newly:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(old)
+        tmp.replace(path)
+        other, problem = next(iter(newly.items()))
+        raise ConfigError(f"{name} stays paused: resuming it would stop feed {other} from loading.\n{problem}")
 
 
 def _w(level: str, code: str, text: str, feed: str | None = None) -> dict:

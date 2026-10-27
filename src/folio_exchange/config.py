@@ -40,6 +40,7 @@ SITE_DEFAULTS: dict[str, Any] = {
     "paths": {"data": "data", "out": "out", "logs": "logs", "feeds": "feeds", "recipes": ["recipes"]},
     "runs": {"keep_local_runs": 5, "history_months": 12, "max_attempts_per_slot": 3, "timezone": None},
     "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None},
+    "recipe_sources": [],
 }
 
 EMAIL_DEFAULTS: dict[str, Any] = {
@@ -74,6 +75,7 @@ class Site:
     paths: dict
     runs: dict
     alerts: dict
+    recipe_sources: list
     cache_path: Path = field(init=False)
     history_path: Path = field(init=False)
     lock_path: Path = field(init=False)
@@ -226,7 +228,12 @@ def load_site(root: str | os.PathLike) -> Site:
     reject_secrets(raw, where)
     problems = unknown_keys(raw, SITE_DEFAULTS, "site")
     for section, defaults in SITE_DEFAULTS.items():
-        if isinstance(raw.get(section), dict):
+        if isinstance(defaults, list):
+            if section in raw and raw[section] is None:
+                raw[section] = []                      # every entry commented out
+            if raw.get(section) is not None and not isinstance(raw[section], list):
+                problems.append(f"{section}: expected a list")
+        elif isinstance(raw.get(section), dict):
             problems += unknown_keys(raw[section], defaults, section)
         elif raw.get(section) is not None:
             problems.append(f"{section}: expected a mapping of settings")
@@ -287,6 +294,11 @@ def validate_site(cfg: dict) -> list[str]:
     rec = paths.get("recipes")
     if not (isinstance(rec, str) or (isinstance(rec, list) and all(isinstance(x, str) for x in rec))):
         p.append("paths.recipes: must be a folder path or a list of them")
+
+    from .sources import source_problems
+
+    for n, entry in enumerate(cfg["recipe_sources"]):
+        p += source_problems(entry, f"recipe_sources[{n}]")
 
     r = cfg["runs"]
     for key, minimum in (("keep_local_runs", 0), ("history_months", 1), ("max_attempts_per_slot", 1)):

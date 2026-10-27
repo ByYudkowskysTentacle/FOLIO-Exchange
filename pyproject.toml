@@ -40,7 +40,7 @@ folio-exchange = "folio_exchange.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-folio_exchange = ["recipes/*/*.yaml", "recipes/*/*.md", "recipes/*/samples/*", "schemas/*.json", "web/*"]
+folio_exchange = ["recipes/*/*.yaml", "recipes/*/*.md", "recipes/*/samples/*", "schemas/*.json", "web/*", "recipe_sources.yaml"]
 
 [tool.ruff]
 line-length = 120

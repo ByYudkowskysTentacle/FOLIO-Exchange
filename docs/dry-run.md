@@ -2,6 +2,8 @@
 
 A dry run builds real collectionHQ files from your library's own FOLIO data and sends them nowhere. It tests the connection, the account's permissions and the data itself before anything goes to a vendor. It takes about half an hour, plus the first download, whose length depends on the size of the catalogue.
 
+Prefer not to use the command line? The [installer](../installer/README.md) sets FOLIO-Exchange up and opens a page where you connect to FOLIO and add the collectionHQ feed; a feed added there starts as a dry run, and the page's Preview and Run do what sections 3 and 4 below do. This guide takes the same route at the command line.
+
 You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing. The whole route to a live collectionHQ feed, from this dry run to the first delivery and the schedule, is FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md).
 
 ## Before you start
@@ -37,7 +39,7 @@ Also check that the PC can reach the API: many FOLIO hosts accept API traffic on
 ### How the password should travel
 
 - **From the FOLIO administrator to you:** through the library's password manager, or a one-time share link (Bitwarden Send, 1Password, or similar). Not by plain email, chat or a shared document.
-- **From you to FOLIO-Exchange:** type it at the setup prompt. It is not shown on screen and goes straight into Windows Credential Manager, stored for your Windows user. It never goes into a file, a log, a report, or a conversation with an AI assistant.
+- **From you to FOLIO-Exchange:** type it at the setup prompt (or into the page's password field). It is not shown on screen and goes straight into Windows Credential Manager, stored for your Windows user. It never goes into a file, a log, a report, or a conversation with an AI assistant.
 - **Nobody else needs it.** If someone is helping you, share the address, tenant id and user name, and the output of the commands below. Those never contain the password.
 
 ## 1. Install

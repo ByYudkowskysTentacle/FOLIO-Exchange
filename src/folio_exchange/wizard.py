@@ -24,14 +24,12 @@ from .client import FolioClient, probe
 from .config import SITE_FILE, load_site, read_yaml, write_yaml
 from .errors import ConfigError, FxError
 from .history import History
-from .recipe import ID_RE, RESERVED_FEED_NAMES, RecipeLibrary, load_feed
-
-SITE_HEADER = """FOLIO-Exchange site settings, written by `folio-exchange init`.
-No passwords live here: see `folio-exchange secret status`."""
-FEED_HEADER = """FOLIO-Exchange feed: this library's settings over a shared recipe.
-Edit by hand or re-run `folio-exchange init`; `folio-exchange check` validates it."""
-STATUSES = ["Withdrawn", "Lost and paid", "Declared lost", "Missing", "Long missing", "Claimed returned",
-            "Unavailable", "Unknown", "In process", "On order", "Order closed"]
+from .recipe import RecipeLibrary, load_feed
+from .setupops import FEED_HEADER, SITE_HEADER, STATUSES
+from .setupops import feed_name_problem as _feed_name_problem
+from .setupops import own_comments as _own_comments
+from .setupops import schedule_problem as _schedule_problem
+from .setupops import url_problem as _url_problem
 
 
 class Prompter:
@@ -145,33 +143,8 @@ class ScriptedPrompter(Prompter):
 
 
 # ------------------------------------------------------------------ helpers
-def _url_problem(url: str) -> str | None:
-    host = url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
-    if url.startswith("https://") and len(url) > 9:
-        return None
-    if url.startswith("http://") and host in ("localhost", "127.0.0.1"):
-        return None
-    return "Enter the full address, starting with https:// (on Eureka, the Kong gateway URL)."
-
-
-def _feed_name_problem(name: str) -> str | None:
-    if not ID_RE.match(name):
-        return "Use lowercase letters, digits and hyphens, e.g. chq."
-    if name in RESERVED_FEED_NAMES:
-        return f"{name!r} is reserved; choose another name."
-    return None
-
-
 def _required(answer: str) -> str | None:
     return None if answer.strip() else "This is needed."
-
-
-def _schedule_problem(text: str) -> str | None:
-    try:
-        schedule.parse(text)
-    except ConfigError as exc:
-        return str(exc)
-    return None
 
 
 def _in_site(root: Path, folder: str) -> Path:
@@ -190,16 +163,6 @@ def _load_existing(path: Path, label: str) -> dict:
     except ConfigError as exc:
         raise ConfigError(f"{exc}\n{label} could not be read, so init stopped without changing it. Fix the "
                           "file (or move it aside to start afresh), then run init again.") from None
-
-
-def _own_comments(path: Path, header: str) -> bool:
-    """True when the file holds comments that init did not write (they would be lost on rewrite)."""
-    ours = {f"# {line}".rstrip() if line else "#" for line in header.splitlines()}
-    try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return False
-    return any("#" in line and line.rstrip() not in ours for line in lines)
 
 
 class _Writer:

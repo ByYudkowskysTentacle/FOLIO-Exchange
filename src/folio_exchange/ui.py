@@ -33,9 +33,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import ProxyHandler, build_opener
 
-from . import __version__, delivery, feedops, reads, runner, schedule
+from . import __version__, credentials, delivery, feedops, reads, runner, schedule, setupops, sources
 from .client import probe
-from .config import Site, load_site, password_note
+from .config import BUNDLED_RECIPES, SITE_FILE, Site, load_site, password_note
 from .errors import ConfigError, FxError, LockBusy
 from .fields import FIELDS
 from .history import History
@@ -228,7 +228,7 @@ def site_summary(site_root: Path) -> dict:
                           "newer_recipe": newer.ref if newer else None})
         warnings = feedops.site_warnings(site, library, feeds, errors, hist, datetime.now(timezone.utc))
     return {
-        "warnings": warnings,
+        "warnings": warnings, "setup": None, "keyring": credentials.keyring_available(),
         "version": __version__, "name": site.name, "root": str(site.root),
         "folio": {"base_url": site.folio["base_url"], "tenant": site.folio["tenant"],
                   "username": site.folio["username"], "password": site.folio_password_source()},
@@ -236,6 +236,39 @@ def site_summary(site_root: Path) -> dict:
                    "email": bool(site.alerts.get("email"))},
         "feeds": items, "problems": errors, "recipe_problems": library.problems(),
     }
+
+
+def recipes_overview(site_root: Path) -> dict:
+    """Installed recipes (with where each version came from and which feeds use it) and the vendor sources."""
+    site, library, feeds, _errors = _load(site_root)
+    got = sources.provenance(site)
+    origin = {f: sid for sid, entry in got.items() for f in (entry.get("files") or {})}
+    bundled = BUNDLED_RECIPES.resolve()
+
+    def came_from(r) -> str:
+        key = f"{r.id}/{r.version_str}.yaml"
+        if key in origin:
+            return origin[key]
+        return "bundled" if r.path.resolve().is_relative_to(bundled) else "this site"
+
+    items = []
+    for rid in library.ids():
+        versions = library.versions(rid)
+        latest = versions[-1]
+        items.append({
+            "id": rid, "title": latest.title, "vendor": latest.data.get("vendor"),
+            "description": latest.data.get("description"), "reads": latest.data.get("reads"),
+            "default_uses": f"{rid}@^{latest.version[0]}.{latest.version[1]}",
+            "default_name": (latest.data.get("file_prefix") or rid.split("-")[0]).lower().replace("_", "-"),
+            "selection": {k: (latest.data.get("selection") or {}).get(k) for k in setupops.FILTER_KEYS},
+            "versions": [{"version": r.version_str, "from": came_from(r)} for r in versions],
+            "feeds": [f.name for f in feeds if f.recipe.id == rid],
+        })
+    srcs = [{"id": s.id, "vendor": s.vendor, "title": s.title, "description": s.description, "repo": s.repo,
+             "branch": s.branch, "homepage": s.homepage, "origin": s.origin, "recipes": s.recipes,
+             "commit": (got.get(s.id) or {}).get("commit"), "installed": (got.get(s.id) or {}).get("installed")}
+            for s in sources.load_sources(site)]
+    return {"recipes": items, "sources": srcs, "problems": library.problems()}
 
 
 def check_connection(site_root: Path) -> dict:
@@ -302,6 +335,24 @@ def open_folder(path: Path) -> None:
                          stderr=subprocess.DEVNULL, start_new_session=True)
 
 
+def _text(body: dict, key: str) -> str:
+    value = body.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigError(f"{key}: expected text.")
+    return value
+
+
+def _dict(body: dict, key: str) -> dict:
+    value = body.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{key}: expected a set of settings.")
+    return value
+
+
 # ------------------------------------------------------------------ server
 class App:
     def __init__(self, site_root: Path) -> None:
@@ -311,10 +362,28 @@ class App:
         self.port = 0
 
     # -- GET
+    def _ready(self) -> bool:
+        return (self.site_root / SITE_FILE).is_file()
+
     def get(self, path: str, query: dict) -> Any:
         if path == "/api/site":
             job = self.jobs.running()
+            state = setupops.site_state(self.site_root)
+            if not state["ready"]:                      # first run, or a site.yaml that does not load
+                return {"setup": state, "version": __version__, "root": str(self.site_root), "job": None}
             return {**site_summary(self.site_root), "job": job.as_dict() if job else None}
+        if path == "/api/setup":
+            return setupops.site_state(self.site_root)
+        if path == "/api/choices":
+            return setupops.tenant_choices(load_site(self.site_root))
+        if path == "/api/recipes":
+            return recipes_overview(self.site_root)
+        if path == "/api/permissions":
+            site, library, _feeds, _errors = _load(self.site_root)
+            return setupops.recipe_permissions(site, library, str(query.get("uses") or ""))
+        if m := re.fullmatch(r"/api/feeds/([a-z0-9-]+)/settings", path):
+            site, library, _feeds, _errors = _load(self.site_root)
+            return setupops.feed_settings(site, library, m.group(1))
         if m := re.fullmatch(r"/api/feeds/([a-z0-9-]+)", path):
             site, library, feed, _feeds = _feed(self.site_root, m.group(1))
             with History(site.history_path) as hist:
@@ -352,6 +421,42 @@ class App:
     # -- POST
     def post(self, path: str, body: dict) -> Any:
         root = self.site_root
+        if path == "/api/setup/connection":
+            return setupops.connect(root, _text(body, "base_url"), _text(body, "tenant"), _text(body, "username"),
+                                    _text(body, "password") or None)
+        if path == "/api/recipes/check":
+            site, library, _feeds, _errors = _load(root)
+            return sources.check(site, library, _text(body, "source"))
+        if path == "/api/recipes/install":
+            site, library, _feeds, _errors = _load(root)
+            return sources.install(site, library, _text(body, "source"), _text(body, "commit"), via="ui")
+        if path == "/api/feeds":
+            site, library, _feeds, _errors = _load(root)
+            return setupops.add_feed(site, library, _text(body, "name"), _text(body, "uses"),
+                                     _dict(body, "values"))
+        if m := re.fullmatch(r"/api/feeds/([a-z0-9-]+)/(settings|delivery|password|private-key|test-delivery)",
+                             path):
+            name, what = m.group(1), m.group(2)
+            if what == "test-delivery":
+                def test():
+                    _site, _library, feed, _feeds = _feed(root, name)
+                    try:
+                        listing = delivery.check_delivery(feed.delivery)
+                    except Exception as exc:  # noqa: BLE001 - every failure is put in plain words
+                        raise FxError(delivery.plain_error(exc, feed.delivery)) from None
+                    return {"ok": True, "where": delivery.describe_destination(feed.delivery),
+                            "entries": None if listing is None else len(listing)}
+
+                return self.jobs.start("test-delivery", name, test).as_dict()
+            site, library, _feeds, _errors = _load(root)
+            if what == "settings":
+                return setupops.save_feed(site, library, name, _dict(body, "values"), version=_text(body, "version"))
+            if what == "delivery":
+                return setupops.save_delivery(site, library, name, _dict(body, "form"), version=_text(body, "version"))
+            if what == "password":
+                return setupops.store_sftp_password(site, library, name, _text(body, "password"))
+            return setupops.store_private_key(site, library, name, _text(body, "key"),
+                                              _text(body, "passphrase") or None)
         if path == "/api/check":
             return self.jobs.start("check", None, lambda: check_connection(root)).as_dict()
         if m := re.fullmatch(r"/api/runs/(\d+)/open-folder", path):
