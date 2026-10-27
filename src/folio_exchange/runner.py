@@ -120,6 +120,9 @@ def next_step(feed: Feed, status: str, run_dir: Path | None) -> str:
                 f"folio-exchange release {feed.name}")
     if status == "failed":
         return f"Fix the problem above, then run: folio-exchange run {feed.name}"
+    if status == "built" and not feed.delivers:
+        return (f"The files are in{where}. This feed has no delivery set up yet; add one with "
+                "`folio-exchange init` before anything can be sent.")
     if status == "built":
         return f"To send these files, run: folio-exchange release {feed.name}"
     return ""

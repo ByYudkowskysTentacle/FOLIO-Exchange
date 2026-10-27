@@ -22,7 +22,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
-- 167 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
+- 168 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
 
 **Eureka trial (26 Oct 2026).** Run against the public Eureka Snapshot reference system (`https://folio-etesting-snapshot-kong.ci.folio.org`, tenant `diku`, the published demo login), delivering to a local folder:
 - `check`: login and every endpoint readable (10,042 instances, 27 holdings, 33 items, 15 loans, ten reference tables).
@@ -35,8 +35,8 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 **Not done:** nothing has run against the library's own tenant or a vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
 
 **Next**
-1. Decide the license before the first release.
-2. Gate 1 in FOLIOHQ (see Next steps below); then repeat this trial against the library's tenant with `run --no-deliver`.
+1. A dry run against the library's own tenant: `docs/dry-run.md` is the guide. The operator runs it; the password goes from their keyboard into Windows Credential Manager and is never shared.
+2. Gate 1 in FOLIOHQ (see Next steps below).
 3. Try the hourly Windows task (`folio-exchange schedule`) on the library PC, with the password in Credential Manager.
 
 ## Decisions
@@ -50,11 +50,12 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 | 2026-10-26 | Outbound feeds after cHQ are unranked candidates | The second recipe is whichever a partner library needs first |
 | 2026-10-26 | Writing into FOLIO (inbound loads) waits for v2, behind a separate account and a second approver | Writes carry far more risk than reads |
 | 2026-10-26 | Working name FOLIO-Exchange | Check FOLIO's trademark guidance before announcing it |
+| 2026-10-26 | MIT license, the same as FOLIOHQ | One license across both tools; FOLIOHQ's code is reused here |
 | 2026-10-26 | A delivery to a new destination, or on a new recipe major version, waits for a person to release it | A test delivery to a local folder must not disarm the review of the first real upload |
 | 2026-10-26 | Recipe minor and patch versions never change an output's bytes; any layout change is a new major | `^1.0` updates automatically, so a vendor must never see an unreviewed change |
 | 2026-10-26 | A shared recipe sets only how files travel (transport, upload mode); hosts, folders and server keys are local | A recipe from another site must not choose where files go or which server to trust |
 
-Still open: patron data, license (MIT vs Apache-2.0), upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
+Still open: patron data, upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
 
 ## Lessons carried over from FOLIOHQ
 
@@ -100,7 +101,7 @@ Still open: patron data, license (MIT vs Apache-2.0), upkeep and funding, a prop
    - **Agree with cHQ:** the remote folder, plus a sample for their approval.
    - **First delivery:** passing it is gate 1.
 2. **Here, in parallel:**
-   - Decide the license.
+   - ~~Decide the license~~: MIT, 26 Oct 2026.
    - Turn the recipe example in the spec into a draft recipe schema.
    - Plan how FOLIOHQ's core splits into reusable parts: the client, sync and cache, the field registry, the builders and delivery.
 3. **Keep the spec current:** edit the live copy, then refresh `docs/spec.md` from it.

@@ -37,6 +37,8 @@ python -m venv .venv
 
 ## Setting up a library (once released)
 
+To try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md).
+
 ```bash
 folio-exchange init C:\FOLIO-Exchange\mylibrary
 ```
@@ -56,4 +58,4 @@ The guided setup asks for the FOLIO API address, tenant and a read-only service 
 
 `examples/` has a commented `site.yaml` and feed file, and `src/folio_exchange/schemas/` has JSON Schemas so editors can check them.
 
-**License:** to be decided (MIT or Apache-2.0). Until a license is added, no reuse rights are granted, except for code adapted from FOLIOHQ, which is MIT-licensed (see [NOTICE.md](NOTICE.md)).
+**License:** [MIT](LICENSE), the same as FOLIOHQ. Code adapted from FOLIOHQ keeps its own MIT notice (see [NOTICE.md](NOTICE.md)).
