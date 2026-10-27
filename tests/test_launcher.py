@@ -98,17 +98,18 @@ def test_a_second_page_cannot_take_a_port_that_is_in_use(site):
 
 
 def test_opening_the_page_twice_reuses_the_open_one(site, capsys, monkeypatch):
-    opened = []
+    opened, shown = [], []
     monkeypatch.setattr(ui.webbrowser, "open", opened.append)
     monkeypatch.delenv("FOLIO_EXCHANGE_NO_BROWSER", raising=False)
-    httpd, app = ui.start_in_thread(site)
+    httpd, app = ui.start_in_thread(site, show=lambda url: shown.append(url) or "browser")
     try:
         ui.serve(site, port=app.port)                            # returns at once instead of serving
     finally:
         httpd.shutdown()
         httpd.server_close()
     assert "already open" in capsys.readouterr().out
-    assert opened == [f"http://127.0.0.1:{app.port}/"]
+    # the running page opens itself with a fresh one-time link; the second start never sees it
+    assert not opened and len(shown) == 1 and shown[0].startswith(f"{app.address}?t=")
 
 
 def test_another_program_on_the_default_port_moves_the_page_to_a_free_one(site, capsys, monkeypatch):
@@ -124,4 +125,5 @@ def test_another_program_on_the_default_port_moves_the_page_to_a_free_one(site, 
     finally:
         other.close()
     out = capsys.readouterr().out
-    assert "is in use by another program, so the page uses port" in out
+    assert "is in use by something that is not this site's page, so the page uses port" in out
+    assert "could pretend to be this page" in out                     # the risk, in one plain sentence

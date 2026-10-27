@@ -28,6 +28,8 @@ MARC_SOURCES = {"MARC", "CONSORTIUM-MARC"}
 OVERLAP = timedelta(minutes=10)
 # Loan keys that identify a person. They are dropped the moment a page arrives.
 LOAN_PATRON_KEYS = ("userId", "proxyUserId", "borrower", "patronGroupIdAtCheckout")
+# Who created or last changed a record: staff, never used by any field. Dropped from every cached record.
+STAFF_METADATA_KEYS = ("createdByUserId", "updatedByUserId", "createdByUsername", "updatedByUsername")
 
 
 @dataclass
@@ -53,6 +55,25 @@ def strip_patron_keys(loan: dict) -> dict:
     for key in LOAN_PATRON_KEYS:
         loan.pop(key, None)
     return loan
+
+
+def strip_staff_data(record: dict) -> dict:
+    """Drop, as a record arrives, what names staff or holds circulation free text: no output uses them, and the
+    cache is kept for good. Items lose their circulation notes, and keep only the date of the last check-in
+    (not who checked it in, or where). Item notes stay: feeds choose note types to read from them."""
+    record.pop("circulationNotes", None)
+    if "lastCheckIn" in record:
+        last = record["lastCheckIn"]
+        when = last.get("dateTime") if isinstance(last, dict) else None
+        if when:
+            record["lastCheckIn"] = {"dateTime": when}
+        else:
+            record.pop("lastCheckIn")
+    meta = record.get("metadata")
+    if isinstance(meta, dict):
+        for key in STAFF_METADATA_KEYS:
+            meta.pop(key, None)
+    return record
 
 
 class Syncer:
@@ -229,6 +250,8 @@ class Syncer:
 
     # --------------------------------------------------------------- storage
     def _store(self, entity: str, page: list[dict], gen: int) -> None:
+        if entity in ("instances", "holdings", "items"):
+            page = [strip_staff_data(r) for r in page]
         if entity == "instances":
             self.cache.upsert_instances(page, gen)
             if self._marc:

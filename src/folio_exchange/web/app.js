@@ -1,5 +1,6 @@
 // FOLIO-Exchange page. Plain JavaScript, no build step. Every value from FOLIO or the files is set as text,
-// never as HTML. Actions are POSTs with the page token; long ones return a job that is polled until done.
+// never as HTML. The browser is signed in by a cookie it got from a one-time link; actions are POSTs that also
+// carry the page token. Long actions return a job that is polled until done.
 "use strict";
 
 const TOKEN = document.querySelector('meta[name="fx-token"]').content;
@@ -10,7 +11,8 @@ const S = { site: null, view: null, feed: null, tab: "overview", runs: [], resul
             deliv: {},       // per feed: the server key read on saving, the test result, the key just stored
             notes: {},       // per feed: "new" right after it was added here
             choices: null,   // the tenant's locations, item statuses and note types (read once)
-            wizard: null, recipes: null, checks: {}, connForm: null, focus: null };
+            wizard: null, recipes: null, checks: {}, connForm: null, focus: null,
+            signedOut: false };   // the server no longer knows this tab (restarted or closed)
 const busy = () => !!S.job;
 const $ = (id) => document.getElementById(id);
 
@@ -211,6 +213,7 @@ async function api(path, body) {
   }
   const data = await r.json().catch(() => ({ error: r.statusText }));
   if (!r.ok) {
+    if (r.status === 403 && data.signed_out) signedOut(data.error);
     const err = new Error(data.error || r.statusText);
     err.status = r.status;
     throw err;
@@ -219,6 +222,19 @@ async function api(path, body) {
 }
 
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+// FOLIO-Exchange was restarted or closed, so this tab's sign-in no longer works: say once how to get back in,
+// and stop refreshing. Reloading would not help; only the launcher (or the link in its window) signs in again.
+function signedOut(text) {
+  if (S.signedOut) return;
+  S.signedOut = true;
+  if ($("modal").open) $("modal").close();
+  $("main").replaceChildren(h("div", { class: "empty" },
+    h("h1", { class: "empty-title", id: "signed-out-title", tabindex: "-1", text: "Open this page from FOLIO-Exchange again" }),
+    h("p", { text }),
+    h("p", { text: "If FOLIO-Exchange is still running, the launcher opens the page in your browser from there." })));
+  $("signed-out-title").focus();
+}
 
 function toast(text) {
   const t = $("toast");
@@ -2165,7 +2181,7 @@ async function watch(job) {
       j = await api(`/api/jobs/${job.id}?since=${since}`);
       misses = 0;
     } catch (e) {
-      if (++misses > 3) throw e;          // a brief hiccup is retried; a dead server is reported
+      if (++misses > 3 || S.signedOut) throw e;   // a brief hiccup is retried; a dead server is reported
       await sleep(1000);
       continue;
     }
@@ -2227,6 +2243,7 @@ async function follow(job) {
     if (job.feed) S.results[job.feed] = { lost: true };
   }
   S.job = null;
+  if (S.signedOut) return done;              // the notice saying how to get back in stays on screen
   if (done && job.feed) {
     if (done.status === "error") {
       S.results[job.feed] = { job: done, error: done.error };
@@ -2343,6 +2360,10 @@ function renderConnection() {
     ["Site folder", h("span", { class: "mono", text: s.root })],
   ])];
   const warnings = s.warnings || [];
+  // The scheduled task's age, quietly, when all is well; a warning below says so when it is not.
+  if (s.task && s.task.text && !warnings.some((w) => (w.code || "").startsWith("task-"))) {
+    body.push(h("p", { class: "muted", id: "task-status", text: s.task.text }));
+  }
   body.push(h("div", { class: "section-title", text: "Before you leave it to run on its own" }),
     warnings.length ? h("ul", { class: "warnings" }, warnings.map((w) => {
       const [cls, word] = LEVELS[w.level] || LEVELS.note;
@@ -2618,7 +2639,7 @@ let lastRefresh = Date.now();
 
 function quiet() {
   const a = document.activeElement;
-  return document.hidden || busy() || $("modal").open || !!document.querySelector(".menu:not([hidden])")
+  return S.signedOut || document.hidden || busy() || $("modal").open || !!document.querySelector(".menu:not([hidden])")
     || (a && a.tagName === "SELECT") || !S.site || !!S.site.setup
     || !!document.querySelector('#main [data-form="open"], #main [data-dirty]');
 }

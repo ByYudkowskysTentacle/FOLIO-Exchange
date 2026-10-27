@@ -6,6 +6,8 @@ Each batch is one or a few pull requests, each with regression tests. Whenever t
 
 ## Batch 1: safety and unattended running
 
+_Done on 27 October 2026 (branch `claude/batch-1`)._
+
 The changes most likely to prevent a bad delivery, or one that silently never happens. About two days.
 
 | # | Change | Findings | Done when |
@@ -14,6 +16,15 @@ The changes most likely to prevent a bad delivery, or one that silently never ha
 | 1.2 | **Notice when the hourly task stops.** Record each `run --due` start in history meta and show its age in `check`, `feeds` and the page, with a warning after two hours. Add an optional `alerts.heartbeat` URL (keyring or env) that each `run --due` calls, for any dead-man's-switch monitor. The guide notes that a Windows password change breaks a stored task. | SPEC-6 | A site whose task has not run for three hours shows a warning in all three places. The heartbeat is called once per pass and never logged. |
 | 1.3 | **Install where only the operator can write.** The guide and `init` default to `%LOCALAPPDATA%\FOLIO-Exchange`. `check` warns when the site or install folder is writable by other Windows users. | SEC-3 | A fresh install following the guide has no other-user write access; `check` flags a folder that does. |
 | 1.4 | **Small hardening.** Pin the guide's install to a release tag, with a constraints file. Add `folio.ca_bundle` (and the Windows certificate store) and warn when `verify_tls` is false. Remove `force` from the page's release endpoint. Validate `Content-Length` strictly and clamp every `limit`. Strip circulation notes and staff user ids from items as they are cached. | SEC-5, SEC-4, SEC-2, SEC-7, SEC-6 | Each has a test; the guide installs a tag. |
+
+Also done in this batch: the page opens only through a one-time link that it swaps for a cookie (SEC-2's "next" step), webhook and heartbeat URLs must be https and are never redirected (SEC-4), and `--version` and the installer show the git commit (SEC-5).
+
+Left on purpose, or still to do:
+- **No release tag yet.** The guide and the installer still install `main`; `constraints.txt` pins the dependency versions, and CI pins its actions to commit SHAs. Tag a version, and point both at it, before a second library installs.
+- **The page shows the hourly task's age only as a warning** (after two hours, or when it never ran); `check` and `feeds` also print the age when all is well.
+- **`init`** still names `C:\FOLIO-Exchange\<tenant>` in its warning about synced folders; the guide now uses `%LOCALAPPDATA%\FOLIO-Exchange`.
+- **`administrativeNotes`** on instances and holdings stay in the cache (optional in SEC-6).
+- **Run reports** record the program version and the recipe's SHA-256, not the program's git commit.
 
 ## Batch 2: command line, page and the shared core under them
 

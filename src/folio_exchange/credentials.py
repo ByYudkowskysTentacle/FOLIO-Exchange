@@ -21,9 +21,11 @@ FOLIO_SERVICE = "folio-exchange/folio"
 SFTP_SERVICE = "folio-exchange/sftp"
 SMTP_SERVICE = "folio-exchange/smtp"
 WEBHOOK_SERVICE = "folio-exchange/webhook"
+HEARTBEAT_SERVICE = "folio-exchange/heartbeat"
 
 # Keys that must never appear in a site, feed or recipe file, whatever their value.
-SECRET_KEYS = frozenset({"password", "passphrase", "private_key_passphrase", "token", "api_key", "webhook_url"})
+SECRET_KEYS = frozenset({"password", "passphrase", "private_key_passphrase", "token", "api_key", "webhook_url",
+                         "heartbeat_url"})
 
 _REF = re.compile(r"^(keyring|env:[A-Za-z_][A-Za-z0-9_]*)$")
 

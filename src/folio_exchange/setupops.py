@@ -28,7 +28,7 @@ from typing import Any
 import requests
 
 from . import credentials, delivery, runner, schedule
-from .client import FolioClient, probe
+from .client import FolioClient, probe, tls_verify
 from .config import SITE_DEFAULTS, SITE_FILE, Site, load_site, merge, read_yaml, write_yaml
 from .errors import ConfigError, FxError, RecipeError
 from .history import History
@@ -173,7 +173,7 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
             raise ConfigError("Enter the FOLIO password for this account.")
     eff = merge(SITE_DEFAULTS["folio"], folio)
     client = FolioClient(base_url, tenant, username, use, timeout=60.0, max_retries=2,
-                         verify_tls=eff.get("verify_tls") is not False)
+                         verify_tls=tls_verify(eff, root))
     try:
         client.connect()
     except (FxError, requests.RequestException) as exc:

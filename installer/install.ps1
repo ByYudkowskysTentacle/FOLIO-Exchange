@@ -278,6 +278,72 @@ function Test-Synced([string]$Path) {
     return ($Path -match 'OneDrive|Dropbox')
 }
 
+# ---------------------------------------------------------------- the copy being installed
+
+function Get-Constraints([string]$Source, [string]$Into) {
+    # The constraints.txt that comes with this copy of FOLIO-Exchange (the dependency versions it was tested
+    # with), copied into the folder $Into, or $null if it has none. $Source is a folder or a zip archive, such
+    # as GitHub's, where the file sits in the archive's one top folder.
+    if (Test-Path -LiteralPath $Source -PathType Container) {
+        $file = Join-Path $Source 'constraints.txt'
+        if (Test-Path -LiteralPath $file -PathType Leaf) { return $file }
+        return $null
+    }
+    if ($Source -notmatch '\.zip$') { return $null }
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($Source)
+    } catch {
+        return $null
+    }
+    try {
+        $entry = $zip.Entries | Where-Object { $_.FullName -match '^([^/]+/)?constraints\.txt$' } | Select-Object -First 1
+        if (-not $entry) { return $null }
+        [void][System.IO.Directory]::CreateDirectory($Into)
+        $file = Join-Path $Into 'constraints.txt'
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $file, $true)
+        return $file
+    } catch {
+        return $null
+    } finally {
+        $zip.Dispose()
+    }
+}
+
+function Get-ZipCommit([string]$Path) {
+    # The git commit of a zip archive made by GitHub (or git archive), which records it as the archive's
+    # comment; $null for any other file.
+    if ($Path -notmatch '\.zip$' -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $length = [int][Math]::Min($stream.Length, 65557)     # the end record and the longest comment
+            [void]$stream.Seek(-$length, [System.IO.SeekOrigin]::End)
+            $bytes = New-Object byte[] $length
+            $read = 0
+            while ($read -lt $length) {
+                $n = $stream.Read($bytes, $read, $length - $read)
+                if ($n -le 0) { break }
+                $read += $n
+            }
+        } finally {
+            $stream.Dispose()
+        }
+        for ($i = $length - 22; $i -ge 0; $i--) {
+            if ($bytes[$i] -eq 0x50 -and $bytes[$i + 1] -eq 0x4b -and $bytes[$i + 2] -eq 0x05 -and $bytes[$i + 3] -eq 0x06) {
+                $size = [int]$bytes[$i + 20] + 256 * [int]$bytes[$i + 21]
+                if ($i + 22 + $size -gt $length) { return $null }
+                $comment = [System.Text.Encoding]::ASCII.GetString($bytes, $i + 22, $size).Trim()
+                if ($comment -match '^[0-9a-f]{40}$') { return $comment }
+                return $null
+            }
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
 # ---------------------------------------------------------------- Python
 
 function Get-PythonInfo([string]$FilePath, [string[]]$PrefixArgs) {
@@ -647,6 +713,8 @@ try {
     }
     Write-Text 'Downloading and installing it and the parts it needs. This can take a few minutes, and nothing is shown until it is done.'
     $download = $null
+    $constraintsDir = $null
+    $commit = $null
     try {
         $archive = $sourcePath
         if ($sourceUrl) {
@@ -669,14 +737,27 @@ try {
             }
             $archive = $files[0].FullName
         }
-        $r = Invoke-Captured $venvPython ($pip + @('install') + $pipQuiet + @('--upgrade', ('folio-exchange @ ' + (ConvertTo-FileUrl $archive))))
+        $commit = Get-ZipCommit $archive
+        if ($commit) { Write-Host ('This is commit {0}.' -f $commit.Substring(0, 12)) }
+        # Install the parts it needs at the versions this copy was tested with (its constraints.txt).
+        $constraintsDir = Join-Path ([System.IO.Path]::GetTempPath()) ('folio-exchange-constraints-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $constraints = Get-Constraints $archive $constraintsDir
+        $pinned = @()
+        if ($constraints) {
+            $pinned = @('-c', $constraints)
+        } else {
+            Write-Warn 'This copy of FOLIO-Exchange has no constraints.txt, so the newest versions of the parts it needs are installed rather than the tested ones.'
+        }
+        $r = Invoke-Captured $venvPython ($pip + @('install') + $pipQuiet + $pinned + @('--upgrade', ('folio-exchange @ ' + (ConvertTo-FileUrl $archive))))
         if ($r.ExitCode -ne 0) {
             Show-Output $r.Output
             Stop-Install 'FOLIO-Exchange could not be installed; the messages above say why. If they mention a connection problem, check that this computer can reach pypi.org and files.pythonhosted.org. If they mention a path that is too long, choose a shorter install folder. If FOLIO-Exchange was running, close it and try again.'
         }
     } finally {
-        if ($download -and (Test-Path -LiteralPath $download)) {
-            Remove-Item -LiteralPath $download -Recurse -Force -ErrorAction SilentlyContinue
+        foreach ($temp in @($download, $constraintsDir)) {
+            if ($temp -and (Test-Path -LiteralPath $temp)) {
+                Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 
@@ -688,6 +769,7 @@ try {
     }
     $version = @($r.StdOut | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1)
     if ($version.Count -eq 1) { $version = $version[0].Trim() } else { $version = 'folio-exchange (version not known)' }
+    if ($commit) { $version = '{0}, commit {1}' -f $version, $commit.Substring(0, 12) }
     if ($isUpdate) { Write-Host ('Updated: {0}' -f $version) } else { Write-Host ('Installed: {0}' -f $version) }
 
     # ------------------------------------------------------------ 4. launcher

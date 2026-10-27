@@ -8,9 +8,9 @@ The installer sets up FOLIO-Exchange on a Windows 10 or 11 PC, or updates it. It
 2. **Asks two questions.** Press Enter to keep the suggestion in [brackets].
    - The install folder, by default `%LOCALAPPDATA%\FOLIO-Exchange` (for example `C:\Users\you\AppData\Local\FOLIO-Exchange`). It warns you if the folder is inside OneDrive or Dropbox: syncing breaks the cache and lock files that FOLIO-Exchange keeps while it works.
    - A short name for your library's site, by default `mylibrary`: letters, digits and hyphens.
-3. **Installs FOLIO-Exchange** in `<install folder>\program`, a Python environment of its own. It downloads FOLIO-Exchange from GitHub as a zip file, so Git is not needed. If FOLIO-Exchange is already there, it updates it.
-4. **Makes a launcher**, `FOLIO-Exchange (<name>).cmd`, on your desktop. Double-click it to open the page.
-5. **Offers to set up scheduled runs**: Windows then starts FOLIO-Exchange every hour to run the feeds that are due. Windows asks for your Windows password for this, so the runs also happen when nobody is signed in. You can say no and do it later.
+3. **Installs FOLIO-Exchange** in `<install folder>\program`, a Python environment of its own. It downloads FOLIO-Exchange from GitHub as a zip file, so Git is not needed. If FOLIO-Exchange is already there, it updates it. The parts FOLIO-Exchange needs are installed at the versions it was tested with, from the `constraints.txt` in the copy being installed, and for a download from GitHub the installer shows which commit it is installing (`This is commit …`, and again on the `Installed:` or `Updated:` line).
+4. **Makes a launcher**, `FOLIO-Exchange (<name>).cmd`, on your desktop. Double-click it to open the page. For safety the page opens only this way, through a link that works once: typing its address or using a bookmark shows a page saying to use the launcher. If you close the browser, double-click the launcher again; the black window that is still running opens the page.
+5. **Offers to set up scheduled runs**: Windows then starts FOLIO-Exchange every hour to run the feeds that are due. Windows asks for your Windows password for this, so the runs also happen when nobody is signed in. You can say no and do it later. If the runs stop (the PC asleep, or a changed Windows password), the page's Connection view warns after two hours; a heartbeat monitor can also email you (see [the guide](../docs/dry-run.md), step 5 of going live).
 6. **Opens the page** in your browser. The page asks for the FOLIO connection – the API address, the tenant id, a user name and its password – and is also where you add vendor feeds and their passwords.
 
 At the end it lists where everything is, and anything still to do.
@@ -51,7 +51,7 @@ Exit codes: `0` when everything is done; `1` when the installer stopped; `2` whe
 | `-InstallDir <folder>` | The install folder. Default: `%LOCALAPPDATA%\FOLIO-Exchange`. |
 | `-SiteName <name>` | The site's short name: letters, digits and hyphens. Default: `mylibrary`. |
 | `-Source <url or path>` | Install from somewhere else: a URL that pip understands (a zip, or `git+https://...`, which needs Git) or a local folder or archive. Default: the `main` branch on GitHub, as a zip. |
-| `-Ref <branch or tag>` | Install this branch or tag of the GitHub repository instead of `main`. Not together with `-Source`. |
+| `-Ref <branch or tag>` | Install this branch or tag of the GitHub repository instead of `main`. Not together with `-Source`. A copy from before `constraints.txt` existed installs with a warning, taking the newest versions of the parts it needs. |
 | `-LauncherFolder <folder>` | Put the launcher in this folder instead of on the desktop. |
 | `-NoStart` | Do not open the page at the end. |
 | `-NoSchedule` | Do not set up scheduled runs, and do not ask about them. |
@@ -89,3 +89,7 @@ Python stays installed; remove it in **Settings > Apps** if nothing else needs i
 | pip mentions a path that is too long | Choose a shorter install folder, such as `C:\FOLIO-Exchange`. |
 | FOLIO-Exchange is running | Close the page's black window, wait for any run to finish, then run the installer again. |
 | The launcher or scheduled runs could not be set up | The installer prints the command that does it; run it later in PowerShell. FOLIO-Exchange is installed either way. |
+| The page says to open it from FOLIO-Exchange | Double-click the launcher. If that does not open it, close the black window (Ctrl+C) and double-click the launcher again. |
+| The browser cannot find the page's address (it ends in `.localhost`) | Use Chrome, Edge or Firefox, which send `.localhost` addresses to this computer themselves. If a proxy is set, ask IT to let `*.localhost` bypass it. |
+| The black window says port 8765 is in use by something that is not this site's page | The page has moved to another port; open it only from the links in that window. If you did not expect it, ask IT what else holds port 8765. |
+| Scheduled runs stopped after a Windows password change | The task still holds the old password. Register it again in PowerShell with `& "<install folder>\program\Scripts\folio-exchange.exe" -s "<install folder>\<name>" schedule --register`; Windows asks for the new password. |
