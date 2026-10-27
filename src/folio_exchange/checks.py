@@ -19,14 +19,31 @@ if TYPE_CHECKING:
 
 
 def required_fields(feed: Feed, report: BuildReport) -> None:
-    """Block when any delivered row has a ``must_be_filled`` field empty."""
+    """Block when any delivered row has a ``must_be_filled`` field empty.
+
+    The message says which fields the recipe requires and which the feed file added: a feed file can
+    add to the recipe's list but not take from it, so only the feed's own are offered for removal."""
     empty = {name: n for name, n in report.unfilled.items() if n}
-    if empty:
-        listed = ", ".join(f"{name}: {n:,} rows" for name, n in sorted(empty.items()))
-        raise SafetyCheckFailed(
-            f"Some rows are missing values the vendor needs ({listed}). Files were built but not delivered. "
-            "Fix the records in FOLIO, or remove the field from checks.must_be_filled in the feed file."
-        )
+    if not empty:
+        return
+    listed = ", ".join(f"{name}: {n:,} rows" for name, n in sorted(empty.items()))
+    recipe_must = set((feed.recipe.data.get("checks") or {}).get("must_be_filled") or [])
+    from_recipe = [name for name in sorted(empty) if name in recipe_must]
+    from_feed = [name for name in sorted(empty) if name not in recipe_must]
+    source = []
+    if from_recipe:
+        source.append(f"The recipe {feed.recipe.ref} requires {', '.join(from_recipe)}; the feed file cannot "
+                      f"remove {'it' if len(from_recipe) == 1 else 'them'}.")
+    if from_feed:
+        source.append(f"The feed file's checks.must_be_filled adds {', '.join(from_feed)}.")
+    options = ["fix the records in FOLIO and run the feed again"]
+    if from_feed:
+        options.append(f"remove {', '.join(from_feed)} from checks.must_be_filled in the feed file")
+    options.append(f"look at the files and send them as they are with `folio-exchange release {feed.name}`")
+    raise SafetyCheckFailed(
+        f"Some rows are missing values the vendor needs ({listed}). Files were built but not delivered. "
+        f"{' '.join(source)} To go on: {'; or '.join(options)}."
+    )
 
 
 def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> None:

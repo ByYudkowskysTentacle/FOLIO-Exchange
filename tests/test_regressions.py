@@ -1,6 +1,7 @@
 """Regression tests for defects found in the review of the v1 build (26 Oct 2026), one per finding."""
 import json
 import sqlite3
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,10 +12,11 @@ from sitekit import feed_data, make_feed, write_yaml
 from folio_exchange import client as client_mod
 from folio_exchange import notify, runner
 from folio_exchange import schedule as sched
-from folio_exchange.checks import conformance
+from folio_exchange.build import BuildReport
+from folio_exchange.checks import conformance, required_fields
 from folio_exchange.cli import main
 from folio_exchange.config import BUNDLED_RECIPES, load_site
-from folio_exchange.errors import ConfigError
+from folio_exchange.errors import ConfigError, SafetyCheckFailed
 from folio_exchange.history import History
 from folio_exchange.recipe import RecipeLibrary, load_feed, validate_recipe
 
@@ -186,3 +188,20 @@ def test_run_folder_names_are_never_reused_and_sort_in_order(site, monkeypatch):
         dirs = [Path(r["run_dir"]).name for r in reversed(h.runs("chq"))]
     assert dirs == ["20261026-212540", "20261026-212540-02", "20261026-212540-03"]
     assert sorted(dirs) == dirs
+
+
+def test_an_unfilled_recipe_field_is_not_offered_for_removal_from_the_feed_file(site):
+    make_feed(site, checks={"must_be_filled": ["item_hrid"]})
+    s = load_site(site)
+    feed = load_feed(site / "feeds" / "chq.yaml", RecipeLibrary(s.recipe_dirs), s.root)
+    with pytest.raises(SafetyCheckFailed) as only_recipe:
+        required_fields(feed, BuildReport(unfilled=Counter({"material_type": 3})))
+    msg = str(only_recipe.value)
+    assert "material_type: 3 rows" in msg and "requires material_type" in msg
+    assert "from checks.must_be_filled" not in msg                   # the feed file cannot drop it
+    assert "folio-exchange release chq" in msg
+    with pytest.raises(SafetyCheckFailed) as both:
+        required_fields(feed, BuildReport(unfilled=Counter({"material_type": 3, "item_hrid": 2})))
+    msg = str(both.value)
+    assert "remove item_hrid from checks.must_be_filled" in msg
+    assert "remove material_type" not in msg and "material_type, item_hrid" not in msg

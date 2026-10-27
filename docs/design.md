@@ -425,6 +425,7 @@ One SQL pass, as in FOLIOHQ. Selection filters apply once, before any output see
 **checks.py**
 ```python
 def required_fields(feed: Feed, report: BuildReport) -> None           # SafetyCheckFailed listing field: count
+    # and whether the recipe or the feed file asks for each; offers to remove only the feed's own, else release
 def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> None   # SafetyCheckFailed
 def check_marc_file(path: Path) -> list[str]   # binary MARC parses; spots text-converted MARC (no 0x1D/0x1E)
 def conformance(feed, run_dir, samples: dict[str, Path], files: dict[str, list[str]] | None = None) -> list[str]
