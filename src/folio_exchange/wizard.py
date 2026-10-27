@@ -1,10 +1,13 @@
 """`folio-exchange init`: guided setup for library staff, one question at a time.
 
-Work is saved as it goes: ``site.yaml`` right after a successful login, and the feed
+Work is saved as it goes: ``site.yaml`` right after a successful login, and a new feed
 file (paused) as soon as a recipe is chosen, so a setup interrupted by a missing
 permission or an unanswered vendor question can be picked up by running ``init``
-again. Existing settings are shown and kept unless the person changes them. Secrets
-go to the system keyring (or stay in environment variables), never into a file.
+again. Existing settings are offered as defaults and kept unless the person changes
+them; a file that cannot be read stops setup instead of being overwritten, and a
+hand-edited file is kept as ``.bak`` before it is rewritten. A password is stored only
+after FOLIO accepts it. Secrets go to the system keyring (or stay in environment
+variables), never into a file.
 """
 from __future__ import annotations
 
@@ -16,8 +19,8 @@ from pathlib import Path
 
 import requests
 
-from . import credentials, delivery, reads, runner, schedule
-from .client import FolioClient, FolioError
+from . import credentials, delivery, runner, schedule
+from .client import FolioClient, probe
 from .config import SITE_FILE, load_site, read_yaml, write_yaml
 from .errors import ConfigError, FxError
 from .history import History
@@ -43,8 +46,8 @@ class Prompter:
             suffix = f" [{default}]" if default not in (None, "") else ""
             try:
                 answer = input(f"{prompt}{suffix}: ").strip()
-            except EOFError:
-                answer = ""
+            except EOFError:                 # input closed: stop rather than ask the same question for ever
+                raise KeyboardInterrupt from None
             answer = answer or (default or "")
             problem = validate(answer) if validate else None
             if not problem:
@@ -177,11 +180,42 @@ def _in_site(root: Path, folder: str) -> Path:
     return p if p.is_absolute() else Path(root) / p
 
 
-def _load_raw(path: Path) -> dict:
+def _load_existing(path: Path, label: str) -> dict:
+    """An existing settings file, or {} when there is none. A file that cannot be read stops setup: rewriting
+    it would lose what the person had (the vendor host, the pinned key, the schedule)."""
+    if not path.exists():
+        return {}
     try:
         return read_yaml(path)
-    except ConfigError:
-        return {}
+    except ConfigError as exc:
+        raise ConfigError(f"{exc}\n{label} could not be read, so init stopped without changing it. Fix the "
+                          "file (or move it aside to start afresh), then run init again.") from None
+
+
+def _own_comments(path: Path, header: str) -> bool:
+    """True when the file holds comments that init did not write (they would be lost on rewrite)."""
+    ours = {f"# {line}".rstrip() if line else "#" for line in header.splitlines()}
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return False
+    return any("#" in line and line.rstrip() not in ours for line in lines)
+
+
+class _Writer:
+    """Writes a settings file, first keeping a copy of a hand-edited one (comments and layout) as .bak."""
+
+    def __init__(self, path: Path, header: str, p: Prompter) -> None:
+        self.path, self.header, self.p = path, header, p
+        self.backed_up = False
+
+    def write(self, data: dict) -> None:
+        if not self.backed_up and self.path.exists() and _own_comments(self.path, self.header):
+            backup = self.path.with_name(self.path.name + ".bak")
+            backup.write_text(self.path.read_text(encoding="utf-8-sig"), encoding="utf-8")
+            self.p.say(f"  (Your copy of {self.path.name}, with its comments, is kept as {backup.name}.)")
+        self.backed_up = True
+        write_yaml(self.path, data, self.header)
 
 
 def _audit(root: Path, feed: str | None, action: str, detail: dict) -> None:
@@ -194,10 +228,50 @@ def _audit(root: Path, feed: str | None, action: str, detail: dict) -> None:
         runner.audit_settings(site, hist)
 
 
+def _paused_by_person(root: Path, name: str) -> bool:
+    """True when the feed's last pause or resume was a person's `feeds pause` (not init's own first save)."""
+    try:
+        site = load_site(root)
+    except FxError:
+        return False
+    with History(site.history_path) as hist:
+        for entry in hist.audit_log(200, name):
+            if entry["action"] in ("feed paused", "feed resumed"):
+                return entry["action"] == "feed paused"
+    return False
+
+
+def _env_name(answer: str) -> str | None:
+    return None if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", answer) else "Letters, digits and underscores."
+
+
+def _secret_ref(p: Prompter, service: str, account: str, what: str, env_default: str) -> str | None:
+    """Ask for a secret and keep it in the system keyring, or (with no keyring) name the environment variable
+    that will hold it. Returns the reference for the settings file, or None when the person leaves it for later."""
+    if credentials.keyring_available():
+        value = p.secret(f"{what} (press Enter to leave it for later)")
+        if not value:
+            return None
+        credentials.store(service, account, value)
+        p.say("  Stored in the system keyring.")
+        return "keyring"
+    env = p.ask(f"No keyring here. Name of the environment variable that will hold the {what[0].lower() + what[1:]}",
+                env_default, _env_name)
+    return f"env:{env}"
+
+
 # ------------------------------------------------------------------ wizard
 def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None = None,
                read_host_key: Callable[[str, int], str] | None = None) -> int:
-    p = prompter
+    try:
+        return _run_wizard(root, prompter, library=library, read_host_key=read_host_key)
+    except ConfigError as exc:
+        prompter.say(str(exc))
+        return 1
+
+
+def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
+                read_host_key: Callable[[str, int], str] | None) -> int:
     root = Path(root)
     read_host_key = read_host_key or delivery.host_key_fingerprint
     p.say("FOLIO-Exchange setup. Answers in [brackets] are the defaults; press Enter to keep them.")
@@ -209,53 +283,82 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
             return 1
     root.mkdir(parents=True, exist_ok=True)
 
-    # 1. FOLIO connection
+    # 1. FOLIO connection. An existing site.yaml is read the normal way (${ENV} values, FOLIO_URL and the like).
     site_path = root / SITE_FILE
-    raw_site = _load_raw(site_path) if site_path.exists() else {}
+    raw_site = _load_existing(site_path, SITE_FILE)
+    site_writer = _Writer(site_path, SITE_HEADER, p)
     folio = dict(raw_site.get("folio") or {})
+    effective: dict | None = None
     if raw_site:
-        p.say(f"Found site.yaml: {folio.get('base_url')} (tenant {folio.get('tenant')}, user {folio.get('username')}).")
-    if not raw_site or p.confirm("Change the FOLIO connection?", False):
+        try:
+            effective = dict(load_site(root).folio)
+        except ConfigError as exc:
+            p.say(f"site.yaml has a problem, so its FOLIO connection is asked again:\n{exc}")
+    if effective:
+        p.say(f"Found site.yaml: {effective['base_url']} (tenant {effective['tenant']}, user {effective['username']}).")
+    if not effective or p.confirm("Change the FOLIO connection?", False):
         p.say("\nFOLIO connection. Ask your FOLIO host for the API address (on Eureka, the Kong gateway), the "
               "tenant id, and a read-only service account.")
         folio["base_url"] = p.ask("FOLIO API address", folio.get("base_url"), _url_problem).rstrip("/")
         folio["tenant"] = p.ask("Tenant id", folio.get("tenant"), _required)
         folio["username"] = p.ask("Service account user name", folio.get("username"), _required)
         folio.setdefault("secret", "keyring")
-    account = credentials.folio_account(folio["username"], folio["tenant"])
+        effective = {**(effective or {}), **folio}
+        site_changed = True
+    else:
+        site_changed = False
+    account = credentials.folio_account(effective["username"], effective["tenant"])
+    typed = stored = None
     if os.environ.get("FOLIO_PASSWORD"):
         p.say("Using the password in the FOLIO_PASSWORD environment variable.")
         password = os.environ["FOLIO_PASSWORD"]
     else:
-        password = credentials.resolve(folio.get("secret"), credentials.FOLIO_SERVICE, account)
-        if password and not p.confirm("A FOLIO password is already stored. Keep it?", True):
+        stored = credentials.resolve(effective.get("secret"), credentials.FOLIO_SERVICE, account)
+        password = stored
+        if stored and not p.confirm("A FOLIO password is already stored. Keep it?", True):
             password = None
         if not password:
             if not credentials.keyring_available():
                 p.say("No system keyring is available here. Set the FOLIO_PASSWORD environment variable for this "
                       "account, then run `folio-exchange init` again.")
                 return 1
-            password = p.secret(f"FOLIO password for {folio['username']}")
-            credentials.store(credentials.FOLIO_SERVICE, account, password)
-            p.say("Stored in the system keyring.")
-    client = FolioClient(folio["base_url"], folio["tenant"], folio["username"], password or "",
-                         verify_tls=bool(folio.get("verify_tls", True)))
+            typed = p.secret(f"FOLIO password for {effective['username']}")
+            if not typed:
+                p.say("Nothing was entered. Run init again when you have the password.")
+                return 1
+            password = typed
+    client = FolioClient(effective["base_url"], effective["tenant"], effective["username"], password,
+                         timeout=float(effective.get("timeout_seconds", 120)),
+                         max_retries=int(effective.get("max_retries", 5)),
+                         verify_tls=bool(effective.get("verify_tls", True)))
     try:
-        client.login()
+        client.connect()
     except (FxError, requests.RequestException) as exc:
-        p.say(f"Could not log in: {exc}\nNothing was saved. Check the address, tenant and account, then run init "
-              "again.")
+        p.say(f"Could not log in: {exc}")
+        if password == stored:
+            p.say("The stored password may be the problem: run init again and answer n to \"Keep it?\" to type "
+                  "it again.")
+        p.say("Nothing was saved: no settings were written and no password was stored. Check the address, "
+              "tenant and account, then run init again.")
         return 1
     p.say(f"Logged in to {client.base_url} as {client.username}.")
-    if os.environ.get("FOLIO_PASSWORD") and credentials.keyring_available() and p.confirm(
-            "Also store this password in the system keyring, so scheduled runs have it?", True):
-        credentials.store(credentials.FOLIO_SERVICE, account, os.environ["FOLIO_PASSWORD"])
+    if typed:                                          # only a password FOLIO accepted is kept
+        credentials.store(credentials.FOLIO_SERVICE, account, typed)
+        p.say("  Stored in the system keyring.")
     elif os.environ.get("FOLIO_PASSWORD"):
-        folio["secret"] = "env:FOLIO_PASSWORD"       # say where the password really comes from
-        p.say("Note: scheduled runs need FOLIO_PASSWORD set for the user that runs them.")
-    raw_site["folio"] = folio
-    write_yaml(site_path, raw_site, SITE_HEADER)
-    _audit(root, None, "site settings written by init", {"file": SITE_FILE})
+        if credentials.keyring_available() and p.confirm(
+                "Also store this password in the system keyring, so scheduled runs have it?", True):
+            credentials.store(credentials.FOLIO_SERVICE, account, os.environ["FOLIO_PASSWORD"])
+            if folio.get("secret") != "keyring" and str(folio.get("secret", "")).startswith("env:"):
+                folio["secret"], site_changed = "keyring", True
+        elif folio.get("secret") != "env:FOLIO_PASSWORD" and credentials.resolve(
+                folio.get("secret"), credentials.FOLIO_SERVICE, account) is None:
+            folio["secret"], site_changed = "env:FOLIO_PASSWORD", True   # say where the password really comes from
+            p.say("Note: scheduled runs need FOLIO_PASSWORD set for the user that runs them.")
+    if site_changed or not site_path.exists():
+        raw_site["folio"] = folio
+        site_writer.write(raw_site)
+        _audit(root, None, "site settings written by init", {"file": SITE_FILE})
     site = load_site(root)
     library = library or RecipeLibrary(site.recipe_dirs)
 
@@ -271,42 +374,45 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
     default_name = (recipe.data.get("file_prefix") or recipe.id.split("-")[0]).lower().replace("_", "-")
     name = p.ask("A short name for this feed", default_name, _feed_name_problem)
     feed_path = site.feeds_dir / f"{name}.yaml"
-    raw = _load_raw(feed_path) if feed_path.exists() else {}
-    if raw:
+    existing = feed_path.exists()
+    raw = _load_existing(feed_path, f"feeds/{name}.yaml")
+    feed_writer = _Writer(feed_path, FEED_HEADER, p)
+    was_enabled = raw.get("enabled", True) if existing else None
+    if existing:
         p.say(f"Found {feed_path.name}; its settings are offered as defaults.")
     raw["uses"] = raw.get("uses") if str(raw.get("uses", "")).split("@")[0] == recipe.id else uses
-    raw.setdefault("enabled", False)
     raw.setdefault("delivery", {"transport": "none"})
+    if not existing:
+        raw["enabled"] = False
+        others = [q for q in site.feeds_dir.glob("*.yaml") if q != feed_path] if site.feeds_dir.is_dir() else []
+        same = [q.stem for q in others if str(_load_quiet(q).get("uses", "")).split("@")[0] == recipe.id]
+        if same and "file_prefix" not in raw:
+            raw["file_prefix"] = name
+            p.say(f"  Files will be named {name}_..., so they never overwrite feed {same[0]}'s files at the vendor.")
 
     def save_feed(note: str) -> None:
-        write_yaml(feed_path, raw, FEED_HEADER)
+        feed_writer.write(raw)
         _audit(root, name, note, {"file": str(feed_path.relative_to(root))})
 
-    save_feed("feed written by init (paused)")
+    if not existing:
+        save_feed("feed written by init (paused)")
 
-    # 3. Permissions
+    # 3. Permissions: only refusals are missing permissions; other failures are named as they are.
     p.say("\nChecking that the account can read what this recipe needs ...")
-    missing = []
-    for rname in [r for r in reads.ENTITY_ORDER + ("marc",) if r in recipe.data["reads"]]:
-        r = reads.READS[rname]
-        try:
-            if rname == "marc":
-                client.get(r.path, {"limit": 0})
-            else:
-                client.count(r.path)
-        except FolioError:
-            missing.append(r.permission)
-    for _kind, (path, _key, perm) in reads.REFDATA.items():
-        try:
-            client.count(path)
-        except FolioError:
-            missing.append(perm)
-    if missing:
+    results = probe(client, recipe.data["reads"])
+    denied = sorted({r["permission"] for r in results if r["status"] == "denied"})
+    failed = [r for r in results if r["status"] == "failed"]
+    if denied:
         p.say("The account cannot read everything yet. Ask your FOLIO administrator to add these permissions "
               "(on Eureka, the matching capabilities) to its role:")
-        for perm in sorted(set(missing)):
+        for perm in denied:
             p.say(f"  {perm}")
-        p.say(f"Your progress is saved; run `folio-exchange init {root}` again once they are added.")
+    for r in failed:
+        p.say(f"FOLIO could not answer for {r['name']} ({r['path']}): {r['error']}")
+    if denied or failed:
+        if failed and not denied:
+            p.say("That is not a permission problem. Check the API address, or run `folio-exchange check` later.")
+        p.say(f"Your progress is saved; run `folio-exchange init {root}` again once this is sorted out.")
         return 1
     p.say("All the records this recipe needs can be read.")
 
@@ -392,40 +498,50 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
             key = None
         if key:
             p.say(f"The server's key fingerprint is {key}")
+            confirmed_before = d.get("host_key_fingerprint") == key and d.get("host_key_confirmed", True) is not False
             pin = p.choose("Does it match the fingerprint the vendor gave you?", [
                 ("yes", "yes, it matches"),
-                ("unconfirmed", "I don't have the vendor's value yet: keep it, but leave the feed paused"),
+                ("unconfirmed", "I don't have the vendor's value yet: keep it, but don't connect until I confirm it"),
                 ("no", "no, it differs: don't trust this server"),
-            ], "yes" if d.get("host_key_fingerprint") == key else "unconfirmed")
+            ], "yes" if confirmed_before else "unconfirmed")
             if pin == "no":
                 p.say("Stopped: a different key can mean the wrong server. Ask the vendor before going on.")
                 d.pop("host_key_fingerprint", None)
+                d.pop("host_key_confirmed", None)
                 d["transport"] = "none"
                 raw["delivery"] = d
                 save_feed("feed delivery left off by init (host key mismatch)")
                 return 1
             d["host_key_fingerprint"] = key
-            keep_paused = pin == "unconfirmed"
+            if pin == "unconfirmed":
+                d["host_key_confirmed"] = False
+                keep_paused = True
+                p.say("  Nothing will log in to that server until you confirm the key: run init again once the "
+                      "vendor has given you their fingerprint.")
+            else:
+                d.pop("host_key_confirmed", None)
         else:
             d["transport"] = "none"
             keep_paused = True
             p.say("Delivery stays off until the server can be reached; run init again later.")
+        raw["delivery"] = d
+        save_feed("feed delivery set by init")
         if d["transport"] == "sftp":
             sacct = credentials.sftp_account(d["username"], d["host"])
             d.setdefault("secret", "keyring")
             if credentials.resolve(d["secret"], credentials.SFTP_SERVICE, sacct) and p.confirm(
                     "An SFTP password is already stored. Keep it?", True):
                 pass
-            elif credentials.keyring_available():
-                credentials.store(credentials.SFTP_SERVICE, sacct, p.secret(f"SFTP password for {sacct}"))
             else:
-                env = p.ask("No keyring here. Name of the environment variable that will hold the SFTP password",
-                            "FX_SFTP_PASSWORD", lambda a: None if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", a)
-                            else "Letters, digits and underscores.")
-                d["secret"] = f"env:{env}"
-    if d.get("transport") in ("sftp", "local"):
-        if d["transport"] == "sftp" and not d.get("upload_mode"):
-            d.pop("upload_mode", None)
+                ref = _secret_ref(p, credentials.SFTP_SERVICE, sacct, f"SFTP password for {sacct}",
+                                  "FX_SFTP_PASSWORD")
+                if ref is None:
+                    keep_paused = True
+                    p.say(f"  Store it later with `folio-exchange secret set {name}`; the feed stays paused until "
+                          f"then (`folio-exchange feeds resume {name}`).")
+                else:
+                    d["secret"] = ref
+    if d.get("transport") in ("sftp", "local") and d.get("host_key_confirmed") is not False:
         p.say("Testing the destination (nothing is uploaded) ...")
         try:
             test = load_feed_defaults(d)
@@ -438,12 +554,19 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
             keep_paused = True
     raw["delivery"] = d
 
-    # 7. Schedule
+    # 7. Schedule, and whether the feed runs
     current = raw.get("schedule") or recipe.data.get("default_schedule") or "weekly"
     raw["schedule"] = p.ask("\nWhen should it run? (e.g. weekly, daily 03:30, Sun 03:30, monthly 1 03:30, manual)",
                             current, _schedule_problem)
     p.say(f"  It will run {schedule.describe(schedule.parse(raw['schedule']))}.")
-    raw["enabled"] = not keep_paused
+    if keep_paused:
+        raw["enabled"] = False
+    elif existing and was_enabled is False and _paused_by_person(root, name):
+        raw["enabled"] = p.confirm("This feed was paused with `feeds pause`. Resume it now?", False)
+        if not raw["enabled"]:
+            p.say(f"  It stays paused; `folio-exchange feeds resume {name}` resumes it.")
+    else:
+        raw["enabled"] = True
     save_feed("feed delivery and schedule set by init")
     try:
         load_feed(feed_path, library, site.root)
@@ -466,17 +589,26 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
             user = p.ask("Mail server user name (blank if none)", "")
             if user:
                 email["username"] = user
-                credentials.store(credentials.SMTP_SERVICE, credentials.sftp_account(user, email["smtp_host"]),
-                                  p.secret(f"Mail password for {user}"))
+                ref = _secret_ref(p, credentials.SMTP_SERVICE, credentials.sftp_account(user, email["smtp_host"]),
+                                  f"Mail password for {user}", "FX_SMTP_PASSWORD")
+                email["secret"] = ref or "keyring"
+                if ref is None:
+                    p.say("  Store it later with `folio-exchange secret set smtp`.")
             alerts["email"] = email
         elif how == "webhook":
             alerts["webhook_format"] = p.choose("Which kind?", [("slack", "Slack (or another {text} webhook)"),
                                                                 ("teams", "Microsoft Teams workflow")], "slack")
-            credentials.store(credentials.WEBHOOK_SERVICE, root.resolve().name, p.secret("Webhook URL"))
-            alerts["webhook"] = "keyring"
+            ref = _secret_ref(p, credentials.WEBHOOK_SERVICE, root.resolve().name, "Webhook URL", "FX_WEBHOOK_URL")
+            if ref is None:
+                p.say("  No webhook was set up. Run init again, or `folio-exchange secret set webhook` after adding "
+                      "`webhook: keyring` under alerts in site.yaml.")
+                how = "none"
+            else:
+                alerts["webhook"] = ref
         if how != "none":
             raw_site["alerts"] = alerts
-            write_yaml(site_path, raw_site, SITE_HEADER)
+            raw_site.setdefault("folio", folio)
+            site_writer.write(raw_site)
             _audit(root, None, "alert settings written by init", {"file": SITE_FILE})
             site = load_site(root)
             if p.confirm("Send a test alert now?", True):
@@ -485,9 +617,8 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
 
     # 9. Done
     p.say(f"\nSaved {SITE_FILE} and feeds/{name}.yaml in {root}.")
-    if keep_paused:
-        p.say(f"The feed is paused until the delivery is confirmed. When it is, run `folio-exchange feeds resume "
-              f"{name}`.")
+    if not raw["enabled"]:
+        p.say(f"The feed is paused. When it is ready, run `folio-exchange feeds resume {name}`.")
     p.say("Next steps:")
     p.say(f"  1. folio-exchange -s \"{root}\" run {name}     (the first delivery is held for you to check)")
     p.say(f"  2. folio-exchange -s \"{root}\" release {name} (sends it once you are happy)")
@@ -495,6 +626,13 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
     if os.name == "nt":
         p.say(f"  Tip: setx FOLIO_EXCHANGE_SITE \"{root}\" lets you leave out -s in new windows.")
     return 0
+
+
+def _load_quiet(path: Path) -> dict:
+    try:
+        return read_yaml(path)
+    except ConfigError:
+        return {}
 
 
 def load_feed_defaults(d: dict) -> dict:

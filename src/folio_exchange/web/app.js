@@ -3,7 +3,9 @@
 "use strict";
 
 const TOKEN = document.querySelector('meta[name="fx-token"]').content;
-const S = { site: null, view: null, feed: null, tab: "overview", runs: [], result: null, busy: false };
+const S = { site: null, view: null, feed: null, tab: "overview", runs: [], results: {}, job: null, nav: 0,
+            bottom: null, logEl: null, timeEl: null };
+const busy = () => !!S.job;
 const $ = (id) => document.getElementById(id);
 
 // ------------------------------------------------------------ helpers
@@ -31,7 +33,11 @@ async function api(path, body) {
   };
   const r = await fetch(path, opts);
   const data = await r.json().catch(() => ({ error: r.statusText }));
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) {
+    const err = new Error(data.error || r.statusText);
+    err.status = r.status;
+    throw err;
+  }
   return data;
 }
 
@@ -75,6 +81,7 @@ function num(n) { return n === null || n === undefined ? "–" : Number(n).toLoc
 // ------------------------------------------------------------ routing
 function go(view) {
   S.view = view;
+  S.nav += 1;
   const hash = view.type === "feed" ? `#feed/${view.name}` : `#${view.type}`;
   if (location.hash !== hash) history.replaceState(null, "", hash);
   renderSidebar();
@@ -100,6 +107,7 @@ async function loadSite() {
   $("nav-connection-sub").textContent = s.folio.base_url.replace(/^https?:\/\//, "");
   $("sidebar-foot").textContent = `folio-exchange ${s.version}`;
   renderSidebar();
+  if (s.job && s.job.status === "running" && !S.job) follow(s.job);   // a reload or a second tab: reattach
 }
 
 function renderSidebar() {
@@ -111,7 +119,7 @@ function renderSidebar() {
     list.append(h("li", {}, h("button", {
       class: "nav-item", type: "button", "aria-current": current ? "true" : "false",
       onclick: () => go({ type: "feed", name: f.name }),
-    }, f.enabled ? badge(f.last_status) : badge("none", "Off"),
+    }, S.job && S.job.feed === f.name ? badge("running", "Busy") : f.enabled ? badge(f.last_status) : badge("none", "Off"),
       h("span", { class: "nav-text" }, h("span", { class: "nav-name", text: f.name }),
         h("span", { class: "nav-sub", text: f.title })))));
   }
@@ -140,42 +148,50 @@ function showProblem(name, problem) {
 
 // ------------------------------------------------------------ feed view
 async function openFeed(name) {
+  const nav = S.nav;
+  let feed, runs;
   try {
-    S.feed = await api(`/api/feeds/${name}`);
-    S.runs = await api(`/api/feeds/${name}/runs?limit=50`);
+    feed = await api(`/api/feeds/${name}`);
+    runs = await api(`/api/feeds/${name}/runs?limit=50`);
   } catch (e) {
+    if (nav !== S.nav) return;
     $("main").replaceChildren(h("div", { class: "empty" }, h("p", { class: "empty-title", text: "Could not open the feed" }),
       h("p", { class: "error-text", text: e.message })));
     return;
   }
-  if (!S.result || S.result.feed !== name) S.result = null;
+  if (nav !== S.nav) return;                 // the person has moved on: do not draw over the newer view
+  S.feed = feed;
+  S.runs = runs;
   renderFeed();
+}
+
+function closeMenus() {
+  for (const m of document.querySelectorAll(".menu")) m.hidden = true;
 }
 
 function renderFeed() {
   const f = S.feed;
   const menu = h("div", { class: "menu", hidden: true, role: "menu" },
-    h("button", { type: "button", role: "menuitem", onclick: () => { menu.hidden = true; startRun("run"); } },
+    h("button", { type: "button", role: "menuitem", onclick: () => { closeMenus(); startRun("run"); } },
       "Run", h("small", { text: "Update from FOLIO, build, check, then send (or hold for review)" })),
-    h("button", { type: "button", role: "menuitem", onclick: () => { menu.hidden = true; startRun("build"); } },
+    h("button", { type: "button", role: "menuitem", onclick: () => { closeMenus(); startRun("build"); } },
       "Build only", h("small", { text: "Update and build the files; send nothing" })));
   const caret = h("button", { class: "btn btn-primary btn-caret", type: "button", "aria-label": "More run choices",
-    "aria-haspopup": "menu", onclick: (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; } }, "▾");
-  document.addEventListener("click", () => { menu.hidden = true; }, { once: true });
+    "aria-haspopup": "menu", disabled: busy(), onclick: () => { menu.hidden = !menu.hidden; } }, "▾");
 
   const head = h("div", { class: "feed-head" },
     h("div", { class: "title-row" }, h("h1", { text: f.title }), h("span", { class: "sub", text: f.name }),
       h("div", { class: "spacer" }),
-      h("button", { class: "btn btn-ghost", type: "button", onclick: togglePause, disabled: S.busy },
+      h("button", { class: "btn btn-ghost", type: "button", onclick: togglePause, disabled: busy() },
         f.enabled ? "Pause" : "Resume")),
     h("div", { class: "request-bar" },
       h("div", { class: "request-field", title: f.delivery.where },
         h("span", { class: "request-recipe", text: f.recipe.ref }),
         h("span", { class: "request-dest", text: `→ ${f.delivery.where}` })),
-      h("button", { class: "btn", type: "button", id: "btn-preview", disabled: S.busy, onclick: () => startRun("preview") }, "Preview"),
+      h("button", { class: "btn", type: "button", id: "btn-preview", disabled: busy(),
+        title: "Preview (Ctrl+Enter): builds sample files and sends nothing", onclick: () => startRun("preview") }, "Preview"),
       h("div", { class: "split" },
-        h("button", { class: "btn btn-primary", type: "button", id: "btn-run", disabled: S.busy,
-          title: "Run (Ctrl+Enter)", onclick: () => startRun("run") }, "Run"),
+        h("button", { class: "btn btn-primary", type: "button", id: "btn-run", disabled: busy(), onclick: () => startRun("run") }, "Run"),
         caret, menu)),
     h("div", { class: "tabs", role: "tablist" },
       ["overview", "layout", "settings", "history"].map((t) => h("button", {
@@ -184,8 +200,15 @@ function renderFeed() {
       }, t[0].toUpperCase() + t.slice(1), t === "history" ? h("span", { class: "count", text: S.runs.length }) : null))));
 
   const top = h("div", { class: "pane pane-top", role: "tabpanel" }, tabContent());
-  const bottom = h("div", { class: "pane-bottom" }, resultPanel());
-  $("main").replaceChildren(head, h("div", { class: "split-v" }, top, bottom));
+  S.bottom = h("div", { class: "pane-bottom" });
+  $("main").replaceChildren(head, h("div", { class: "split-v" }, top, S.bottom));
+  renderResult();
+}
+
+function renderResult() {
+  if (!S.bottom || !S.bottom.isConnected || !S.feed) return;
+  S.logEl = S.timeEl = null;
+  S.bottom.replaceChildren(...[resultPanel()].flat(Infinity).filter(Boolean));
 }
 
 function tabContent() {
@@ -203,7 +226,7 @@ function overviewTab(f) {
     const why = w.held || w.error || (w.status === "built" ? "built without sending" : "");
     out.push(h("div", { class: "notice notice-held" }, badge(w.status),
       h("p", {}, h("b", { text: `The run of ${when(w.started)} is waiting for you. ` }), why),
-      h("button", { class: "btn btn-primary", type: "button", disabled: S.busy, onclick: reviewRelease }, "Review and send…")));
+      h("button", { class: "btn btn-primary", type: "button", disabled: busy(), onclick: reviewRelease }, "Review and send…")));
   } else if (f.last_run && f.last_run.status === "failed") {
     out.push(h("div", { class: "notice notice-failed" }, badge("failed"),
       h("p", {}, h("b", { text: "The last run failed. " }), f.last_run.error || "")));
@@ -276,20 +299,36 @@ function historyTab() {
 }
 
 // ------------------------------------------------------------ result panel
+function otherJobNotice() {
+  const j = S.job;
+  if (!j || j.feed === S.feed.name) return null;
+  const what = j.feed ? `${j.kind} of ${j.feed}` : "connection check";
+  return h("div", { class: "notice notice-info" }, h("p", { text: `A ${what} is running; other actions wait until it finishes.` }),
+    j.feed ? h("button", { class: "btn", type: "button", onclick: () => go({ type: "feed", name: j.feed }) }, "Open it") : null);
+}
+
 function resultPanel() {
-  const R = S.result;
+  const R = S.results[S.feed.name];
+  const notice = otherJobNotice();
   if (!R) {
-    return h("div", { class: "empty" }, h("p", { class: "empty-title", text: "No result yet" }),
-      h("p", { text: "Preview builds a sample from live data. Run updates from FOLIO, builds the files and sends them, or holds them for you to review." }));
+    return [notice, h("div", { class: "empty" }, h("p", { class: "empty-title", text: "No result yet" }),
+      h("p", { text: "Preview builds a sample from live data. Run updates from FOLIO, builds the files and sends them, or holds them for you to review." }))];
   }
   if (R.job && R.job.status === "running") {
+    S.timeEl = h("b", { text: `${R.job.seconds} s` });
+    S.logEl = h("pre", { class: "log", "data-job": R.job.id, text: R.job.log.join("\n") || "Starting…" });
     return [h("div", { class: "result-head" }, h("span", { class: "spinner" }),
       h("span", { class: "label", text: `${{ preview: "Previewing", run: "Running", build: "Building", release: "Sending", check: "Checking" }[R.job.kind] || "Working"}…` }),
-      h("span", { class: "stat" }, "Time ", h("b", { text: `${R.job.seconds} s` }))),
-    h("div", { class: "result-body" }, h("pre", { class: "log", text: R.job.log.join("\n") || "Starting…" }))];
+      h("span", { class: "stat" }, "Time ", S.timeEl),
+      h("span", { class: "stat", text: "Keep the folio-exchange window open until this finishes." })),
+    h("div", { class: "result-body" }, S.logEl)];
+  }
+  if (R.lost) {
+    return [notice, h("div", { class: "result-head" }, badge("none", "?"), h("span", { class: "label", text: "Lost contact" })),
+      h("div", { class: "result-body" }, h("p", { text: "Lost contact with folio-exchange while it was working; the run may have finished or stopped. Reload the page to see." }))];
   }
   if (R.error) {
-    return [h("div", { class: "result-head" }, badge("failed"), h("span", { class: "label", text: "Did not run" })),
+    return [notice, h("div", { class: "result-head" }, badge("failed"), h("span", { class: "label", text: "Did not run" })),
       h("div", { class: "result-body" }, h("p", { class: "error-text", text: R.error }),
         R.job && R.job.log.length ? h("pre", { class: "log", text: R.job.log.join("\n") }) : null)];
   }
@@ -304,16 +343,16 @@ function resultPanel() {
     h("span", { class: "stat" }, "Items ", h("b", { text: num(run.items ?? b.items_written) })),
     h("span", { class: "stat" }, "Files ", h("b", { text: (run.files || []).length })),
     S.feed && S.feed.waiting && S.feed.waiting.id === run.id
-      ? h("button", { class: "btn btn-primary", type: "button", disabled: S.busy, onclick: reviewRelease }, "Review and send…") : null,
+      ? h("button", { class: "btn btn-primary", type: "button", disabled: busy(), onclick: reviewRelease }, "Review and send…") : null,
     h("div", { class: "result-tabs", role: "tablist" }, tabs.map((t) => h("button", {
       class: "tab", type: "button", role: "tab", "aria-selected": R.tab === t ? "true" : "false",
-      onclick: () => { R.tab = t; renderFeed(); if (t === "rows") loadRows(); },
+      onclick: () => { R.tab = t; renderResult(); if (t === "rows") loadRows(); },
     }, t[0].toUpperCase() + t.slice(1)))));
   let body;
   if (R.tab === "summary") body = h("div", { class: "result-body" }, runSummary(run, rep));
   else if (R.tab === "log") body = h("div", { class: "result-body" }, h("pre", { class: "log", text: (R.job ? R.job.log : []).join("\n") }));
   else body = h("div", { class: "result-body flush" }, rowsView(R));
-  return [head, body];
+  return [notice, head, body];
 }
 
 function runSummary(run, rep) {
@@ -356,67 +395,126 @@ function rowsView(R) {
 }
 
 async function loadRows(output) {
-  const R = S.result;
+  const name = S.feed && S.feed.name;
+  const R = name && S.results[name];
   if (!R || !R.run || !R.run.id) return;
   try {
     R.rows = await api(`/api/runs/${R.run.id}/rows?limit=200${output ? `&output=${encodeURIComponent(output)}` : ""}`);
   } catch (e) {
     R.rowsError = e.message;
   }
-  if (S.result === R) renderFeed();
+  if (S.results[name] === R && S.feed && S.feed.name === name) renderResult();
 }
 
 async function showRun(id) {
+  const name = S.feed.name;
   const run = await api(`/api/runs/${id}`);
-  S.result = { feed: S.feed.name, run, report: run.report, tab: "rows" };
-  renderFeed();
-  loadRows();
+  S.results[name] = { run, report: run.report, tab: "rows" };
+  if (S.feed && S.feed.name === name) {
+    renderResult();
+    loadRows();
+  }
 }
 
 // ------------------------------------------------------------ actions
+function showProgress(j, fresh) {
+  // Update the open result panel in place: no redraw, so scrolling, selection and focus stay put.
+  if (S.timeEl && S.timeEl.isConnected) S.timeEl.textContent = `${j.seconds} s`;
+  const pre = S.logEl;
+  if (!pre || !pre.isConnected || pre.dataset.job !== j.id || !fresh.length) return;
+  const box = pre.parentElement;
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+  pre.textContent = pre.textContent === "Starting…" ? fresh.join("\n") : `${pre.textContent}\n${fresh.join("\n")}`;
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
 async function watch(job) {
   let since = 0;
-  const lines = [];
+  let misses = 0;
+  const lines = [...(job.log || [])];
+  since = job.log_total || lines.length;
   while (true) {
-    const j = await api(`/api/jobs/${job.id}?since=${since}`);
-    lines.push(...j.log);
+    let j;
+    try {
+      j = await api(`/api/jobs/${job.id}?since=${since}`);
+      misses = 0;
+    } catch (e) {
+      if (++misses > 3) throw e;          // a brief hiccup is retried; a dead server is reported
+      await sleep(1000);
+      continue;
+    }
+    const fresh = j.log;
+    lines.push(...fresh);
     since = j.log_total;
     j.log = lines;
-    if (S.result && S.result.job && S.result.job.id === j.id) {
-      S.result.job = j;
-      if (S.view && S.view.type === "feed") renderFeed();
+    if (j.feed && S.results[j.feed] && S.results[j.feed].job && S.results[j.feed].job.id === j.id) S.results[j.feed].job = j;
+    if (j.status === "running") {
+      S.job = j;
+      showProgress(j, fresh);
+      await sleep(700);
+      continue;
     }
-    if (j.status !== "running") return j;
-    await sleep(700);
+    return j;
   }
 }
 
-async function startRun(kind, body) {
-  if (S.busy) return;
-  const name = S.feed.name;
-  S.busy = true;
+async function follow(job) {
+  // Follow a job to its end (one started here, or found running after a reload) and show its result.
+  S.job = job;
+  if (job.feed) S.results[job.feed] = { job: { ...job, log: job.log || [] }, tab: "rows" };
+  renderSidebar();
+  if (S.view && S.view.type === "feed" && S.feed) renderFeed();
+  let done = null;
   try {
-    const job = await api(`/api/feeds/${name}/${kind}`, body || {});
-    S.result = { feed: name, job, tab: "rows" };
-    renderFeed();
-    const done = await watch(job);
+    done = await watch(job);
+  } catch (e) {
+    if (job.feed) S.results[job.feed] = { lost: true };
+  }
+  S.job = null;
+  if (done && job.feed) {
     if (done.status === "error") {
-      S.result = { feed: name, job: done, error: done.error };
+      S.results[job.feed] = { job: done, error: done.error };
     } else {
-      S.result = { feed: name, job: done, run: done.result.run, report: done.result.report, tab: "rows" };
+      S.results[job.feed] = { job: done, run: done.result.run, report: done.result.report, tab: "rows" };
       toast({ success: "Delivered.", held: "Held for your review.", blocked: "Blocked: see the summary.", failed: "The run failed: see the summary.",
               built: "Built. Nothing was sent.", preview: "Preview ready." }[done.result.status] || done.result.status);
     }
-  } catch (e) {
-    S.result = { feed: name, error: e.message };
-  } finally {
-    S.busy = false;
-    await loadSite();
-    if (S.view && S.view.type === "feed" && S.view.name === name) {
-      await openFeed(name);
-      if (S.result && S.result.run) loadRows();
-    }
   }
+  try {
+    await loadSite();
+  } catch (e) {
+    toast(e.message);
+  }
+  if (S.view && S.view.type === "feed" && S.feed) {
+    await openFeed(S.feed.name);
+    const R = S.results[S.feed.name];
+    if (R && R.run && !R.rows) loadRows();
+  } else {
+    renderSidebar();
+  }
+  return done;
+}
+
+async function startRun(kind, body) {
+  if (busy()) {
+    toast("Another action is running; wait for it to finish.");
+    return;
+  }
+  const name = S.feed.name;
+  let job;
+  try {
+    job = await api(`/api/feeds/${name}/${kind}`, body || {});
+  } catch (e) {
+    if (e.status === 409) {               // started elsewhere (another tab): show that one instead of a failure
+      toast(e.message);
+      await loadSite();
+    } else {
+      S.results[name] = { error: e.message };
+      renderResult();
+    }
+    return;
+  }
+  await follow(job);
 }
 
 async function togglePause() {
@@ -458,7 +556,12 @@ async function reviewRelease() {
   ].filter(Boolean));
   dlg.returnValue = "";
   dlg.onclose = () => {
-    if (dlg.returnValue === "send") startRun("release", { run_dir: s.run_dir });
+    if (dlg.returnValue !== "send") return;
+    if (busy()) {
+      toast("Another action is running; nothing was sent.");
+      return;
+    }
+    startRun("release", { run_dir: s.run_dir });
   };
   dlg.showModal();
 }
@@ -467,7 +570,7 @@ async function reviewRelease() {
 let lastCheck = null;
 function renderConnection() {
   const s = S.site;
-  const run = h("button", { class: "btn btn-primary", type: "button", disabled: S.busy, onclick: runCheck }, "Check connection");
+  const run = h("button", { class: "btn btn-primary", type: "button", disabled: busy(), onclick: runCheck }, "Check connection");
   const parts = [h("div", { class: "feed-head" }, h("div", { class: "title-row" }, h("h1", { text: "Connection" }),
       h("span", { class: "sub", text: "FOLIO" }), h("div", { class: "spacer" }), run))];
   const body = [kv([
@@ -499,30 +602,42 @@ function renderConnection() {
 }
 
 async function runCheck() {
-  if (S.busy) return;
-  S.busy = true;
+  if (busy()) {
+    toast("Another action is running; wait for it to finish.");
+    return;
+  }
+  let job;
+  try {
+    job = await api("/api/check", {});
+  } catch (e) {
+    if (e.status === 409) {
+      toast(e.message);
+      await loadSite();
+      return;
+    }
+    lastCheck = { error: e.message };
+    go({ type: "connection" });
+    return;
+  }
   lastCheck = { running: true };
   go({ type: "connection" });
-  try {
-    const done = await watch(await api("/api/check", {}));
-    lastCheck = done.status === "error" ? { error: done.error } : { result: done.result, seconds: done.seconds };
-  } catch (e) {
-    lastCheck = { error: e.message };
-  } finally {
-    S.busy = false;
-    if (S.view && S.view.type === "connection") renderConnection();
-  }
+  const done = await follow(job);
+  lastCheck = !done ? { error: "Lost contact with folio-exchange during the check. Reload the page." }
+    : done.status === "error" ? { error: done.error } : { result: done.result, seconds: done.seconds };
+  if (S.view && S.view.type === "connection") renderConnection();
 }
 
 async function renderActivity() {
+  const nav = S.nav;
   $("main").replaceChildren(h("div", { class: "pane" }, h("span", { class: "spinner" })));
   let rows = [];
   try {
     rows = await api("/api/audit?limit=100");
   } catch (e) {
-    $("main").replaceChildren(h("div", { class: "pane" }, h("p", { class: "error-text", text: e.message })));
+    if (nav === S.nav) $("main").replaceChildren(h("div", { class: "pane" }, h("p", { class: "error-text", text: e.message })));
     return;
   }
+  if (nav !== S.nav) return;
   $("main").replaceChildren(h("div", { class: "feed-head" }, h("div", { class: "title-row" }, h("h1", { text: "Activity" }),
       h("span", { class: "sub", text: "settings changes, releases, overrides and secrets stored" }))),
     h("div", { class: "pane" }, rows.length ? h("table", {}, h("thead", {}, h("tr", {}, ["When", "Who", "Feed", "What", "Details"].map((t) => h("th", { text: t })))),
@@ -537,7 +652,14 @@ $("btn-check").addEventListener("click", runCheck);
 $("nav-connection").addEventListener("click", () => go({ type: "connection" }));
 $("nav-activity").addEventListener("click", () => go({ type: "activity" }));
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && S.view && S.view.type === "feed" && !S.busy) startRun("run");
+  if (e.key === "Escape") closeMenus();
+  if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+  // Ctrl+Enter previews (it never sends anything), and never while a dialog or a form field has the keys.
+  if ($("modal").open || (e.target.closest && e.target.closest("dialog, input, select, textarea"))) return;
+  if (S.view && S.view.type === "feed" && S.feed && !busy()) startRun("preview");
+});
+document.addEventListener("click", (e) => {
+  if (!(e.target.closest && e.target.closest(".split"))) closeMenus();
 });
 window.addEventListener("hashchange", () => { const v = fromHash(); if (v) go(v); });
 

@@ -30,6 +30,9 @@
         "include_suppressed_items": {
           "type": "boolean"
         },
+        "include_suppressed_holdings": {
+          "type": "boolean"
+        },
         "include_items_without_barcode": {
           "type": "boolean"
         },
@@ -399,6 +402,10 @@
             "null"
           ],
           "pattern": "^SHA256:"
+        },
+        "host_key_confirmed": {
+          "type": "boolean",
+          "description": "false until the fingerprint is confirmed with the vendor; nothing logs in while it is false"
         },
         "known_hosts": {
           "type": [

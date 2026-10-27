@@ -16,6 +16,7 @@ import logging
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import requests
@@ -29,7 +30,11 @@ RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
 
 
 class FolioError(FxError):
-    pass
+    """A FOLIO request failed. ``status`` is the HTTP status when FOLIO answered, else None."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class LoginFailed(FolioError):
@@ -76,8 +81,8 @@ def _cql_quote(value: str) -> str:
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-class _TransientLoginError(Exception):
-    """Login hit a temporary server error; retried by request()."""
+class _TransientLoginError(FolioError):
+    """Login hit a temporary server error; retried by request() and connect()."""
 
 
 class FolioClient:
@@ -119,6 +124,7 @@ class FolioClient:
         self._token: str | None = None
         self._expires: datetime | None = None
         self._reached = False                      # has FOLIO ever answered this client?
+        self.clock_offset: timedelta | None = None  # FOLIO's clock minus this computer's
         self._refused: LoginFailed | None = None
 
     # ------------------------------------------------------------------ auth
@@ -142,6 +148,7 @@ class FolioClient:
         except requests.Timeout:
             raise _TransientLoginError("login timed out") from None
         self._reached = True
+        self._note_clock(resp)
         _no_redirect(resp)
         if resp.status_code in RETRY_STATUSES:
             raise _TransientLoginError(f"login returned HTTP {resp.status_code}")
@@ -167,6 +174,45 @@ class FolioClient:
         self.session.headers["x-okapi-token"] = self._token
         log.debug("Logged in; token expires %s", self._expires)
 
+    def connect(self) -> None:
+        """Log in now, retrying a busy gateway the way request() does. For check, init and the page, which
+        talk to FOLIO before anything else and should never end in a traceback."""
+        attempt = 0
+        while True:
+            try:
+                self.login()
+                return
+            except _TransientLoginError as exc:
+                attempt += 1
+                if attempt > self.max_retries:
+                    raise FolioError(
+                        f"FOLIO did not answer the login properly ({exc}); the gateway may be busy or restarting. "
+                        "Try again in a few minutes. If it continues, ask your FOLIO host.") from None
+                wait = min(60, 2**attempt)
+                log.warning("Login: %s; retrying in %ss", exc, wait)
+                time.sleep(wait)
+
+    def _note_clock(self, resp) -> None:
+        """Remember how far this computer's clock is from FOLIO's (from the HTTP Date header)."""
+        stamp = getattr(resp, "headers", {}).get("Date") if hasattr(resp, "headers") else None
+        if not stamp or not isinstance(stamp, str):
+            return
+        try:
+            server = parsedate_to_datetime(stamp)
+        except (TypeError, ValueError):
+            return
+        if server.tzinfo is None:
+            return
+        offset = server - datetime.now(timezone.utc)
+        if self.clock_offset is None and abs(offset) > timedelta(minutes=5):
+            log.warning("This computer's clock is %d minutes %s FOLIO's; FOLIO's time is used for syncing",
+                        abs(int(offset.total_seconds() // 60)), "behind" if offset > timedelta(0) else "ahead of")
+        self.clock_offset = offset
+
+    def server_now(self) -> datetime:
+        """FOLIO's current time, as far as its last answer showed; this computer's time before any answer."""
+        return datetime.now(timezone.utc) + (self.clock_offset or timedelta(0))
+
     def _ensure_token(self) -> None:
         if self._token is None or (
             self._expires is not None and datetime.now(timezone.utc) > self._expires - timedelta(seconds=60)
@@ -185,6 +231,7 @@ class FolioClient:
                 resp = self.session.request(method, url, params=params, json=json, timeout=self.timeout,
                                             allow_redirects=False)
                 self._reached = True
+                self._note_clock(resp)
                 _no_redirect(resp)
                 if resp.status_code == 401 and not relogged:
                     relogged = True
@@ -193,7 +240,8 @@ class FolioClient:
                 if resp.ok:
                     return resp.json() if resp.content else None
                 if resp.status_code not in RETRY_STATUSES:
-                    raise FolioError(f"{method} {path} -> {resp.status_code}: {resp.text[:500]}")
+                    raise FolioError(f"{method} {path} -> {resp.status_code}: {resp.text[:500]}",
+                                     status=resp.status_code)
                 err: Any = f"HTTP {resp.status_code}"
             except _TransientLoginError as exc:
                 err = exc
@@ -280,3 +328,27 @@ def _parse_dt(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def probe(client: FolioClient, read_names) -> list[dict]:
+    """Read one page of every endpoint ``read_names`` need, plus all reference data, and say for each whether
+    it worked: ``ok`` (with a record count), ``denied`` (FOLIO refused: a permission is missing) or ``failed``
+    (anything else: a wrong path, a module that is not there, a server error). Used by check, init and the page."""
+    wanted = set(read_names)
+    targets = [(n, reads.READS[n].path, reads.READS[n].permission) for n in reads.ENTITY_ORDER + ("marc",)
+               if n in wanted]
+    targets += [(kind, path, perm) for kind, (path, _key, perm) in reads.REFDATA.items()]
+    out = []
+    for name, path, perm in targets:
+        row: dict[str, Any] = {"name": name, "path": path, "permission": perm, "count": None, "error": None}
+        try:
+            if path == reads.READS["marc"].path:
+                client.get(path, {"limit": 0})
+            else:
+                row["count"] = client.count(path)
+            row["status"] = "ok"
+        except FolioError as exc:
+            row["status"] = "denied" if exc.status in (401, 403) else "failed"
+            row["error"] = str(exc)[:300]
+        out.append(row)
+    return out

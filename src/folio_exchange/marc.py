@@ -54,10 +54,18 @@ def shorten_long_fields(rec: Record) -> int:
 
 def from_srs(content: dict) -> Record | None:
     try:
-        return next(iter(JSONReader(json.dumps(content))))
+        rec = next(iter(JSONReader(json.dumps(content))))
     except Exception as exc:  # malformed SRS content: report and skip
         log.warning("Could not parse SRS MARC: %s", exc)
         return None
+    if rec is None:
+        return None
+    for f in rec.fields:                  # SRS can hold null or numeric subfield values
+        if not f.control_field:
+            f.subfields = [Subfield(str(s.code), "" if s.value is None else str(s.value)) for s in f.subfields]
+        elif f.data is not None and not isinstance(f.data, str):
+            f.data = str(f.data)
+    return rec
 
 
 def _sf(pairs: Iterable[tuple[str, str | None]]) -> list[Subfield]:

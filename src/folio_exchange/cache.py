@@ -46,10 +46,14 @@ class Cache:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path)
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA synchronous=NORMAL")
-        self.db.executescript(SCHEMA)
-        self.db.commit()
+        try:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=NORMAL")
+            self.db.executescript(SCHEMA)
+            self.db.commit()
+        except sqlite3.DatabaseError:
+            self.db.close()                    # let the caller move a damaged file aside (Windows locks open files)
+            raise
 
     def close(self) -> None:
         self.db.close()
