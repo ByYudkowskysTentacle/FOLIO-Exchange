@@ -53,12 +53,15 @@ def call(app, path, body=None, *, token=True, host=None, origin=None):
 
 
 def wait(app, job):
-    for _ in range(300):
+    # no_sleep patches time.sleep for the whole process, so wait on the clock with an Event instead
+    deadline = time.monotonic() + 60
+    pause = threading.Event()
+    while time.monotonic() < deadline:
         status, j, _ = call(app, f"/api/jobs/{job['id']}")
         assert status == 200
         if j["status"] != "running":
             return j
-        time.sleep(0.1)
+        pause.wait(0.1)
     raise AssertionError("job did not finish")
 
 
