@@ -69,7 +69,7 @@ Answer the questions:
 | Question | Answer for the dry run |
 | --- | --- |
 | FOLIO API address, tenant id, user name | from your administrator |
-| FOLIO password | typed at the prompt (not shown); stored in Windows Credential Manager |
+| FOLIO password | typed at the prompt (not shown); stored in Windows Credential Manager only once FOLIO accepts it. If you mistype it, run `init` again |
 | Which vendor feed | 1, collectionHQ Academic |
 | A short name for this feed | `chq` (press Enter) |
 | Leave out any locations | the locations you would not send to collectionHQ, such as online resources; `none` is fine for a first look |
@@ -126,7 +126,7 @@ If someone is helping you review the results, share the console output and `run-
 | Message | What to do |
 | --- | --- |
 | `Cannot reach FOLIO at …` | Check the API address and that this PC is on the library network or VPN. |
-| `FOLIO refused the login …` | Check the user name and tenant id; store the password again with `folio-exchange -s … secret set folio`. FOLIO-Exchange tries a refused password only once per run, so it cannot lock the account. |
+| `FOLIO refused the login …` | Check the user name and tenant id; during setup run `init` again and answer **n** to "Keep it?" to type the password again (or, once setup is done, `folio-exchange -s … secret set folio`). FOLIO-Exchange tries a refused password only once per run, so it cannot lock the account. |
 | `DENIED … the account lacks …` | Send the listed permissions to your administrator. |
 | `Item note type … not found` | The legacy note type name does not match FOLIO; re-run `init` and pick it from the list. |
 
