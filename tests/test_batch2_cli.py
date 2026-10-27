@@ -148,9 +148,9 @@ def test_the_schtasks_line_has_a_powershell_and_a_command_prompt_form(tmp_path):
 
 
 def test_win_quote_keeps_a_trailing_backslash_from_eating_the_quote():
-    assert schedule._win_quote("C:\\") == '"C:\\\\"'
-    assert schedule._win_quote('a "b" c') == '"a \\"b\\" c"'
-    assert schedule._win_quote("C:\\my library") == '"C:\\my library"'
+    assert schedule.win_quote("C:\\") == '"C:\\\\"'
+    assert schedule.win_quote('a "b" c') == '"a \\"b\\" c"'
+    assert schedule.win_quote("C:\\my library") == '"C:\\my library"'
 
 
 def _crt_args(line: str) -> list[str]:

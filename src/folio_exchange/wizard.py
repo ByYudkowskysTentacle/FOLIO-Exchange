@@ -639,6 +639,7 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         p.say(f"  4. {fx} history   (the runs; history --show <number> for one)")
         p.say("When the vendor's delivery details are ready, run init again and choose how the files are "
               "delivered. The first real delivery is then held for you to check and release.")
+    p.say(f"  Tip: `{fx} launcher` puts a file on your desktop that opens the page for this site.")
     if os.name == "nt":
         p.say(f"  Tip: setx FOLIO_EXCHANGE_SITE \"{root}\" lets you leave out -s in new windows.")
     return 0

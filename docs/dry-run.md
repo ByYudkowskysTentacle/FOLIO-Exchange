@@ -106,7 +106,7 @@ The files land in `C:\FOLIO-Exchange\mylibrary\out\chq\<date-time>\`: `chq_bibs_
 
 ## 4. What to look at
 
-Prefer a page to the command line? `folio-exchange -s C:\FOLIO-Exchange\mylibrary ui` opens one in your browser, with the runs, their rows and the log.
+Prefer a page to the command line? `folio-exchange -s C:\FOLIO-Exchange\mylibrary ui` opens one in your browser, with the runs, their rows and the log. To open it later without typing anything, run `folio-exchange -s C:\FOLIO-Exchange\mylibrary launcher` once: it puts `FOLIO-Exchange (mylibrary).cmd` on your desktop. Double-click it to open the page, and keep the black window it opens while you use the page (press Ctrl+C in it to stop). Double-clicking it again while the page is open just brings the page back up.
 
 ```powershell
 folio-exchange -s C:\FOLIO-Exchange\mylibrary history

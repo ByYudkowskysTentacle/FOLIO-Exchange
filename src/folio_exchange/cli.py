@@ -11,7 +11,6 @@ import getpass
 import json
 import logging
 import platform
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -716,8 +715,9 @@ def cmd_schedule(args) -> int:
         print(f"  {f.name:<16} {schedule.describe(s)}"
               + (f"; next {nxt.astimezone(site.timezone):%a %Y-%m-%d %H:%M}" if nxt and f.enabled else "")
               + ("" if f.enabled else " [paused]"))
-    exe = shutil.which("folio-exchange") or str(Path(sys.executable).with_name(
-        "folio-exchange.exe" if platform.system() == "Windows" else "folio-exchange"))
+    from .launcher import program_path
+
+    exe = program_path()
     system = platform.system()
     user = None
     if system == "Windows":
@@ -752,6 +752,24 @@ def cmd_ui(args) -> int:
     from .ui import serve
 
     serve(find_site(args.site), port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
+def cmd_launcher(args) -> int:
+    from . import launcher
+
+    site = _site(args)
+    if args.folder:
+        folder = Path(args.folder).expanduser().resolve()
+        if not folder.is_dir():
+            raise ConfigError(f"No folder {folder}")
+    else:
+        folder = launcher.desktop() or site.root
+    path = launcher.write(site.root, folder, launcher.program_path(), platform.system())
+    print(f"Made {path}")
+    print(f"Double-click it to open the page for {site.root}. Its window keeps the page running; press Ctrl+C "
+          "there to stop. If FOLIO-Exchange is installed somewhere else later, or the site folder moves, run "
+          "this command again.")
     return 0
 
 
@@ -841,8 +859,10 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("target", nargs="?", help="folio, smtp, webhook, or a feed name")
     sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
     ui = sub.add_parser("ui", help="open a simple page in your browser to look at feeds and run them")
-    ui.add_argument("--port", type=int, default=8765, help="port on this computer (default 8765)")
+    ui.add_argument("--port", type=int, help="port on this computer (default 8765, or a free one if it is taken)")
     ui.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    la = sub.add_parser("launcher", help="make a file to double-click that opens the page for this site")
+    la.add_argument("--folder", help="where to put it (default: your desktop)")
     return p
 
 
@@ -850,7 +870,7 @@ HANDLERS = {
     "init": cmd_init, "check": cmd_check, "preview": cmd_preview, "run": cmd_run, "release": cmd_release,
     "deliver": cmd_release, "sync": cmd_sync, "build": cmd_build, "feeds": cmd_feeds, "recipes": cmd_recipes,
     "upgrade": cmd_upgrade, "fields": cmd_fields, "history": cmd_history, "secret": cmd_secret,
-    "schedule": cmd_schedule, "ui": cmd_ui,
+    "schedule": cmd_schedule, "ui": cmd_ui, "launcher": cmd_launcher,
 }
 NO_SITE = {"init", "fields", "recipes"}
 
