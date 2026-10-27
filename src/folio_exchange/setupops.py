@@ -32,7 +32,7 @@ from .client import FolioClient, probe, tls_verify
 from .config import SITE_DEFAULTS, SITE_FILE, Site, load_site, merge, read_yaml, write_yaml
 from .errors import ConfigError, FxError, RecipeError
 from .history import History
-from .recipe import ID_RE, RESERVED_FEED_NAMES, Recipe, RecipeLibrary, load_all
+from .recipe import ID_RE, RESERVED_FEED_NAMES, Recipe, RecipeLibrary, collision_with, load_all
 
 SITE_HEADER = """FOLIO-Exchange site settings, written by `folio-exchange init`.
 No passwords live here: see `folio-exchange secret status`."""
@@ -396,10 +396,11 @@ def _save_checked(site: Site, library: RecipeLibrary, name: str, path: Path, raw
                 raise ConfigError(f"There is already a feed called {name}; choose another name.")
             raise ConfigError(f"feeds/{name}.yaml changed while this was being saved (by hand, or in another "
                               "window). Nothing was saved: reload the feed and make the change again.")
-        before = {n for n in load_all(site, library)[1] if n != name}   # feeds that were already broken
+        was_feeds, was_errors = load_all(site, library)
+        before = {n for n in was_errors if n != name}   # feeds that were already broken
         backup = write_settings(path, raw, FEED_HEADER)
         try:
-            _feeds, errors = load_all(site, library)
+            feeds, errors = load_all(site, library)
         except Exception:
             _restore(path, old, backup)
             raise
@@ -408,6 +409,15 @@ def _save_checked(site: Site, library: RecipeLibrary, name: str, path: Path, raw
             _restore(path, old, backup)
             problem = broken.get(name) or next(iter(broken.values()))
             raise ConfigError(f"Not saved, because the feed would not load:\n{problem}")
+        clash = _clash(name, feeds)          # loading compares enabled feeds only; a paused one is checked here
+        if clash and clash != _clash(name, was_feeds):
+            _restore(path, old, backup)
+            raise ConfigError(f"Not saved: {clash}")
+
+
+def _clash(name: str, feeds: list) -> str | None:
+    mine = next((f for f in feeds if f.name == name), None)
+    return collision_with(mine, feeds) if mine else None
 
 
 def _restore(path: Path, old: bytes | None, backup: Path | None) -> None:
@@ -444,6 +454,7 @@ def add_feed(site: Site, library: RecipeLibrary, name: str, uses: str, values: d
     if any(str(_quiet(q).get("uses", "")).split("@")[0] == recipe.id for q in others):
         raw["file_prefix"] = name                  # never overwrite another feed's files at the same vendor
     _apply(raw, dict(values or {}), recipe)
+    raw.setdefault("schedule", str(recipe.data.get("default_schedule") or "manual"))   # a later recipe never moves it
     raw["delivery"] = {"transport": "none"}
     site.feeds_dir.mkdir(parents=True, exist_ok=True)
     _save_checked(site, library, name, path, raw, None)

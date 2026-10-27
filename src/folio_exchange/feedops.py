@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import runner, schedule
+from . import runner, schedule, sources
 from .config import read_yaml, rewrite_key
 from .errors import ConfigError
 from .history import History
@@ -229,6 +229,9 @@ def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors:
             test = f"Test it with `folio-exchange check --delivery {f.name}`, then" if f.delivers else "Resume it with"
             out.append(_w("note", "paused", f"Paused: scheduled runs skip it. {test} "
                           f"`folio-exchange feeds resume {f.name}`.", f.name))
+        local = sources.local_minor_warning(site, library, f)
+        if local:
+            out.append(_w("warning", "recipe-local-substance", local, f.name))
         newer = library.newer_major(f.uses)
         if newer:
             out.append(_w("note", "recipe-update", f"{newer.ref} is available and waits for review: "
