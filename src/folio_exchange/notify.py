@@ -4,7 +4,7 @@ Also the heartbeat (SPEC-6): a monitor's ping address requested after every sche
 notices when the passes stop.
 
 Alerting never raises: a broken alert channel is logged, and the run's own status
-stands. Neither the webhook or heartbeat URL nor any password is ever logged or included in a
+stands (the runner keeps an alert that no channel took and sends it on a later pass). Neither the webhook or heartbeat URL nor any password is ever logged or included in a
 message. Both URLs must be https (plain http only to this computer), and redirects are never followed.
 """
 from __future__ import annotations
@@ -47,6 +47,11 @@ def _answer_problem(resp: requests.Response) -> str | None:
     if not resp.ok:
         return f"returned HTTP {resp.status_code}"
     return None
+
+
+def has_channel(alerts: dict) -> bool:
+    """True when a webhook or an email is set up, so an alert has somewhere to go."""
+    return bool((alerts or {}).get("webhook") or (alerts or {}).get("email"))
 
 
 def should_alert(alerts: dict, status: str) -> bool:
