@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import runner, schedule
+from . import credentials, runner, schedule
 from .config import read_yaml, rewrite_key
 from .errors import ConfigError
 from .history import History
@@ -165,15 +165,32 @@ def task_status(hist: History, feeds: list[Feed], now: datetime, *, lock_path: P
     stamp = last.astimezone(timezone.utc).isoformat(timespec="seconds")
     if scheduled and age > TASK_STALE_AFTER:
         text = (f"The scheduled task last ran {ago(age)} ago, so no feed has run on its schedule and no alert "
-                "could be sent since. Check that this computer is on and awake and that the task is enabled in "
-                "Task Scheduler. After a change of Windows password, the task needs the new one: register it "
-                "again with `folio-exchange schedule --register`.")
+                "could be sent since. Check that this computer is on and awake, that it is not running on battery "
+                "(a task registered by an older version never starts on battery power), and that the task is "
+                "enabled in Task Scheduler. After a change of Windows password, or to let it run on battery, "
+                "register it again with `folio-exchange schedule --register`.")
         return {"state": "stale", "last": stamp, "text": text}
     return {"state": "ok", "last": stamp, "text": f"The scheduled task last ran {ago(age)} ago."}
 
 
 def _w(level: str, code: str, text: str, feed: str | None = None) -> dict:
     return {"level": level, "code": code, "text": text, "feed": feed}
+
+
+def alert_secret_warnings(site: Site) -> list[dict]:
+    """A warning for alerts.webhook or alerts.heartbeat whose URL cannot be found. Keyring entries are named
+    after the site folder, so renaming or copying the folder loses them, and every alert is then dropped."""
+    out = []
+    for what, service, lost in (("webhook", credentials.WEBHOOK_SERVICE, "failure alerts are not sent"),
+                                ("heartbeat", credentials.HEARTBEAT_SERVICE, "the heartbeat monitor hears nothing")):
+        ref = site.alerts.get(what)
+        if ref and not credentials.resolve(ref, service, site.name):
+            out.append(_w("warning", "alert-secret-missing",
+                          f"alerts.{what} is set, but its URL was not found "
+                          f"({credentials.source(ref, service, site.name)}), so {lost}. Store it with "
+                          f"`folio-exchange secret set {what}`. A URL in the keyring belongs to the site folder's "
+                          f"name ({site.name}): after renaming or copying the folder, store it again."))
+    return out
 
 
 def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors: dict[str, str], hist: History,
@@ -199,6 +216,7 @@ def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors:
                       "`folio-exchange check --alerts`."))
     elif site.alerts.get("on") == "never":
         out.append(_w("warning", "alerts-never", "alerts.on is never: failed runs send no alert."))
+    out.extend(alert_secret_warnings(site))
     task = task_status(hist, feeds, now, lock_path=site.lock_path)
     if task["state"] == "stale":
         out.append(_w("warning", "task-stale", task["text"]))

@@ -92,15 +92,19 @@ def _major(version: str | None) -> str | None:
     return str(version).split(".", 1)[0] if version else None
 
 
-def hold_reason(hist: History, feed: Feed) -> str | None:
+def hold_reason(hist: History, feed: Feed, source: str | None = None) -> str | None:
     """Why the next delivery must wait for a person, or None. A first delivery to a destination, the first
-    after a major recipe version change, and the first whose layout differs from the last delivery to that
-    destination are held. A delivery recorded before layouts were kept has none: that alone never holds."""
+    after a major recipe version change, the first whose layout differs from the last delivery to that
+    destination, and the first from another FOLIO (``source``, as ``folio_source`` gives it) are held. A
+    delivery recorded before layouts or sources were kept has none: that alone never holds."""
     dest = delivery.destination_key(feed.delivery)
     last = hist.last_delivered(feed.name, dest)
     if last is None:
         return f"first delivery to {dest}"
     reasons = []
+    before = last.get("folio_source") or (last.get("report") or {}).get("folio_source")
+    if source and before and source != before:
+        reasons.append(f"first delivery from FOLIO {source}; the last came from {before}")
     if _major(last.get("recipe_version")) != _major(feed.recipe.version_str):
         reasons.append(f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
                        f"{last.get('recipe_version')})")
@@ -265,12 +269,14 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
     run_dir = _new_run_dir(out_base, hist=hist)
     dest = delivery.destination_key(feed.delivery)
     previous = hist.last_run(feed.name)
-    run_id = hist.start_run(feed.name, feed.recipe.id, feed.recipe.version_str, opts.trigger, run_dir, dest)
+    source = folio_source(site)
+    run_id = hist.start_run(feed.name, feed.recipe.id, feed.recipe.version_str, opts.trigger, run_dir, dest,
+                            folio_source=source)
     report: dict = {
         "version": __version__, "feed": feed.name, "recipe": feed.recipe.id,
         "recipe_version": feed.recipe.version_str, "trigger": opts.trigger, "started": now_utc().isoformat(),
         "run_dir": str(run_dir), "destination": delivery.describe_destination(feed.delivery),
-        "recipe_sha256": recipe_digest(feed.recipe), "layout": layout_signature(feed),
+        "recipe_sha256": recipe_digest(feed.recipe), "layout": layout_signature(feed), "folio_source": source,
     }
     if site.folio.get("verify_tls") is False:
         report["tls_unchecked"] = True                 # FOLIO's certificate was not checked (folio.verify_tls)
@@ -283,8 +289,9 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
             report["sync"] = sync_report
         elif not opts.skip_sync:
             report["sync"] = sync(site, set(feed.reads), opts.full)
-        cache = Cache(site.cache_path)
+        cache = None
         try:
+            cache = Cache(site.cache_path)
             other = other_folio(cache, site)
             if other:
                 raise FxError(f"The local cache holds records from {other}, not {folio_source(site)}. Run the feed "
@@ -295,12 +302,16 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
                               "--skip-sync, or run `folio-exchange sync` first.")
             rep = build(cache, feed, run_dir)
         except sqlite3.DatabaseError as exc:
-            cache.close()
+            if cache is not None:
+                cache.close()
+            if not cache_damaged(exc):
+                raise FxError(cache_problem(site, exc)) from None
             moved = quarantine_cache(site)
             raise FxError(f"The local cache was damaged ({exc}); it was moved aside to {moved.name}. Run the feed "
                           "again without --skip-sync to download everything afresh.") from None
         finally:
-            cache.close()
+            if cache is not None:
+                cache.close()
         report["build"] = as_dict(rep)
         warnings = marc_warnings(site, rep)
         if warnings:
@@ -320,7 +331,7 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         elif not feed.delivers:
             log.info("Feed %s has transport none; files stay in %s", feed.name, run_dir)
         else:
-            reason = hold_reason(hist, feed)
+            reason = hold_reason(hist, feed, source)
             if reason:
                 status, code = "held", 2
                 report["held"] = reason
@@ -402,19 +413,64 @@ def cache_not_ready(cache: Cache, feed: Feed) -> str | None:
 def _prune(site: Site, feed: Feed, hist: History) -> None:
     last = hist.last_delivered(feed.name)
     # Runs waiting for release are kept; once a later delivery supersedes them they can be pruned.
-    protect = {Path(r["run_dir"]) for r in hist.runs(feed.name, 200)
+    protect = {run_path(site, r["run_dir"]) for r in hist.runs(feed.name, 200)
                if r.get("run_dir") and r.get("status") in ("held", "blocked")
                and (not last or r["id"] > last["id"])}
     if last and last.get("run_dir"):
-        protect.add(Path(last["run_dir"]))
+        protect.add(run_path(site, last["run_dir"]))
     delivery.prune_runs(site.out_dir / feed.name, int(site.runs["keep_local_runs"]), protect)
+
+
+def run_path(site: Site, stored: str | Path) -> Path:
+    """Where a run's folder is now. History may hold the absolute path from before the site folder moved, so the
+    folder is looked for as <out>/<feed>/<stamp> under the site's current output folder (the old place only
+    while it still exists and the new one does not)."""
+    path = Path(stored)
+    if not path.is_absolute():
+        return site.out_dir / path
+    here = site.out_dir / path.parent.name / path.name
+    return here if here.exists() or not path.exists() else path
+
+
+SQLITE_CORRUPT, SQLITE_NOTADB = 11, 26
+
+
+def cache_damaged(exc: sqlite3.DatabaseError) -> bool:
+    """True only when SQLite says the file itself is damaged or is not a database. A full disk, an I/O error, a
+    lock or a file that cannot be opened is not damage: moving a healthy cache aside then loses it."""
+    code = getattr(exc, "sqlite_errorcode", None)        # Python 3.11+
+    if code is not None:
+        return code & 0xFF in (SQLITE_CORRUPT, SQLITE_NOTADB)
+    text = str(exc).lower()
+    return "malformed" in text or "not a database" in text
+
+
+def cache_problem(site: Site, exc: sqlite3.DatabaseError) -> str:
+    """A cache error that is not damage, in words that say what to look at. The cache is left as it is."""
+    text, where = str(exc).lower(), site.cache_path.parent
+    kept = "The cache was left as it is, so the next run carries on from it."
+    if "full" in text:
+        return (f"The disk is full ({exc}). Free some space on the drive that holds {where} (and on the system "
+                f"drive, where large builds keep temporary files), then run again. {kept}")
+    if "locked" in text or "busy" in text:
+        return (f"The local cache is in use by another program ({exc}), perhaps a backup or a virus scan. Run "
+                f"again later. {kept}")
+    if "unable to open" in text:
+        return (f"The local cache could not be opened ({exc}). Check that {where} exists and that this Windows "
+                "account may change it, then run again.")
+    return f"The local cache could not be read or written ({exc}). Check the disk that holds {where}. {kept}"
 
 
 def quarantine_cache(site: Site, kind: str = "broken") -> Path:
     """Move a damaged cache, or one filled from another FOLIO (``kind="other-folio"``), and its -wal/-shm
-    files aside; the next sync starts afresh with a full download. History is never touched."""
+    files aside; the next sync starts afresh with a full download. History is never touched. Names are never
+    reused, so one quarantine never replaces another."""
     stamp = now_utc().strftime("%Y%m%d-%H%M%S")
     moved = site.cache_path.with_name(f"cache.{kind}-{stamp}.sqlite")
+    n = 1
+    while any(moved.with_name(moved.name + s).exists() for s in ("", "-wal", "-shm")):
+        n += 1
+        moved = site.cache_path.with_name(f"cache.{kind}-{stamp}-{n:02d}.sqlite")
     for suffix in ("", "-wal", "-shm"):
         src = site.cache_path.with_name(site.cache_path.name + suffix)
         if src.exists():
@@ -424,7 +480,21 @@ def quarantine_cache(site: Site, kind: str = "broken") -> Path:
 
 def folio_source(site: Site) -> str:
     """Which FOLIO the cache's records come from: the API address and the tenant."""
-    return f"{str(site.folio['base_url']).rstrip('/').lower()} tenant {site.folio['tenant']}"
+    return source_of(site.folio)
+
+
+def source_of(folio: dict) -> str:
+    """``folio_source`` for a site.yaml ``folio:`` section."""
+    return f"{str(folio.get('base_url') or '').rstrip('/').lower()} tenant {folio.get('tenant')}"
+
+
+def source_change_note(before: dict | None, after: dict) -> str | None:
+    """What a person should know when a site is pointed at another FOLIO (address or tenant), or None."""
+    if not before or not before.get("base_url") or source_of(before) == source_of(after):
+        return None
+    return (f"This site now reads from {source_of(after)} instead of {source_of(before)}. Each feed that has "
+            "delivered files before holds its next run for review, so the files from this FOLIO are looked at "
+            "before they reach the vendor (send them with `folio-exchange release <feed>`, or Release on the page).")
 
 
 def other_folio(cache: Cache, site: Site) -> str | None:
@@ -454,6 +524,8 @@ def sync(site: Site, reads: set[str], full: bool = False) -> dict:
             if cache is not None:
                 cache.close()
                 cache = None
+            if not cache_damaged(exc):
+                raise FxError(cache_problem(site, exc)) from None
             moved = quarantine_cache(site)
             if attempt == 2:
                 raise FxError(f"The local cache is damaged ({exc}) and could not be rebuilt; it was moved aside to "
@@ -611,7 +683,7 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
                       "the run folder. Add a delivery with `folio-exchange init`.")
     with RunLock(site.lock_path), History(site.history_path) as hist:
         row = releasable_run(hist, feed, run_dir, force)
-        rdir = Path(row["run_dir"])
+        rdir = run_path(site, row["run_dir"])
         files = row.get("files") or []
         if not files or not rdir.is_dir():
             raise FxError(f"{rdir} has no recorded files; it cannot be released. Run the feed again.")

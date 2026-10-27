@@ -211,12 +211,78 @@ def os_command(site_root: Path, executable: str, system: str, user: str | None =
     return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"
 
 
-def windows_task_args(site_root: Path, executable: str, user: str | None = None) -> list[str]:
-    """The same schtasks command as ``os_command``, as arguments for running it directly (no shell). With a
-    user, schtasks itself asks for that user's Windows password."""
+TASK_TIME_LIMIT = "PT12H"      # a pass still going after this is stopped (Task Scheduler's own default is 72 hours)
+
+
+def windows_task_action(site_root: Path, executable: str) -> tuple[str, str]:
+    """The program and the arguments the task starts: ``run --due`` for this site."""
     site = str(Path(site_root).resolve())
-    action = f"{win_quote(executable.replace(chr(34), ''))} --site {win_quote(site)} run --due"
-    args = ["schtasks", "/Create", "/TN", task_name(site), "/SC", "HOURLY", "/MO", "1", "/ST", "00:07", "/TR", action]
+    return win_quote(executable.replace(chr(34), "")), f"--site {win_quote(site)} run --due"
+
+
+def windows_task_xml(site_root: Path, executable: str, user: str | None = None) -> str:
+    """The task, in Task Scheduler's XML: every hour at minute 7, as ``user`` whether or not anyone is signed in.
+    Unlike schtasks' own defaults it starts and keeps running on battery power, starts as soon as it can after a
+    missed start (the computer was off or asleep), never starts twice at once, and stops after TASK_TIME_LIMIT."""
+    from xml.sax.saxutils import escape
+
+    command, arguments = windows_task_action(site_root, executable)
+    who = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    logon = "Password" if user else "InteractiveToken"
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>FOLIO-Exchange: runs the feeds that are due ({escape(str(Path(site_root).resolve()))})</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2020-01-01T00:07:00</StartBoundary>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">{who}
+      <LogonType>{logon}</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>{TASK_TIME_LIMIT}</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(command)}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def windows_task_args(site_root: Path, xml_file: Path | str, user: str | None = None) -> list[str]:
+    """The schtasks command that registers the task from ``windows_task_xml`` saved in ``xml_file`` (UTF-16), as
+    arguments for running it directly (no shell). With a user, schtasks itself asks for that user's Windows
+    password, once."""
+    args = ["schtasks", "/Create", "/TN", task_name(Path(site_root).resolve()), "/XML", str(xml_file)]
     return args + (["/RU", user, "/RP", "*"] if user else []) + ["/F"]
 
 

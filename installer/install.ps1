@@ -541,7 +541,14 @@ function Get-TaskAction([string]$TaskName) {
     } catch {
         $command = ''
     }
-    return [pscustomobject]@{ Command = $command; Arguments = $arguments }
+    # Tasks registered by older versions kept Task Scheduler's defaults: no start on battery power.
+    $battery = $false
+    try {
+        $battery = [bool]($task.Settings.DisallowStartIfOnBatteries -or $task.Settings.StopIfGoingOnBatteries)
+    } catch {
+        $battery = $false
+    }
+    return [pscustomobject]@{ Command = $command; Arguments = $arguments; Battery = $battery }
 }
 
 # ---------------------------------------------------------------- the installer
@@ -827,11 +834,14 @@ try {
             $task.Arguments.IndexOf($sitePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
             $same = $true
         }
-        if ($same) {
+        if ($same -and $task.Battery) {
+            Write-Text ('The Windows task "{0}" was set up by an older version, which does not start it on battery power. Setting up scheduled runs again fixes that.' -f $taskName)
+        }
+        if ($same -and -not $task.Battery) {
             Write-Text ('Scheduled runs are already set up: the Windows task "{0}" starts this copy of FOLIO-Exchange every hour.' -f $taskName)
             $scheduleState = 'already set up'
         } else {
-            if ($task) {
+            if ($task -and -not $same) {
                 Write-Warn ('A Windows task called "{0}" already exists, but it starts another copy of FOLIO-Exchange or another site. Setting up scheduled runs replaces it.' -f $taskName)
             }
             Write-Text 'Windows can start FOLIO-Exchange every hour to run the feeds that are due. For this, Windows asks for your Windows password, so that the runs also happen when nobody is signed in.'
