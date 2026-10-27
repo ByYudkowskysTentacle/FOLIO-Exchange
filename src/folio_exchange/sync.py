@@ -123,13 +123,15 @@ class Syncer:
 
     def sync_entity(self, entity: str, mode: str, since: datetime | None) -> None:
         read = READS[entity]
-        started = now_utc()
+        started = self.client.server_now()            # FOLIO's clock: the next delta compares with its timestamps
         gen = int(self.cache.get_meta("gen", "0") or 0) + 1
         self.cache.set_meta("gen", str(gen))
         query = None if mode == "full" else f'metadata.updatedDate>="{to_folio(since)}"'
         log.info("Syncing %s (%s%s)", entity, mode, f" since {since:%Y-%m-%d %H:%M}Z" if since else "")
+        before = None
         if mode == "full":
             self.cache.set_meta(f"{entity}.incomplete", "1")
+            before = self.client.count(read.path)
 
         n = 0
         for page in self.client.iter_pages(read.path, read.key, query, self.page_size):
@@ -142,12 +144,18 @@ class Syncer:
 
         removed = 0
         if mode == "full":
-            remote = self.client.count(read.path)
+            after = self.client.count(read.path)
+            # Records added while the download ran may sit behind the paging cursor; they come with the next
+            # delta. Records deleted meanwhile are simply gone. So compare with the smaller count.
+            remote = min(before if before is not None else after, after)
             if n < remote - max(5, remote // 1000):
                 raise FolioError(
-                    f"Fetched {n:,} {entity} but FOLIO reports {remote:,}; the download stopped early. Nothing "
-                    "was removed from the cache. Try again; if it repeats, lower folio.page_size."
+                    f"Fetched {n:,} {entity} but FOLIO had {remote:,}; the download stopped early. Nothing was "
+                    "removed from the cache, and the next run tries again."
                 )
+            if after > (before or 0):
+                log.info("  %s: %d were added in FOLIO during the download; the next update fetches them",
+                         entity, after - (before or 0))
             removed = self.cache.delete_stale(entity, gen)
             self.cache.set_meta(f"{entity}.last_full", started.isoformat())
             self.cache.set_meta(f"{entity}.incomplete", "0")

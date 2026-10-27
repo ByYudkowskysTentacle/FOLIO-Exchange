@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import sqlite3
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -17,7 +18,7 @@ from pathlib import Path
 from . import __version__, checks, credentials, delivery, notify, schedule
 from .build import BuildReport, build
 from .cache import Cache
-from .client import FolioClient, LoginFailed
+from .client import FolioClient, FolioError, LoginFailed
 from .config import Site, read_yaml
 from .dates import now_utc
 from .errors import ConfigError, DeliveryError, FxError, LockBusy, SafetyCheckFailed
@@ -145,6 +146,7 @@ def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) ->
         lines.append(str(res.report["error"]))
     if res.report.get("held"):
         lines.append(f"Held: {res.report['held']}.")
+    lines.extend(f"Warning: {w}" for w in res.report.get("warnings") or [])
     if res.run_dir:
         lines.append(f"Run folder: {res.run_dir}")
     step = next_step(feed, res.status, res.run_dir)
@@ -155,6 +157,9 @@ def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) ->
         alert(site, feed.name, res.status, text)
     elif res.status in ("success", "built") and previous and previous.get("status") in ("failed", "blocked"):
         alert(site, feed.name, "recovered", text, force=site.alerts.get("on") != "never")
+    elif res.report.get("warnings") and res.report.get("warnings") != ((previous or {}).get("report") or {}).get(
+            "warnings"):
+        alert(site, feed.name, "warning", text)          # once, when a warning first appears or changes
 
 
 # --------------------------------------------------------- settings audit
@@ -250,9 +255,19 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
                 raise FxError(f"The cache cannot be used for feed {feed.name} yet ({not_ready}). Run it without "
                               "--skip-sync, or run `folio-exchange sync` first.")
             rep = build(cache, feed, run_dir)
+        except sqlite3.DatabaseError as exc:
+            cache.close()
+            moved = quarantine_cache(site)
+            raise FxError(f"The local cache was damaged ({exc}); it was moved aside to {moved.name}. Run the feed "
+                          "again without --skip-sync to download everything afresh.") from None
         finally:
             cache.close()
         report["build"] = as_dict(rep)
+        warnings = marc_warnings(site, rep)
+        if warnings:
+            report["warnings"] = warnings
+            for w in warnings:
+                log.warning("%s", w)
         digests = [file_digest(run_dir / name) for name in rep.files]
         report["files"] = digests
         checks.required_fields(feed, rep)
@@ -316,6 +331,23 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
     return res
 
 
+def marc_warnings(site: Site, rep: BuildReport) -> list[str]:
+    """Plain warnings when bibs that should carry full MARC were sent as brief records."""
+    out = []
+    examples = ", ".join(rep.marc_problem_hrids[:5])
+    if rep.bibs_marc_missing:
+        text = (f"{rep.bibs_marc_missing:,} bibs whose source is MARC had no record in Source Record Storage and "
+                f"were sent as brief records (for example {examples}).")
+        if rep.bibs_marc_missing_consortium and not site.folio.get("srs_include_shared"):
+            text += (" Some are shared consortium records: this looks like an ECS member tenant, so set "
+                     "folio.srs_include_shared: true in site.yaml.")
+        out.append(text)
+    if rep.marc_unreadable:
+        out.append(f"{rep.marc_unreadable:,} MARC records could not be read or written and were sent as brief records "
+                   f"(for example {examples}); see the log.")
+    return out
+
+
 def cache_not_ready(cache: Cache, feed: Feed) -> str | None:
     """Why the cache cannot be built from for ``feed`` (a read never fully synced), else None."""
     for entity in ("instances", "holdings", "items", "loans"):
@@ -339,12 +371,40 @@ def _prune(site: Site, feed: Feed, hist: History) -> None:
     delivery.prune_runs(site.out_dir / feed.name, int(site.runs["keep_local_runs"]), protect)
 
 
+def quarantine_cache(site: Site) -> Path:
+    """Move a damaged cache (and its -wal/-shm files) aside; the next sync starts afresh with a full download.
+    History is never touched."""
+    stamp = now_utc().strftime("%Y%m%d-%H%M%S")
+    moved = site.cache_path.with_name(f"cache.broken-{stamp}.sqlite")
+    for suffix in ("", "-wal", "-shm"):
+        src = site.cache_path.with_name(site.cache_path.name + suffix)
+        if src.exists():
+            src.replace(moved.with_name(moved.name + suffix))
+    return moved
+
+
 def sync(site: Site, reads: set[str], full: bool = False) -> dict:
-    cache = Cache(site.cache_path)
-    try:
-        return as_dict(Syncer(client_for(site), cache, site).run(reads, force_full=full))
-    finally:
-        cache.close()
+    """Update the shared cache. A damaged cache is moved aside once and rebuilt with a full download."""
+    for attempt in (1, 2):
+        cache = None
+        try:
+            cache = Cache(site.cache_path)
+            return as_dict(Syncer(client_for(site), cache, site).run(reads, force_full=full))
+        except sqlite3.DatabaseError as exc:
+            if cache is not None:
+                cache.close()
+                cache = None
+            moved = quarantine_cache(site)
+            if attempt == 2:
+                raise FxError(f"The local cache is damaged ({exc}) and could not be rebuilt; it was moved aside to "
+                              f"{moved.name}. Check the disk, then run again.") from None
+            log.warning("The local cache was damaged (%s); moved aside to %s, downloading everything again",
+                        exc, moved.name)
+            full = True
+        finally:
+            if cache is not None:
+                cache.close()
+    raise AssertionError("unreachable")
 
 
 def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list[Feed] | None = None,
@@ -389,9 +449,10 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
                         rep["no_retry"] = True
                     hist.finish_run(run_id, "failed", error=f"Sync failed: {err}", report=rep)
                     results.append(RunResult(f.name, "failed", 1, None, rep))
+                advice = ("Run `folio-exchange check` to test the connection." if isinstance(exc, FolioError)
+                          else "See logs/folio-exchange.log for details.")
                 alert(site, ", ".join(f.name for f in feeds), "failed",
-                      f"Could not update the cache from FOLIO, so no feed ran.\n{err}\n"
-                      "Run `folio-exchange check` to test the connection.")
+                      f"Could not update the cache from FOLIO, so no feed ran.\n{err}\n{advice}")
                 return results
         for f in feeds:
             results.append(run_feed(site, f, opts, hist=hist, sync_report=sync_report))

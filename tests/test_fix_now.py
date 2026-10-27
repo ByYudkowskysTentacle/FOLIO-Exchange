@@ -274,3 +274,112 @@ def test_two_feeds_cannot_overwrite_each_other_at_one_destination(site, capsys):
     assert "one would overwrite the other" in out and "file_prefix: sci" in out
     make_feed(site, name="sci", file_prefix="sci", filters={"include_location_codes": ["SCI-STACKS"]})
     assert main(["-s", str(site), "feeds"]) == 0
+
+
+# ------------------------------------------------------------------ sync on a busy tenant
+def last_report(site, feed="chq"):
+    import json
+    from pathlib import Path
+
+    from folio_exchange.history import History
+
+    with History(Path(site) / "data" / "history.sqlite") as h:
+        row = h.last_run(feed)
+    return row, (json.loads((Path(row["run_dir"]) / "run-report.json").read_text(encoding="utf-8"))
+                 if row.get("run_dir") else row["report"])
+
+
+def test_records_added_during_a_full_sync_do_not_fail_it(site, folio, monkeypatch):
+    from mock_folio import meta
+
+    from folio_exchange import sync as sync_mod
+
+    real = sync_mod.Syncer._store
+    added = []
+
+    def store(self, entity, page, gen):
+        if entity == "instances" and not added:                     # a batch load lands behind the cursor
+            new = [{"id": f"0-early-{n:02d}", "hrid": f"e{n}", "source": "FOLIO", "title": "New",
+                    "metadata": meta()} for n in range(20)]
+            folio.data["instances"] += new
+            added.extend(new)
+        return real(self, entity, page, gen)
+
+    monkeypatch.setattr(sync_mod.Syncer, "_store", store)
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    monkeypatch.setattr(sync_mod.Syncer, "_store", real)
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0   # the next update picks them up
+
+
+def test_the_update_watermark_comes_from_folios_clock(site, folio):
+    from datetime import datetime, timedelta, timezone
+
+    from folio_exchange.cache import Cache
+    from folio_exchange.config import load_site
+    from folio_exchange.runner import client_for
+    from folio_exchange.sync import Syncer
+
+    s = load_site(site)
+    client = client_for(s)
+    client.connect()
+    folio_time = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    client.server_now = lambda: folio_time
+    cache = Cache(s.cache_path)
+    try:
+        Syncer(client, cache, s).run({"instances", "holdings", "items"})
+        assert datetime.fromisoformat(cache.get_meta("items.last_sync")) == folio_time
+    finally:
+        cache.close()
+
+    class Resp:
+        headers = {"Date": (datetime.now(timezone.utc) + timedelta(minutes=15)).strftime("%a, %d %b %Y %H:%M:%S GMT")}
+
+    fresh = client_for(s)
+    fresh._note_clock(Resp())
+    assert timedelta(minutes=14) < fresh.server_now() - datetime.now(timezone.utc) < timedelta(minutes=16)
+
+
+def test_missing_marc_is_a_warning_with_an_ecs_hint(site, folio, monkeypatch):
+    sent = []
+    monkeypatch.setattr("folio_exchange.notify.send", lambda a, s, t, account="default": sent.append(t) or ["x"])
+    data = yaml.safe_load((site / "site.yaml").read_text(encoding="utf-8"))
+    write_yaml(site / "site.yaml", {**data, "alerts": {"on": "failure", "webhook": "env:HOOK"}})
+    next(i for i in folio.data["instances"] if i["hrid"] == "in00000000004")["source"] = "CONSORTIUM-MARC"
+    make_feed(site, filters={"exclude_location_codes": []})          # include in4's ONLINE item
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    row, rep = last_report(site)
+    assert rep["build"]["bibs_marc_missing"] == 1 and "in00000000004" in rep["warnings"][0]
+    assert "srs_include_shared: true" in rep["warnings"][0]
+    assert len(sent) == 1 and "Warning:" in sent[0]
+    assert main(["-s", str(site), "run", "chq", "--no-deliver", "--skip-sync"]) == 0
+    assert len(sent) == 1                                          # the same warning again: no second alert
+
+
+def test_one_malformed_marc_record_does_not_fail_the_feed(site, folio):
+    srs = folio.data["srs"]
+    first = next(iter(srs))
+    srs[first]["fields"].append({"500": {"ind1": " ", "ind2": " ", "subfields": [{"a": None}, {"b": 12}]}})
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    row, rep = last_report(site)
+    assert rep["status"] == "built" and rep["build"]["bibs_from_srs"] == 1
+
+
+def test_items_under_suppressed_holdings_can_be_left_out(site, folio):
+    folio.data["holdingsRecords"][0]["discoverySuppress"] = True       # ho1: items B0001, B0002, B0008
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    assert last_report(site)[1]["build"]["items_written"] == 5         # default: kept, as before
+    make_feed(site, filters={"include_suppressed_holdings": False, "exclude_location_codes": ["ONLINE"]})
+    assert main(["-s", str(site), "run", "chq", "--no-deliver", "--skip-sync"]) == 0
+    rep = last_report(site)[1]
+    assert rep["build"]["items_written"] == 3 and rep["build"]["items_skipped"]["holdings suppressed"] == 2
+
+
+def test_a_damaged_cache_is_moved_aside_and_rebuilt(site):
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    cache = site / "data" / "cache.sqlite"
+    raw = bytearray(cache.read_bytes())
+    raw[:100] = b"\0" * 100                                         # wreck the header
+    cache.write_bytes(bytes(raw))
+    assert main(["-s", str(site), "run", "chq", "--no-deliver"]) == 0
+    assert list((site / "data").glob("cache.broken-*.sqlite"))
+    assert last_report(site)[1]["sync"]["mode"]["instances"] == "full"

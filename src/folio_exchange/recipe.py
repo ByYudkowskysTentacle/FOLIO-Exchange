@@ -46,6 +46,7 @@ FEED_KEYS = (
 SELECTION_DEFAULTS: dict[str, Any] = {
     "include_suppressed_instances": False,
     "include_suppressed_items": False,
+    "include_suppressed_holdings": True,
     "include_items_without_barcode": True,
     "bibs_without_items": False,
     "exclude_item_statuses": [],
