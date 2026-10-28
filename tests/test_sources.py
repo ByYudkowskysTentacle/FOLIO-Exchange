@@ -14,7 +14,7 @@ from folio_exchange.errors import ConfigError, FxError
 from folio_exchange.history import History
 from folio_exchange.recipe import RecipeLibrary
 
-REPO = "ByYudkowskysTentacle/FOLIOHQ"
+REPO = "ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe"
 SHA = "a" * 40
 BUNDLED = (BUNDLED_RECIPES / "chq-academic" / "1.0.0.yaml").read_bytes().replace(b"\r\n", b"\n")   # as GitHub serves it
 
@@ -209,8 +209,8 @@ def test_redirects_are_followed_only_within_github(site):
         def get(self, url, timeout=None, headers=None, allow_redirects=True):
             assert allow_redirects is False
             if url.endswith("/commits/main") and "renamed" not in url:
-                return self._resp(301, b"", url, {"Location": url.replace("FOLIOHQ", "FOLIOHQ-renamed")})
-            return super().get(url.replace("FOLIOHQ-renamed", "FOLIOHQ"), timeout, headers, allow_redirects)
+                return self._resp(301, b"", url, {"Location": url.replace(REPO, REPO + "-renamed")})
+            return super().get(url.replace(REPO + "-renamed", REPO), timeout, headers, allow_redirects)
 
     assert sources.check(site, lib(site), "foliohq", http=Moved({}))["commit"] == SHA
 

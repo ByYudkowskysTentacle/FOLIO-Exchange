@@ -4,7 +4,7 @@ _Started 26 Oct 2026; revised 26 Oct 2026 after a three-lens design review (spec
 
 ## Shape
 
-FOLIO-Exchange v1 is a Python package and a guided command line, `folio-exchange`, that a systems librarian installs on one PC or server inside the library's network. It generalizes FOLIOHQ (`folio-chq-extract`): the same pipeline – sync, build, check, deliver – but every vendor-specific choice moves out of code into a **recipe**.
+FOLIO-Exchange v1 is a Python package and a guided command line, `folio-exchange`, that a systems librarian installs on one PC or server inside the library's network. It generalizes `folio-chq-extract`, the tool first built in FOLIOHQ (now cHQ FOLIO Exchange Recipe): the same pipeline – sync, build, check, deliver – but every vendor-specific choice moves out of code into a **recipe**.
 
 ```
 FOLIO (Eureka, Kong) ──> client ──> sync ──> cache (SQLite) ──> build ──> checks ──> hold? ──> delivery ──> vendor
@@ -17,7 +17,7 @@ FOLIO (Eureka, Kong) ──> client ──> sync ──> cache (SQLite) ──> 
 
 A run is a batch job. The OS scheduler (Task Scheduler, cron or a systemd timer) starts `folio-exchange run --due` every hour; feeds whose slot has passed run, and missed slots catch up once at the next start. Nothing stays resident.
 
-**Done means byte parity.** With the `chq-academic` recipe and FOLIOHQ's `config.example.yaml` layout (now `legacy/config.example.yaml`), FOLIO-Exchange writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data (checked on 26 Oct 2026 against the shared mock FOLIO). Since 27 Oct 2026 FOLIOHQ's CI checks it on every change (`tests/test_parity.py`, against its `legacy/` tool).
+**Done means byte parity.** With the `chq-academic` recipe and folio-chq-extract's `config.example.yaml` layout (now `legacy/config.example.yaml`), FOLIO-Exchange writes byte-identical `.mrc` and `.psv` files to folio-chq-extract from the same data (checked on 26 Oct 2026 against the shared mock FOLIO). Since 27 Oct 2026 the CI of cHQ FOLIO Exchange Recipe (formerly FOLIOHQ) checks it on every change (`tests/test_parity.py`, against its `legacy/` tool).
 
 ## What a library keeps: the site folder
 
@@ -75,7 +75,7 @@ alerts:
                                              # every run --due pass (the URL is a secret)
 ```
 
-`${NAME}` and `${NAME:-default}` in any string are replaced from the environment (FOLIOHQ behaviour), and `FOLIO_URL`, `FOLIO_TENANT` and `FOLIO_USERNAME` override the `folio` block, so containers need no file edits.
+`${NAME}` and `${NAME:-default}` in any string are replaced from the environment (folio-chq-extract behaviour), and `FOLIO_URL`, `FOLIO_TENANT` and `FOLIO_USERNAME` override the `folio` block, so containers need no file edits.
 
 **YAML.** Every file is read with only `true` and `false` as booleans (YAML 1.2 style), so a setting named `on` and codes such as `NO`, `ON` or `Y` stay text. Numbers that look like codes (`0123`) must be quoted; validation says so.
 
@@ -112,7 +112,7 @@ A recipe is two files (spec, "What an integration recipe holds"): a shared one, 
 
 ### The recipe library
 
-Shared recipes live at `<library dir>/<recipe id>/<version>.yaml`, one file per published version, so a feed can stay on 1.x while 2.0 waits for review. The bundled library is `src/folio_exchange/recipes/` and never removes a published version. A site searches `paths.recipes` first, then the bundled library; on an identical id and version, the earlier folder wins. When the copy used differs from the one it hides (line endings and a byte-order mark aside), `check`, the page and `recipes list` warn (`recipe-shadow`): feeds then send what the local copy says, and a changed layout is held anyway (see the hold below). A recipe folder may also hold `README.md` (notes for recipe authors) and `samples/<output name>.<ext>` (the vendor's sample files, used by the conformance check). A bundled recipe may have its source in another repository: `chq-academic` is a copy of FOLIOHQ's `recipes/chq-academic/`, which is changed first and copied here unchanged.
+Shared recipes live at `<library dir>/<recipe id>/<version>.yaml`, one file per published version, so a feed can stay on 1.x while 2.0 waits for review. The bundled library is `src/folio_exchange/recipes/` and never removes a published version. A site searches `paths.recipes` first, then the bundled library; on an identical id and version, the earlier folder wins. When the copy used differs from the one it hides (line endings and a byte-order mark aside), `check`, the page and `recipes list` warn (`recipe-shadow`): feeds then send what the local copy says, and a changed layout is held anyway (see the hold below). A recipe folder may also hold `README.md` (notes for recipe authors) and `samples/<output name>.<ext>` (the vendor's sample files, used by the conformance check). A bundled recipe may have its source in another repository: `chq-academic` is a copy of folio-chq-extract's `recipes/chq-academic/`, which is changed first and copied here unchanged.
 
 `uses: <id>@<range>` picks the highest version that matches the range:
 
@@ -125,7 +125,7 @@ Shared recipes live at `<library dir>/<recipe id>/<version>.yaml`, one file per 
 
 A bare id with no range is an error: the operator must choose. When a newer version exists than the feed's range allows, `check` and `feeds` say so; the feed keeps running on the version it matches until `folio-exchange upgrade FEED` moves it.
 
-**Vendor sources.** Recipes can also be downloaded from vendors' GitHub repositories, from a curated list that ships with FOLIO-Exchange (`src/folio_exchange/recipe_sources.yaml`; vendors are added by pull request) plus any a site adds under `recipe_sources:` in `site.yaml` (same keys: `id`, `vendor`, `title`, `description`, `repo` as owner/name, `branch` (main), `path` (recipes), `recipes` – the ids it may provide – and `homepage`). Nothing else is ever downloaded. Today the list holds FOLIOHQ (`chq-academic`). `sources.check` reads the branch's current commit and every `<path>/<id>/<x.y.z>.yaml` file there through the GitHub API, loads each as a recipe (so a recipe that reads patron data is refused like any other), and compares it with the library: *new*, *installed* (the same bytes) or refused (*conflict*: different bytes under a version already installed, because a published version never changes; *invalid*; or an id the source may not provide). A new minor or patch version that existing feeds would take from their next run is also refused when anything but its wording (`version`, `title`, `description`, `changelog`, `spec_source`) differs from the version they use now: the versioning rule below, enforced, because such a change would otherwise reach the vendor without the review and held delivery a new major gets. `default_schedule` is substance, not wording: a feed file without a `schedule:` of its own follows it. It installs nothing. `sources.install` then takes exactly the commit that was reviewed and writes only the new versions into the site's first `paths.recipes` folder, records the source, repository, commit and SHA-256 of each file in `recipes/sources.json`, and audits it. A new minor version is used by every feed whose range allows it from that feed's next run (the review lists those feeds); a new major waits for `upgrade`, as with any recipe. Only `api.github.com` and `raw.githubusercontent.com` are contacted, over https; redirects are followed by hand and only within those hosts. Downloads go only into the site's own recipes folder, never the program's bundled one, with 30-second timeouts, 256 KB per file and 100 files per source.
+**Vendor sources.** Recipes can also be downloaded from vendors' GitHub repositories, from a curated list that ships with FOLIO-Exchange (`src/folio_exchange/recipe_sources.yaml`; vendors are added by pull request) plus any a site adds under `recipe_sources:` in `site.yaml` (same keys: `id`, `vendor`, `title`, `description`, `repo` as owner/name, `branch` (main), `path` (recipes), `recipes` – the ids it may provide – and `homepage`). Nothing else is ever downloaded. Today the list holds cHQ FOLIO Exchange Recipe (`chq-academic`), under the id `foliohq` it had before the repository was renamed. `sources.check` reads the branch's current commit and every `<path>/<id>/<x.y.z>.yaml` file there through the GitHub API, loads each as a recipe (so a recipe that reads patron data is refused like any other), and compares it with the library: *new*, *installed* (the same bytes) or refused (*conflict*: different bytes under a version already installed, because a published version never changes; *invalid*; or an id the source may not provide). A new minor or patch version that existing feeds would take from their next run is also refused when anything but its wording (`version`, `title`, `description`, `changelog`, `spec_source`) differs from the version they use now: the versioning rule below, enforced, because such a change would otherwise reach the vendor without the review and held delivery a new major gets. `default_schedule` is substance, not wording: a feed file without a `schedule:` of its own follows it. It installs nothing. `sources.install` then takes exactly the commit that was reviewed and writes only the new versions into the site's first `paths.recipes` folder, records the source, repository, commit and SHA-256 of each file in `recipes/sources.json`, and audits it. A new minor version is used by every feed whose range allows it from that feed's next run (the review lists those feeds); a new major waits for `upgrade`, as with any recipe. Only `api.github.com` and `raw.githubusercontent.com` are contacted, over https; redirects are followed by hand and only within those hosts. Downloads go only into the site's own recipes folder, never the program's bundled one, with 30-second timeouts, 256 KB per file and 100 files per source.
 
 **Hand-placed versions.** A recipe version put in the site's recipes folder by hand (not recorded in `recipes/sources.json`, or changed since it was downloaded) is not refused, but when a feed uses it and it changes more than wording against the version that feed would use otherwise (the highest lower version its range allows), `check`, `feeds` and the page warn (`recipe-local-substance`, `sources.local_minor_warning`): as a minor version it is used from the next run, without the review and held first delivery a new major gets. The warning says to make it a new major and `upgrade`, or delete it. The settings audit records the file as added (see Settings audit).
 
@@ -149,7 +149,7 @@ file_prefix: chq                 # default for {prefix} in file names
 selection:                       # which records go out; a feed's `filters` override any of these
   include_suppressed_instances: false
   include_suppressed_items: false
-  include_suppressed_holdings: true   # items under a suppressed holdings record (true: as FOLIOHQ)
+  include_suppressed_holdings: true   # items under a suppressed holdings record (true: as folio-chq-extract)
   include_items_without_barcode: true
   bibs_without_items: false
   exclude_item_statuses: []
@@ -193,7 +193,7 @@ default_schedule: weekly         # used when the feed sets no schedule; else man
 
 `{date}` is the run's UTC date as `YYYYMMDD`; `{prefix}` is the feed's `file_prefix`, else the recipe's, else the recipe id. Only those two placeholders exist.
 
-**Output bytes** (pinned so the FOLIOHQ parity holds):
+**Output bytes** (pinned so the folio-chq-extract parity holds):
 - Delimited files are UTF-8 without a BOM, `\r\n` line ends, Python `csv` minimal quoting with `"` doubled: a value is quoted only when it holds the delimiter, a quote or a line break. The header row comes first. Only empty values (`None` or `""` after date formatting) become `empty_value`, so `0` stays `0`. Rows follow `ORDER BY instance, holdings, item` and are written when their bib is, including when the MARC record is dropped as oversize.
 - MARC records are ISO 2709 with leader position 9 `a`. Every record gets 001 = instance HRID and 999 ff $i = instance UUID (FOLIO's own convention, so both link options always hold). Fields over 9,999 bytes are shortened; embedded items are shed until a record fits 99,999 bytes; a record that still does not fit is skipped and its items stay in the delimited file. An empty `.mrc` is written when there are no records.
 
@@ -246,7 +246,7 @@ schedule: Sun 03:30              # optional; else the recipe's default_schedule 
 
 **Overlay rules.** `filters` and `options` replace individual keys. `outputs.<name>` deep-merges into the recipe's output of that name; a `columns` list replaces the recipe's list wholesale, but every recipe column marked `required: true` must still be present (matched by `field`). `checks.min_item_ratio` replaces; `checks.must_be_filled` adds. `delivery` merges over the recipe's. The merged result is validated with the same rules as a recipe, and errors name the feed file. Transport `sftp` needs `host`, `username` and a pinned `host_key_fingerprint` (or `known_hosts`); `local` needs `directory`. `host_key_type`, when set, is one of `delivery.KEY_TYPES`. Relative paths in `delivery` (`directory`, `private_key`, `known_hosts`) are taken from the site folder, never from wherever the scheduler started the process. `private_key` and `known_hosts` must be file paths: key text (a line break, or `PRIVATE KEY`; `recipe.key_text`) is refused with "give the path of the key file, or store the key from the page", and masked if it ever reaches history (`runner.redact`).
 
-**Legacy notes** are read strictly (`dates.legacy`, `fields.read_count`). A date is accepted as ISO 8601, else in `legacy.date_format` when it is set, else as free text that holds a day, a month and a year (a part missing from the text is never filled in from today). A leading label (`Created: `) is ignored, two-digit years fall in the past, and only dates from 1800 to tomorrow are kept. A `date_format` that starts with the label (`Created: %d/%m/%Y`) is tried on the note as written, then on the note and the pattern without their labels, so it reads labelled and bare notes alike. `date_format` must name a day, a month and a year and read a sample date back (`dates.legacy_format_problem`). A count is one whole number, thousands separators allowed, optionally after a label (`Checkouts: 1,234`). A note that is present but cannot be read counts as missing (the item keeps FOLIO's own value) and is counted per setting with up to five item HRIDs (`BuildReport.legacy_unparsed`); `build.legacy_warnings` turns that into one warning per setting, in `run-report.json` (`warnings`), in the alert when a warning first appears or changes, in `preview`'s output, and under *Warnings* in the page's run summary (runs and previews, through `pageWords`). FOLIOHQ's legacy tool still reads these notes leniently; byte parity runs without legacy settings, so it still holds (see `docs/notes.md`).
+**Legacy notes** are read strictly (`dates.legacy`, `fields.read_count`). A date is accepted as ISO 8601, else in `legacy.date_format` when it is set, else as free text that holds a day, a month and a year (a part missing from the text is never filled in from today). A leading label (`Created: `) is ignored, two-digit years fall in the past, and only dates from 1800 to tomorrow are kept. A `date_format` that starts with the label (`Created: %d/%m/%Y`) is tried on the note as written, then on the note and the pattern without their labels, so it reads labelled and bare notes alike. `date_format` must name a day, a month and a year and read a sample date back (`dates.legacy_format_problem`). A count is one whole number, thousands separators allowed, optionally after a label (`Checkouts: 1,234`). A note that is present but cannot be read counts as missing (the item keeps FOLIO's own value) and is counted per setting with up to five item HRIDs (`BuildReport.legacy_unparsed`); `build.legacy_warnings` turns that into one warning per setting, in `run-report.json` (`warnings`), in the alert when a warning first appears or changes, in `preview`'s output, and under *Warnings* in the page's run summary (runs and previews, through `pageWords`). folio-chq-extract's legacy tool still reads these notes leniently; byte parity runs without legacy settings, so it still holds (see `docs/notes.md`).
 
 **File collisions** (SPEC-4). Loading refuses two enabled, delivering feeds that send the same file name to the same destination, naming both (`recipe.file_collisions`; a clash there stops both feeds loading). Paused feeds are left out of that check, so an enabled feed keeps running; instead a paused feed run or released by hand is refused when any other feed, paused or not, sends one of the same file names to the same destination (`recipe.collision_with`, `runner.delivery_clash`), `feeds resume` refuses the clash, and the page refuses a save that creates one.
 
@@ -280,25 +280,25 @@ A feed is **due** when its latest slot at or before now has passed and nothing s
 
 ## Packages and modules
 
-Flat, small modules under `src/folio_exchange/`, as in FOLIOHQ. Copied FOLIOHQ code keeps its tested behaviour unless this section says otherwise.
+Flat, small modules under `src/folio_exchange/`, as in folio-chq-extract. Copied folio-chq-extract code keeps its tested behaviour unless this section says otherwise.
 
 | Module | Owns |
 | --- | --- |
 | `errors.py` | `FxError` and subclasses: `ConfigError`, `RecipeError`, `PatronDataRefused`, `SafetyCheckFailed`, `HeldForRelease`, `DeliveryError` (carries `sent`), `LockBusy`. |
-| `dates.py` | FOLIOHQ's date helpers, plus strict reading of legacy date notes (`legacy`, `legacy_format_problem`); a time-zone conversion out of range gives no date instead of an error. |
+| `dates.py` | folio-chq-extract's date helpers, plus strict reading of legacy date notes (`legacy`, `legacy_format_problem`); a time-zone conversion out of range gives no date instead of an error. |
 | `credentials.py` | Secret references, keyring access, `secret set`. |
 | `config.py` | `site.yaml`: load, defaults, `${ENV}`, validation, secret-key rejection, YAML loader, write. |
 | `recipe.py` | Recipe library, versions and ranges, validation, feed overlay. |
 | `reads.py` | The reads registry, reference data, permission names, path allowlist, patron-path denylist. |
-| `client.py` | FOLIOHQ's `FolioClient` plus the guard (patron, allowlist, read-only), no redirects, `iter_where_in`, `tls_verify`. |
-| `cache.py` | FOLIOHQ's SQLite cache, plus `sync_state` and `marc_source_without_marc`. |
+| `client.py` | folio-chq-extract's `FolioClient` plus the guard (patron, allowlist, read-only), no redirects, `iter_where_in`, `tls_verify`. |
+| `cache.py` | folio-chq-extract's SQLite cache, plus `sync_state` and `marc_source_without_marc`. |
 | `sync.py` | Full and delta sync of the reads given; `sample()` for previews; staff data dropped on arrival. |
 | `fields.py` | The field registry (MAP-1) and `RowBuilder`. |
-| `marc.py` | MARC 21 building (from FOLIOHQ), link enforcement. |
+| `marc.py` | MARC 21 building (from folio-chq-extract), link enforcement. |
 | `delimited.py` | Delimited text output. |
 | `build.py` | One streaming pass from the cache to every output of a feed. |
 | `checks.py` | Required fields, item-count ratio, MARC intake check, conformance with vendor samples. |
-| `delivery.py` | SFTP (from FOLIOHQ), local folder, destination keys, host key lookup (every key type the server offers) and typed pins, run pruning. |
+| `delivery.py` | SFTP (from folio-chq-extract), local folder, destination keys, host key lookup (every key type the server offers) and typed pins, run pruning. |
 | `notify.py` | Alerts by webhook and email; the heartbeat. |
 | `history.py` | Run history, audit log and meta in SQLite; file digests. |
 | `lock.py` | One run at a time per site. |
@@ -316,7 +316,7 @@ Flat, small modules under `src/folio_exchange/`, as in FOLIOHQ. Copied FOLIOHQ c
 
 ### Contracts
 
-Signatures are the contract between modules; keep them, or change every caller and this section together. `Site` and `Feed` are dataclasses; sections inside them stay plain dicts, as in FOLIOHQ.
+Signatures are the contract between modules; keep them, or change every caller and this section together. `Site` and `Feed` are dataclasses; sections inside them stay plain dicts, as in folio-chq-extract.
 
 **credentials.py**
 ```python
@@ -396,7 +396,7 @@ def key_text(value) -> bool                           # a delivery path setting 
 @dataclass(frozen=True)
 class Read: name: str; path: str; key: str; permission: str; description: str
 READS: dict[str, Read]     # instances, holdings, items, loans (/loan-storage/loans), marc (POST /source-storage/...)
-REFDATA: dict[str, tuple[str, str, str]]   # kind -> (path, response key, permission); FOLIOHQ's ten tables
+REFDATA: dict[str, tuple[str, str, str]]   # kind -> (path, response key, permission); folio-chq-extract's ten tables
 ENTITY_ORDER = ("instances", "holdings", "items", "loans")
 LOGIN_PATHS; POST_PATHS; ALLOWED_PATHS
 PATRON_PATH_PREFIXES: tuple[str, ...]      # /users, /bl-users, /patron, /circulation (loans there embed the
@@ -406,7 +406,7 @@ def is_patron_path(path) -> bool; def is_allowed_path(path) -> bool
 def permissions_for(reads) -> list[str]    # sorted; includes reference data permissions
 ```
 
-**client.py** – FOLIOHQ's `FolioClient` and `FolioError` (now a subclass of `FxError`), plus:
+**client.py** – folio-chq-extract's `FolioClient` and `FolioError` (now a subclass of `FxError`), plus:
 - `guard(method, path)` runs before anything is sent: a patron path raises `PatronDataRefused`; a path outside the reads registry raises `FolioError`; anything but `GET`, or `POST` to the login paths and `/source-storage/source-records` (a read by POST), raises `FolioError("read-only: …")`.
 - Redirects are never followed (`allow_redirects=False`, `max_redirects = 0`); a 3xx is a `FolioError` naming the `Location`.
 - `iter_where_in(path, key, field, values, batch=50) -> Iterator[dict]`: CQL `field==("v1" or "v2" …)` in batches, for previews.
@@ -416,7 +416,7 @@ def permissions_for(reads) -> list[str]    # sorted; includes reference data per
 - **FOLIO's clock.** Every answer's HTTP `Date` header records how far this computer's clock is from FOLIO's; `server_now()` gives FOLIO's time, `check` warns when they differ by more than five minutes.
 - Messages never include the password. The empty-password message names `FOLIO_PASSWORD` and `folio-exchange secret set folio`. Default user agent `folio-exchange/<version>`.
 
-**cache.py** – FOLIOHQ's, unchanged, plus `sync_state(entity) -> str | None` ("never synced" or "the last full sync did not finish") and `marc_source_without_marc() -> list[str]`. Loans never store a borrower: the table has no user columns, and sync drops `userId`, `proxyUserId` and related keys on arrival (tested). Instances, holdings and items lose staff data on arrival too (`strip_staff_data`, below).
+**cache.py** – folio-chq-extract's, unchanged, plus `sync_state(entity) -> str | None` ("never synced" or "the last full sync did not finish") and `marc_source_without_marc() -> list[str]`. Loans never store a borrower: the table has no user columns, and sync drops `userId`, `proxyUserId` and related keys on arrival (tested). Instances, holdings and items lose staff data on arrival too (`strip_staff_data`, below).
 
 **sync.py**
 ```python
@@ -431,7 +431,7 @@ def reads_to_sync(feeds: list[Feed]) -> set[str]   # the union over enabled feed
 def strip_staff_data(record: dict) -> dict          # applied to instances, holdings and items as they are stored
 ```
 `strip_staff_data` drops `circulationNotes`, cuts `lastCheckIn` to `{dateTime}` (or drops it when there is no date) and removes `createdByUserId`, `updatedByUserId`, `createdByUsername` and `updatedByUsername` from `metadata`. Item `notes` stay, because feeds choose note types from them, and so do `administrativeNotes`. No field reads what is dropped. Records cached before are cleaned as they are fetched again: at the next full refresh, or at once with `sync --full`.
-Reference data always syncs; when a table cannot be loaded, the copy from the last sync is used, and with no copy the sync fails (names and codes go into the files). Entities sync in `ENTITY_ORDER`, limited to `reads`; MARC is fetched for MARC-source instances when `marc` is in `reads`, and each sync retries MARC-source instances that still have none. FOLIOHQ's full/delta/auto rules, `incomplete` flags and 10-minute overlap are kept, and:
+Reference data always syncs; when a table cannot be loaded, the copy from the last sync is used, and with no copy the sync fails (names and codes go into the files). Entities sync in `ENTITY_ORDER`, limited to `reads`; MARC is fetched for MARC-source instances when `marc` is in `reads`, and each sync retries MARC-source instances that still have none. folio-chq-extract's full/delta/auto rules, `incomplete` flags and 10-minute overlap are kept, and:
 - A full sync counts FOLIO's records before and after the download and compares what it fetched with the smaller count before removing anything; a shortfall (beyond 0.1 % or 5 records) fails the sync and leaves the entity marked incomplete, so a truncated download never empties the cache, while records added during the download (which may sit behind the paging cursor) are left for the next delta.
 - The watermark for the next delta is FOLIO's time at the start of the sync (`client.server_now()`), not this computer's, so a PC clock that runs fast cannot skip updates.
 - A delta falls back to a full sync when the cache holds more records than FOLIO (deletions) or noticeably fewer.
@@ -439,7 +439,7 @@ Reference data always syncs; when a table cannot be loaded, the copy from the la
 
 **Shared cache.** All feeds share one cache, and sync state is per entity. So a run always syncs the union of the reads of every enabled feed and of the feeds being run: otherwise one feed could advance `last_sync` and leave another feed's data stale. A feed's own `reads` still limit what it may output, and `build` refuses to run when any of the feed's reads has never fully synced.
 
-**dates.py** – FOLIOHQ's helpers (`parse`, `norm`, `fmt`, `latest`, `to_folio`, `now_utc`), plus:
+**dates.py** – folio-chq-extract's helpers (`parse`, `norm`, `fmt`, `latest`, `to_folio`, `now_utc`), plus:
 ```python
 def legacy(value: str, naive_tz, date_format: str | None = None, now: datetime | None = None) -> str | None
     # a legacy date note as a UTC string (FMT), or None (see "Legacy notes"); now: for tests
@@ -451,18 +451,18 @@ def legacy_format_problem(pattern) -> str | None    # why legacy.date_format can
 ```python
 @dataclass(frozen=True)
 class FieldDef: name: str; description: str; needs: frozenset[str]; date: bool = False
-FIELDS: dict[str, FieldDef]       # FOLIOHQ's 47 item fields; loan-derived fields need "loans"
+FIELDS: dict[str, FieldDef]       # folio-chq-extract's 47 item fields; loan-derived fields need "loans"
 ITEM_FIELDS: dict[str, str]; DATE_FIELDS: set[str]
 def suggest(name: str) -> str | None             # closest field name, for "did you mean"
-def read_count(text: str) -> int | None          # a legacy loan count (replaces FOLIOHQ's _int), or None
-class Ref: (FOLIOHQ's, unchanged)
+def read_count(text: str) -> int | None          # a legacy loan count (replaces folio-chq-extract's _int), or None
+class Ref: (folio-chq-extract's, unchanged)
 class RowBuilder:
     def __init__(self, ref: Ref, options: dict, legacy: dict | None) -> None   # options.timezone also reads legacy dates
-    def build(self, item, holdings, instance, loans) -> dict                  # FOLIOHQ's, with strict legacy notes
+    def build(self, item, holdings, instance, loans) -> dict                  # folio-chq-extract's, with strict legacy notes
     unparsed: dict[str, dict]     # legacy setting -> {"count", "examples": up to 5 item HRIDs}: notes not read
 ```
 
-**marc.py** – FOLIOHQ's functions; `MarcBuilder(output: dict, date_fmt)` reads `embed_items` and `item_field.{tag, subfields, strip_existing, max_per_record}`; `date_fmt(name, value)` formats date fields with the output's `date_format` and `options.timezone`. `finalize` always sets 001 and 999 ff $i (see "Output bytes") and keeps the counters, size limits and item shedding.
+**marc.py** – folio-chq-extract's functions; `MarcBuilder(output: dict, date_fmt)` reads `embed_items` and `item_field.{tag, subfields, strip_existing, max_per_record}`; `date_fmt(name, value)` formats date fields with the output's `date_format` and `options.timezone`. `finalize` always sets 001 and 999 ff $i (see "Output bytes") and keeps the counters, size limits and item shedding.
 
 **delimited.py**
 ```python
@@ -475,7 +475,7 @@ class DelimitedWriter:
 
 **build.py**
 ```python
-@dataclass class BuildReport: FOLIOHQ's fields (files, bibs_written, items_written, items_skipped, ...), plus
+@dataclass class BuildReport: folio-chq-extract's fields (files, bibs_written, items_written, items_skipped, ...), plus
     bibs_marc_missing (MARC-source instances with no SRS record), bibs_marc_missing_consortium, marc_unreadable
     (SRS records that could not be read or written), marc_problem_hrids (up to ten examples),
     outputs: dict[str, list[str]] (output name -> file names), unfilled: Counter (must_be_filled field -> rows)
@@ -485,7 +485,7 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
 def legacy_warnings(rep: BuildReport, legacy: dict) -> list[str]   # one plain warning per legacy setting with
     # unreadable notes: how many, what the items carry instead, examples, and the accepted formats
 ```
-One SQL pass, as in FOLIOHQ. Selection filters apply once, before any output sees a row. `limit_bibs` stops after that many bibs and `name_prefix` (`PREVIEW_`) goes before every file name (previews). `stamp` overrides `{date}` (tests). Loan statistics are left empty for a feed without the `loans` read, even if another feed synced loans.
+One SQL pass, as in folio-chq-extract. Selection filters apply once, before any output sees a row. `limit_bibs` stops after that many bibs and `name_prefix` (`PREVIEW_`) goes before every file name (previews). `stamp` overrides `{date}` (tests). Loan statistics are left empty for a feed without the `loans` read, even if another feed synced loans.
 
 **checks.py**
 ```python
@@ -519,7 +519,7 @@ def check_delivery(delivery: dict) -> list[str] | None   # sftp: login + list (N
                                                           # local: folder exists and is writable; uploads nothing
 def prune_runs(feed_out_dir: Path, keep: int, protect: set[Path] | None = None) -> None
 ```
-SFTP keeps FOLIOHQ's pinned key or `known_hosts` (never auto-accept), staged and direct modes. Only the pinned SHA-256 value is ever accepted. A pin with `host_key_type` limits the negotiation to that type (`ssh-rsa` allows `rsa-sha2-512`, `rsa-sha2-256` and `ssh-rsa`), so a vendor adding a newer kind of key does not stop deliveries; a server that no longer offers the pinned type fails as a changed key (`Host key for <host>: the server no longer offers a <type> key (pinned SHA256:…); it now offers <type> SHA256:…`), which `plain_error` words as one to ask the vendor about. A pin without a type (from before types were kept) is tried in paramiko's own order, then once per other type the server has not yet shown (Ed25519, RSA, then the ECDSA kinds), and any other key is refused before logging in. These probing handshakes, and `host_key_fingerprints`' per-type reads, run with `paramiko.transport` logging raised to CRITICAL, so a missing type leaves no error traceback in the log. While `host_key_confirmed` is false (the wizard's *not confirmed yet*), nothing logs in to the server at all: run, release, the page and `check --delivery` stop with a message, and `check --delivery` reads every key the server offers without logging in and says *the same* when one of them (preferably of `host_key_type`) is the stored one, otherwise *DIFFERENT* with each offered type and fingerprint. Sessions use 30-second keepalives and a 300-second channel timeout, so a stalled transfer becomes an ordinary failed delivery. When a staged upload fails before any rename, its `.part` files are removed, and any that could not be are named in the error. The password comes from `credentials.resolve(delivery["secret"], SFTP_SERVICE, sftp_account(...))`. `local` copies the files into `delivery["directory"]`, each as `.part` then renamed.
+SFTP keeps folio-chq-extract's pinned key or `known_hosts` (never auto-accept), staged and direct modes. Only the pinned SHA-256 value is ever accepted. A pin with `host_key_type` limits the negotiation to that type (`ssh-rsa` allows `rsa-sha2-512`, `rsa-sha2-256` and `ssh-rsa`), so a vendor adding a newer kind of key does not stop deliveries; a server that no longer offers the pinned type fails as a changed key (`Host key for <host>: the server no longer offers a <type> key (pinned SHA256:…); it now offers <type> SHA256:…`), which `plain_error` words as one to ask the vendor about. A pin without a type (from before types were kept) is tried in paramiko's own order, then once per other type the server has not yet shown (Ed25519, RSA, then the ECDSA kinds), and any other key is refused before logging in. These probing handshakes, and `host_key_fingerprints`' per-type reads, run with `paramiko.transport` logging raised to CRITICAL, so a missing type leaves no error traceback in the log. While `host_key_confirmed` is false (the wizard's *not confirmed yet*), nothing logs in to the server at all: run, release, the page and `check --delivery` stop with a message, and `check --delivery` reads every key the server offers without logging in and says *the same* when one of them (preferably of `host_key_type`) is the stored one, otherwise *DIFFERENT* with each offered type and fingerprint. Sessions use 30-second keepalives and a 300-second channel timeout, so a stalled transfer becomes an ordinary failed delivery. When a staged upload fails before any rename, its `.part` files are removed, and any that could not be are named in the error. The password comes from `credentials.resolve(delivery["secret"], SFTP_SERVICE, sftp_account(...))`. `local` copies the files into `delivery["directory"]`, each as `.part` then renamed.
 
 **notify.py**
 ```python
@@ -632,15 +632,15 @@ def worst_code(results) -> int                      # 1 if any failed, else 2 if
 
 **Settings audit.** Every run and `check` compares `site.yaml`, each feed file and the site's own recipe files (`site_recipe_paths`; never the bundled ones) with the snapshot kept in history; a change is written to the audit log as a key-level diff (`checks.min_item_ratio: 0.9 -> 0.5`), with list entries numbered (`outputs[1].columns[8].header`), so hand edits are audited, not only wizard changes. Once the site has snapshots (or history meta `settings_audited`, set by the first audit), a feed or site recipe file that appears is audited as "settings file added" with its redacted settings, and one that disappears as "settings file removed" with its last settings, and its snapshot is dropped; a renamed file shows as both. A new site's first audit only records snapshots, and so does a file the program just wrote and audited itself (`init` and the page pass it as `written`), so a feed added by `init` or the page is not logged a second time as "settings file added". Snapshots are redacted first: a secret-looking key, a `secret`, `webhook` or `heartbeat` value that is not a reference (someone typed the secret itself), or key text in `private_key` or `known_hosts`, is masked, so a mistake in a file never copies a secret into history.
 
-`run-report.json` is written in every run folder: FOLIOHQ's keys (`version`, `started`, `finished`, `run_dir`, `sync`, `build`, `delivered`, `status`, `error`) plus `feed`, `recipe`, `recipe_version`, `recipe_sha256` (`recipe_digest`), `layout` (`layout_signature`), `folio_source`, `trigger`, `destination`, `files` (digests), `last_delivered_items`, and when relevant `held`, `warnings` (MARC and legacy notes), `next`, `partially_delivered`, `released_by` and `tls_unchecked` (true when `folio.verify_tls` is false). The history row keeps the report, so a delivery's layout needs no column of its own. It never holds a secret.
+`run-report.json` is written in every run folder: folio-chq-extract's keys (`version`, `started`, `finished`, `run_dir`, `sync`, `build`, `delivered`, `status`, `error`) plus `feed`, `recipe`, `recipe_version`, `recipe_sha256` (`recipe_digest`), `layout` (`layout_signature`), `folio_source`, `trigger`, `destination`, `files` (digests), `last_delivered_items`, and when relevant `held`, `warnings` (MARC and legacy notes), `next`, `partially_delivered`, `released_by` and `tls_unchecked` (true when `folio.verify_tls` is false). The history row keeps the report, so a delivery's layout needs no column of its own. It never holds a secret.
 
-**cli.py** – global options `-s/--site`, `-v/--verbose`, `--version` (with the git commit when pip recorded one in `direct_url.json`, as for a `git+https://` install; an installer zip records none, so the installer prints the commit instead). Logging to stderr and `logs/folio-exchange.log`; stdout is UTF-8. `run`, `build`, `sync` and `release` also print a short JSON summary, as FOLIOHQ did. `fields` and `recipes` work without a site.
+**cli.py** – global options `-s/--site`, `-v/--verbose`, `--version` (with the git commit when pip recorded one in `direct_url.json`, as for a `git+https://` install; an installer zip records none, so the installer prints the commit instead). Logging to stderr and `logs/folio-exchange.log`; stdout is UTF-8. `run`, `build`, `sync` and `release` also print a short JSON summary, as folio-chq-extract did. `fields` and `recipes` work without a site.
 
 | Command | Does |
 | --- | --- |
 | `init [FOLDER]` | Guided setup (`wizard.py`): connect, pick a recipe, filters, preview, delivery, schedule, alerts. |
 | `check [FEED]` | Password source (and a note when it is only this window's environment, which a scheduled task will not have), login, every endpoint the enabled feeds need with record counts, recipe updates held for review, feed and recipe file problems, overdue feeds, a 0 item ratio on a delivering feed, alerts switched off, an alert webhook or heartbeat URL that cannot be found (`alert-secret-missing`), when the hourly task last ran (or `task-stale`, `task-failing`, `task-stuck`, `task-never`), less than 1 GB free for the data folder (`low-disk`), `verify_tls` off (`tls-off`), a local recipe copy that differs (`recipe-shadow`), a hand-placed recipe version that changes more than wording (`recipe-local-substance`), and folders other users can change (`folder-access`). Only DENIED endpoints produce the list of permissions for the FOLIO administrator; a file problem ends with how to fix the file. |
-| `check --delivery` (alias `--sftp`) | Tests each feed's vendor login and lists the folder, or checks the local folder; uploads nothing. Messages as FOLIOHQ's `check --sftp`. |
+| `check --delivery` (alias `--sftp`) | Tests each feed's vendor login and lists the folder, or checks the local folder; uploads nothing. Messages as folio-chq-extract's `check --sftp`. |
 | `check --alerts` | Sends a test alert on every configured channel. |
 | `preview FEED [-n 25] [--rows 3] [--columns ...]` | Sample from live data in a temporary cache; prints item rows one per block (header: value); writes `PREVIEW_` files; shows sample conformance. |
 | `run FEED… \| --all \| --due` | Sync, build, check, hold or deliver. `--full`, `--no-deliver`, `--skip-sync`, `--force`. Exit code: the worst status. `--due` records its start (`data/last-pass.json`, then `last_due_start`), sends the heartbeat at the start and at the end of the pass, runs `start_pass`, the settings audit and `report_given_up` under the lock before choosing due feeds, and records how the pass ended in `last-pass.json` (a pass that fails outright is alerted, once per distinct error). `--due` on a named folder with no `site.yaml` yet (installed, not set up) says so and exits 0: nothing is due. |
@@ -699,11 +699,11 @@ Started early (26 Oct 2026), ahead of the phase 2 web UI, as a simple companion 
 - **Narrow windows** (under 760 px) scroll as one page instead of three nested panes.
 - **Not yet:** alert settings, recipe upgrades to a new major version, removing a feed, and layout changes. Those stay on the command line or in the files.
 
-## From FOLIOHQ
+## From folio-chq-extract
 
-FOLIOHQ's original tool, `folio-chq-extract`, is now in its `legacy/` folder. FOLIO-Exchange reads none of its files; a library moving over runs `init` and maps its settings by hand (FOLIOHQ's `legacy/README.md` lists the steps). The item-ratio baseline does not carry over, and the first delivery is held, so the first run deserves a careful look.
+The original tool, `folio-chq-extract`, is now in the `legacy/` folder of cHQ FOLIO Exchange Recipe (formerly FOLIOHQ). FOLIO-Exchange reads none of its files; a library moving over runs `init` and maps its settings by hand (its `legacy/README.md` lists the steps). The item-ratio baseline does not carry over, and the first delivery is held, so the first run deserves a careful look.
 
-| FOLIOHQ (`config.yaml`) | FOLIO-Exchange |
+| folio-chq-extract (`config.yaml`) | FOLIO-Exchange |
 | --- | --- |
 | `folio.*` (minus `password`) | `site.yaml` `folio.*`; the password goes to the keyring (`secret set folio`) or `FOLIO_PASSWORD` |
 | `extract.mode`, `full_refresh_days` | `site.yaml` `sync.*` |
@@ -727,14 +727,14 @@ FOLIOHQ's original tool, `folio-chq-extract`, is now in its `legacy/` folder. FO
 
 - Everything runs offline against `tests/mock_folio.py` (login, keyset paging, `updatedDate` deltas, `field==("a" or "b")` lookups, SRS by instance id; its loans carry a `userId` so tests can prove it is dropped). SFTP is mocked; the keyring is blocked by an autouse fixture.
 - `tests/sitekit.py` writes site and feed files; `conftest.py` gives `folio` (a running mock) and `site` (a site folder with a `chq` feed delivering to a local folder).
-- FOLIOHQ's tests are ported (`test_end_to_end.py`, `test_units.py`), including its regression tests: fields over 9,999 bytes, refusing to deliver a partial or failed run, login retry, the legacy date off-by-one, stale MARC after a source change, the atomic SFTP pair, direct mode, upload-only listing, credentials.
+- folio-chq-extract's tests are ported (`test_end_to_end.py`, `test_units.py`), including its regression tests: fields over 9,999 bytes, refusing to deliver a partial or failed run, login retry, the legacy date off-by-one, stale MARC after a source change, the atomic SFTP pair, direct mode, upload-only listing, credentials.
 - Regression tests for the build review's findings (`test_regressions.py`) and the operator walkthrough (`test_walkthrough.py`).
 - Improvement-plan batch 1: the layout hold and recipe copies (`test_layout_hold.py`), the hourly task's health and the heartbeat (`test_heartbeat.py`), TLS settings, staff data and folder access (`test_hardening.py`), the page's sign-in and request limits (`test_ui.py`).
 - The second review round: legacy notes and date overflow (`test_review2_values.py`), unattended runs (`test_review2_unattended.py`), host key types, the FOLIO-source hold, the cache on a full disk, moved sites, alert URLs and the Windows task (`test_review2_keys.py`), settings audit, collisions, upgrades and recipe sources (`test_review2_settings.py`).
 - CI installs with `pip install -c constraints.txt -e ".[dev]"`, the dependency versions the tests pass with, and pins every GitHub Action to a full commit SHA (the tag in a comment).
 - New: recipes and overlay (`test_recipe.py`), patron and read-only guards, redirects, TLS and secrets (`test_safety.py`), schedules across daylight saving and the due rules (`test_schedule.py`), holds, release, scheduled runs, alerts, audit and crash recovery (`test_runner.py`), the wizard (`test_wizard.py`), schemas (`test_schemas.py`).
 - Every bundled recipe has a fixture test against the mock (`test_chq_academic_psv_layout`).
-- Byte parity with FOLIOHQ's legacy tool is checked in FOLIOHQ's CI, which runs both tools on the same mock data with FOLIO-Exchange's main branch. Run it there when the builders change.
+- Byte parity with the legacy tool is checked in the CI of cHQ FOLIO Exchange Recipe, which runs both tools on the same mock data with FOLIO-Exchange's main branch. Run it there when the builders change.
 - Every bug fix gets a regression test.
 
 ## Deliberately not in this build
@@ -746,8 +746,8 @@ Reviewed and left for later, each with a reason:
 - **A 9XX barcode link (MAP-4's third option)** – needs embedded items and a per-row check; add with the first vendor that links that way.
 - **Changed-records and deletes outputs** (`scope: changed`, a deletes file) – discovery layers and OCLC usually want them. They need per-feed delivered state; this is the main known limit for gate 2 ("a second recipe with no core code changes") and should be decided when the partner library picks the second vendor.
 - **Eureka capability names in `check`** – `check` and the wizard list Okapi-style permission names, which Eureka maps to capabilities; printing the capability sets themselves waits until they are verified on the reference system.
-- **`recipes import/export`, `init --from-foliohq`, `init --step`** – recipes are shared through Git for now; the FOLIOHQ mapping table covers one-off migration; re-running `init` keeps earlier answers.
-- **Quoting options for delimited files** – v1 uses minimal quoting (FOLIOHQ's), which every current vendor accepts.
+- **`recipes import/export`, `init --from-legacy`, `init --step`** – recipes are shared through Git for now; the folio-chq-extract mapping table covers one-off migration; re-running `init` keeps earlier answers.
+- **Quoting options for delimited files** – v1 uses minimal quoting (folio-chq-extract's), which every current vendor accepts.
 - **A Docker image and a `serve` loop** – containers have neither a scheduler nor a keyring; a later image will run `run --due` hourly with `env:` secrets.
 - **Translated messages** – strings are plain English; routing them through `gettext` waits for phase 2.
 - **Signed releases, a release tag for installs, and CI against the public reference systems** – after gate 1. Until then the guide and the installer install `main`, with `constraints.txt` fixing the dependency versions.

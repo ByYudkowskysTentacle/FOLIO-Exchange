@@ -5,8 +5,8 @@ it can never name an endpoint. The client only sends requests to paths listed he
 (the allowlist), and refuses user and patron paths outright with a clear error
 (the denylist), so a recipe cannot reach patron data even by mistake.
 
-Paths, response keys and permission names are the ones FOLIOHQ verified against
-the folio-org module descriptors in Oct 2026 (see FOLIOHQ's CLAUDE.md).
+Paths, response keys and permission names are the ones folio-chq-extract verified against
+the folio-org module descriptors in Oct 2026 (see the CLAUDE.md of cHQ FOLIO Exchange Recipe).
 """
 from __future__ import annotations
 

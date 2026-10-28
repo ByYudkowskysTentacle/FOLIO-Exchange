@@ -2,7 +2,7 @@
 
 An open-source tool that lets libraries set up, test and run scheduled data exchanges between [FOLIO](https://www.folio.org/) and vendor platforms – collectionHQ first – from shared, tested recipes, without writing code.
 
-**Status:** v1 is in development (`0.1.0.dev0`). It runs end to end against a mock FOLIO and is not yet released. The collectionHQ Academic recipe and its setup guide live in [FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ), whose original tool (phase 0, now in its `legacy/` folder) writes byte-identical files and stays as a fallback until the first real delivery. Read the [spec sheet](docs/spec.md), the [build design](docs/design.md) and the [working notes](docs/notes.md).
+**Status:** v1 is in development (`0.1.0.dev0`). It runs end to end against a mock FOLIO and is not yet released. The collectionHQ Academic recipe and its setup guide live in [cHQ FOLIO Exchange Recipe](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe), whose original tool (phase 0, now in its `legacy/` folder) writes byte-identical files and stays as a fallback until the first real delivery. Read the [spec sheet](docs/spec.md), the [build design](docs/design.md) and the [working notes](docs/notes.md).
 
 ![Every feed runs one pipeline; only the recipe changes](docs/images/architecture.png)
 
@@ -37,9 +37,9 @@ python -m venv .venv
 
 ## Setting up a library (once released)
 
-**On Windows, the easy way:** run the [installer](installer/README.md) (double-click `install.cmd`). It installs FOLIO-Exchange for your Windows user, puts a launcher on the desktop, offers to set up the hourly scheduled runs, and opens a page in your browser. For safety the page opens only from the launcher, through a link that works once; if you close the browser, double-click the launcher again. On that page you connect to FOLIO, then add as many vendor feeds as you need: choose a vendor's recipe, the locations and statuses to leave out and a schedule, then the vendor's SFTP server, password or key. Passwords go straight into Windows Credential Manager. A new feed starts paused, as a dry run that sends nothing, and the first delivery to each vendor waits for you to review it. Vendors' recipes come from a curated list (today: collectionHQ, from FOLIOHQ); the page checks it for new versions and installs one only after you have seen what changed.
+**On Windows, the easy way:** run the [installer](installer/README.md) (double-click `install.cmd`). It installs FOLIO-Exchange for your Windows user, puts a launcher on the desktop, offers to set up the hourly scheduled runs, and opens a page in your browser. For safety the page opens only from the launcher, through a link that works once; if you close the browser, double-click the launcher again. On that page you connect to FOLIO, then add as many vendor feeds as you need: choose a vendor's recipe, the locations and statuses to leave out and a schedule, then the vendor's SFTP server, password or key. Passwords go straight into Windows Credential Manager. A new feed starts paused, as a dry run that sends nothing, and the first delivery to each vendor waits for you to review it. Vendors' recipes come from a curated list (today: collectionHQ, from cHQ FOLIO Exchange Recipe); the page checks it for new versions and installs one only after you have seen what changed.
 
-**At the command line:** to try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange. For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in full.
+**At the command line:** to try it against your own tenant first, without sending anything to a vendor, follow the [dry-run guide](docs/dry-run.md). It goes on to the first real delivery and to updating FOLIO-Exchange. For collectionHQ Academic, the [setup guide](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe/blob/main/docs/setup.md) in cHQ FOLIO Exchange Recipe covers going live in full.
 
 ```powershell
 folio-exchange init $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary
@@ -66,4 +66,4 @@ The guided setup asks for the FOLIO API address, tenant and a read-only service 
 
 `examples/` has a commented `site.yaml` and feed file, and `src/folio_exchange/schemas/` has JSON Schemas so editors can check them.
 
-**License:** [MIT](LICENSE), the same as FOLIOHQ. Code adapted from FOLIOHQ keeps its own MIT notice (see [NOTICE.md](NOTICE.md)).
+**License:** [MIT](LICENSE), the same as cHQ FOLIO Exchange Recipe. Code adapted from its original tool, folio-chq-extract, keeps its own MIT notice (see [NOTICE.md](NOTICE.md)).

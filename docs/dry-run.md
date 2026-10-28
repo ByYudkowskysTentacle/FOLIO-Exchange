@@ -4,7 +4,7 @@ A dry run builds real collectionHQ files from your library's own FOLIO data and 
 
 Prefer not to use the command line? The [installer](../installer/README.md) sets FOLIO-Exchange up and opens a page where you connect to FOLIO and add the collectionHQ feed; a feed added there starts as a dry run, and the page's Preview and Run do what sections 3 and 4 below do. This guide takes the same route at the command line.
 
-You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing. The whole route to a live collectionHQ feed, from this dry run to the first delivery and the schedule, is FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md).
+You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing. The whole route to a live collectionHQ feed, from this dry run to the first delivery and the schedule, is the [setup guide](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe/blob/main/docs/setup.md).
 
 ## Before you start
 
@@ -146,11 +146,11 @@ If someone is helping you review the results, share the console output and `run-
 
 Nothing is scheduled and nothing was sent. In `history` a dry run shows as `success (not sent: transport none)`, and `release` refuses the feed, because there is nothing to send. To undo everything, delete `%LOCALAPPDATA%\FOLIO-Exchange\mylibrary` and remove the entry whose name contains `folio-exchange/folio` from Windows Credential Manager (Control Panel > Credential Manager > Windows Credentials).
 
-The same address, tenant and account also serve FOLIOHQ's legacy tool, `folio-chq-extract`, which stores its password separately, under `folio-chq-folio`.
+The same address, tenant and account also serve the legacy tool `folio-chq-extract` (in cHQ FOLIO Exchange Recipe), which stores its password separately, under `folio-chq-folio`.
 
 ## From dry run to first delivery
 
-For collectionHQ Academic, FOLIOHQ's [setup guide](https://github.com/ByYudkowskysTentacle/FOLIOHQ/blob/main/docs/setup.md) covers going live in more depth; the steps below are the short version.
+For collectionHQ Academic, the [setup guide](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe/blob/main/docs/setup.md) in cHQ FOLIO Exchange Recipe covers going live in more depth; the steps below are the short version.
 
 When the dry-run files look right and collectionHQ has sent you its SFTP details, switch the same feed to a real destination. Your FOLIO settings, the feed's filters and the local cache are all kept, so the first real run only fetches what changed. You need from the vendor:
 
