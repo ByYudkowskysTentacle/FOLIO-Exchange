@@ -1,9 +1,37 @@
+import os
 import pathlib
 import sys
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")     # before any QApplication: widget tests show nothing
+
+
+def _qt_problem() -> str | None:
+    """Why the desktop app's widget tests cannot run here (PySide6 or pytest-qt missing, or a Qt that fails to
+    load, as with an old VC++ runtime), or None when they can."""
+    try:
+        import PySide6.QtNetwork  # noqa: F401
+        import PySide6.QtWidgets  # noqa: F401
+        import pytestqt  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 - any failure to load means the same: no widget tests here
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def require_qt_if_asked(problem: str | None, environ=os.environ) -> None:
+    """CI sets FX_REQUIRE_QT=1: there a Qt that does not load (a Linux library missing, say) stops the run with
+    the reason, rather than quietly skip every widget test and pass."""
+    if problem and environ.get("FX_REQUIRE_QT"):
+        pytest.exit(f"FX_REQUIRE_QT is set, but the desktop app's tests cannot run: {problem}", returncode=1)
+
+
+# pytest-qt is turned off in pyproject.toml (it stops the whole run when Qt is missing) and loaded here instead.
+QT_PROBLEM = _qt_problem()
+QT_LOADS = QT_PROBLEM is None
+require_qt_if_asked(QT_PROBLEM)
+pytest_plugins = ["pytestqt.plugin"] if QT_LOADS else []
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +46,15 @@ def no_real_secrets_in_env(monkeypatch):
     for name in ("FOLIO_PASSWORD", "FOLIO_URL", "FOLIO_TENANT", "FOLIO_USERNAME", "NOTIFY_WEBHOOK_URL",
                  "FOLIO_EXCHANGE_SITE"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_real_app_settings(monkeypatch, tmp_path_factory):
+    """The desktop app's per-user settings (its recent sites) go to a test folder, never the developer's own."""
+    from folio_exchange.desktop import places
+
+    folder = tmp_path_factory.mktemp("app-settings")
+    monkeypatch.setattr(places, "config_dir", lambda: folder)
 
 
 @pytest.fixture

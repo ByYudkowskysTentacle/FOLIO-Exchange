@@ -35,6 +35,18 @@ python -m venv .venv
 .venv/Scripts/python -m pytest -q
 ```
 
+The desktop app's widget tests run only when its Qt extra is installed too (`-e ".[dev,desktop]"`, as on CI); otherwise they are skipped.
+
+## Desktop app (early preview)
+
+A desktop app, a window of its own for each site, is on the way (see [the plan](docs/desktop-plan.md)). This first version shows a site's feeds, their state and last run, and the FOLIO connection, and checks the connection; everything else opens in the browser page, which stays the full interface for now. It needs Qt, which is an optional extra:
+
+```bash
+.venv/Scripts/python -m pip install -c constraints.txt -e ".[desktop]"
+```
+
+Then start it with `folio-exchange-app` (it opens no console window on Windows), or from a console with `folio-exchange --site <site folder> app`. Without a site it offers the sites opened before, a site folder, or a new site. Starting it again for a site that is already open brings that window to the front.
+
 ## Setting up a library (once released)
 
 **On Windows, the easy way:** run the [installer](installer/README.md) (double-click `install.cmd`). It installs FOLIO-Exchange for your Windows user, puts a launcher on the desktop, offers to set up the hourly scheduled runs, and opens a page in your browser. For safety the page opens only from the launcher, through a link that works once; if you close the browser, double-click the launcher again. On that page you connect to FOLIO, then add as many vendor feeds as you need: choose a vendor's recipe, the locations and statuses to leave out and a schedule, then the vendor's SFTP server, password or key. Passwords go straight into Windows Credential Manager. A new feed starts paused, as a dry run that sends nothing, and the first delivery to each vendor waits for you to review it. Vendors' recipes come from a curated list (today: collectionHQ, from cHQ FOLIO Exchange Recipe); the page checks it for new versions and installs one only after you have seen what changed.

@@ -33,6 +33,7 @@ from .config import SITE_DEFAULTS, SITE_FILE, Site, load_site, merge, read_yaml,
 from .errors import ConfigError, FxError, RecipeError
 from .history import History
 from .recipe import ID_RE, RESERVED_FEED_NAMES, Recipe, RecipeLibrary, collision_with, load_all
+from .wintools import system_tool
 
 SITE_HEADER = """FOLIO-Exchange site settings, written by `folio-exchange init`.
 No passwords live here: see `folio-exchange secret status`."""
@@ -128,6 +129,8 @@ def site_state(root: Path) -> dict:
         try:
             raw = read_yaml(root / SITE_FILE).get("folio") or {}
         except ConfigError:
+            raw = {}
+        if not isinstance(raw, dict):                  # folio: written as a list or a value, not settings
             raw = {}
         state["folio"] = {k: raw[k] for k in ("base_url", "tenant", "username") if isinstance(raw.get(k), str)}
         return state
@@ -720,8 +723,9 @@ def _owner_only(path: Path, *, folder: bool = False) -> None:
     domain = os.environ.get("USERDOMAIN")
     who = f"{domain}\\{getpass.getuser()}" if domain else getpass.getuser()
     grant = f"{who}:(OI)(CI)F" if folder else f"{who}:F"
-    done = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", grant], capture_output=True,
-                          encoding="oem", errors="replace", stdin=subprocess.DEVNULL)
+    done = subprocess.run([system_tool("icacls"), str(path), "/inheritance:r", "/grant:r", grant], capture_output=True,
+                          encoding="oem", errors="replace", stdin=subprocess.DEVNULL,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))    # none flashes up in the app
     if done.returncode != 0:
         raise FxError(f"Could not limit who can read {path.name} ({(done.stdout or done.stderr or '').strip()}).")
 

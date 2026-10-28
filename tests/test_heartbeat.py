@@ -341,10 +341,10 @@ def test_tls_off_is_a_warning_that_suggests_a_ca_bundle(site):
 
 @can_see_locks
 def test_the_page_says_a_long_pass_is_running(site):
-    from folio_exchange import ui
+    from folio_exchange import views
 
     start = (datetime.now(timezone.utc) - timedelta(hours=3)).replace(second=0, microsecond=0)
     set_last_start(site, start)
     with RunLock(lock_path(site)):
         os.utime(lock_path(site), (start.timestamp() + 30, start.timestamp() + 30))
-        assert ui.site_summary(site)["task"]["state"] == "running"
+        assert views.site_summary(site)["task"]["state"] == "running"

@@ -13,10 +13,11 @@ import pytest
 from sitekit import FOLIO_TEST_PASSWORD, make_feed
 
 from folio_exchange import client as client_mod
-from folio_exchange import ui
+from folio_exchange import ui, views
 from folio_exchange.config import load_site
 from folio_exchange.errors import ConfigError
 from folio_exchange.history import History
+from folio_exchange.jobs import Jobs
 
 
 @pytest.fixture(autouse=True)
@@ -428,7 +429,7 @@ def test_preview_and_check(server):
 
 def test_one_action_at_a_time(server, monkeypatch):
     release = threading.Event()
-    monkeypatch.setattr(ui, "check_connection", lambda root: release.wait(10) and {"ok": True})
+    monkeypatch.setattr(views, "check_connection", lambda root: release.wait(10) and {"ok": True})
     first = call(server, "/api/check", {})[1]
     status, err, _ = call(server, "/api/feeds/chq/run", {})
     assert status == 409 and "still running" in err["error"]
@@ -461,7 +462,7 @@ def test_bad_numbers_are_a_bad_request(server):
 
 def test_the_page_can_find_a_running_job_after_a_reload(server, monkeypatch):
     release = threading.Event()
-    monkeypatch.setattr(ui, "check_connection", lambda root: release.wait(10) and {"ok": True})
+    monkeypatch.setattr(views, "check_connection", lambda root: release.wait(10) and {"ok": True})
     job = call(server, "/api/check", {})[1]
     site = call(server, "/api/site")[1]
     assert site["job"]["id"] == job["id"] and site["job"]["status"] == "running"
@@ -472,12 +473,43 @@ def test_the_page_can_find_a_running_job_after_a_reload(server, monkeypatch):
 
 def test_ctrl_c_waits_for_a_running_job(server, monkeypatch, capsys):
     release = threading.Event()
-    monkeypatch.setattr(ui, "check_connection", lambda root: release.wait(10) and {"ok": True})
+    monkeypatch.setattr(views, "check_connection", lambda root: release.wait(10) and {"ok": True})
     call(server, "/api/check", {})
     threading.Timer(0.3, release.set).start()
     ui._finish_running_job(server)
     err = capsys.readouterr().err
     assert "still running; waiting for it to finish" in err and "finished: done" in err
+
+
+def test_an_app_in_this_process_shares_the_page_and_its_jobs(site, capsys):
+    jobs = Jobs()
+    httpd, app = ui.serve_in_thread(site, jobs=jobs)
+    try:
+        release = threading.Event()
+        jobs.start("check", None, lambda: release.wait(10))       # the app's own action
+        status, err, _ = call(app, "/api/feeds/chq/run", {})
+        assert status == 409 and "still running" in err["error"]  # so the page waits for it
+        release.set()
+        jobs.current.thread.join(10)
+        assert call(app, "/api/site")[1]["feeds"][0]["name"] == "chq"
+        assert app.launch() == {"shown": None}                    # nothing is shown unless the app asks
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert capsys.readouterr().out == ""                          # and nothing is printed
+
+
+def test_views_give_the_app_what_the_page_shows(server, site):
+    run = wait(server, call(server, "/api/feeds/chq/preview", {"instances": 2})[1])["result"]["run"]
+    assert views.feed_runs(site, "chq", 5) == call(server, "/api/feeds/chq/runs?limit=5")[1]
+    assert views.run_detail(site, run["id"]) == call(server, f"/api/runs/{run['id']}")[1]
+    assert views.feed_view(site, "chq")["name"] == "chq"
+    with pytest.raises(LookupError):
+        views.run_detail(site, 999)
+    with pytest.raises(ConfigError):
+        views.feed_view(site, "nope")
+    assert views.set_enabled(site, "chq", False, via="app") == {"name": "chq", "enabled": False}
+    assert any(a["action"] == "feed paused" for a in views.audit(site, 5))
 
 
 def test_site_warnings_carry_a_code_for_the_page(server):
@@ -490,7 +522,7 @@ def test_site_warnings_carry_a_code_for_the_page(server):
 
 def test_open_folder_opens_only_a_run_folder_inside_out(server, site, monkeypatch):
     opened = []
-    monkeypatch.setattr(ui, "open_folder", opened.append)
+    monkeypatch.setattr(views, "open_folder", opened.append)
     run = wait(server, call(server, "/api/feeds/chq/preview", {"instances": 2})[1])["result"]["run"]
     assert call(server, f"/api/runs/{run['id']}/open-folder", {}, token=False)[0] == 403
     assert not opened
@@ -508,19 +540,19 @@ def test_open_folder_opens_only_a_run_folder_inside_out(server, site, monkeypatc
     status, body, _ = call(server, f"/api/runs/{run['id']}/open-folder", {})
     assert status == 400 and "outside" in body["error"]
     with pytest.raises(ConfigError):
-        ui.run_folder(loaded, {"run_dir": str(loaded.out_dir)})            # the output folder itself
+        views.run_folder(loaded, {"run_dir": str(loaded.out_dir)})            # the output folder itself
     a_file = loaded.out_dir / "chq" / "note.txt"
     a_file.write_text("x", encoding="utf-8")
     with pytest.raises(ConfigError):
-        ui.run_folder(loaded, {"run_dir": str(a_file)})                   # never a file: it could be a program
+        views.run_folder(loaded, {"run_dir": str(a_file)})                   # never a file: it could be a program
     assert len(opened) == 1
 
 
 def test_open_folder_never_goes_through_a_shell(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(ui.sys, "platform", "linux")
-    monkeypatch.setattr(ui.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
-    ui.open_folder(tmp_path / "a folder; rm -rf ~")
+    monkeypatch.setattr(views.sys, "platform", "linux")
+    monkeypatch.setattr(views.subprocess, "Popen", lambda args, **kw: calls.append((args, kw)))
+    views.open_folder(tmp_path / "a folder; rm -rf ~")
     (args, kw), = calls
     assert args == ["xdg-open", str(tmp_path / "a folder; rm -rf ~")] and not kw.get("shell")
 

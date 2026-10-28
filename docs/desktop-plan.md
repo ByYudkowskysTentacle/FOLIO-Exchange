@@ -1,6 +1,6 @@
 # Desktop app plan
 
-_28 October 2026. Decisions taken; nothing is built yet. Batch 3 (large catalogues) is tabled, because the pilot library's catalogue is about 70,000 records._
+_28 October 2026. Decisions taken; D1 (groundwork and shell) is built, D2 is next. Batch 3 (large catalogues) is tabled, because the pilot library's catalogue is about 70,000 records._
 
 ## Why
 
@@ -44,7 +44,7 @@ A desktop app should:
 | D7 | **Updates.** The app checks GitHub releases at most once a day, offers a newer signed installer, installs only after the person confirms, and never while a run is going. The program's path does not change, so the scheduled task keeps working. | An older install shows "Version x.y is available" and updates in place. | 1 day |
 | D8 | **Retire the page** (a decision when D3 is done and the pilot has used the app). Remove `ui.py`'s server, `web/`, the `ui` and `launcher` commands and their tests; Mac and Linux users run the app from pip. | One interface left, and no local web server. | 1 day |
 
-About five weeks to D7. D1 to D4 can be used from a pip install (`pip install "folio-exchange[desktop]"`) before the installer exists. While both interfaces exist, new features go into the app only, and the page gets fixes only.
+About five weeks to D7. D1 to D4 can be used from a pip install (`pip install "folio-exchange[desktop] @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@main"`; FOLIO-Exchange is not on PyPI, so never the bare name) before the installer exists. While both interfaces exist, new features go into the app only, and the page gets fixes only.
 
 ## Risks
 
