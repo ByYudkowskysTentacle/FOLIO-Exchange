@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import difflib
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .dates import latest, norm
+from .dates import LABEL, latest, norm, now_utc
+from .dates import legacy as legacy_date
 
 # Every item row joins an instance, its holdings and the item itself.
 ITEM = frozenset({"instances", "holdings", "items"})
@@ -129,11 +132,14 @@ def _note(item: dict, type_id: str | None) -> str | None:
     return None
 
 
-def _int(value: str | None) -> int:
-    try:
-        return int(float(str(value).replace(",", "").strip()))
-    except (TypeError, ValueError):
-        return 0
+_COUNT = re.compile(r"(\d{1,3}(?:[,\s]\d{3})+|\d+)(?:\.0)?")
+
+
+def read_count(text: str) -> int | None:
+    """A migrated loan count: a whole number, maybe with thousands separators or after a label
+    ("Checkouts: 1,234"), else None."""
+    m = _COUNT.fullmatch(LABEL.sub("", text.strip(), count=1))
+    return int(re.sub(r"\D", "", m.group(1))) if m else None
 
 
 class RowBuilder:
@@ -148,6 +154,25 @@ class RowBuilder:
         self.legacy_created = ref.note_type_id(leg.get("created_date_note_type"))
         self.legacy_count = ref.note_type_id(leg.get("circ_count_note_type"))
         self.legacy_last = ref.note_type_id(leg.get("last_circ_date_note_type"))
+        self.date_format = leg.get("date_format") or None
+        self.now = now_utc()
+        # Notes present but unusable, per setting: {"count": n, "examples": [item HRIDs]}.
+        self.unparsed: dict[str, dict] = {}
+
+    def _legacy(self, key: str, type_id: str | None, item: dict, read: Callable[[str], Any]) -> Any:
+        text = _note(item, type_id)
+        if text is None:
+            return None
+        value = read(text)
+        if value is None:
+            entry = self.unparsed.setdefault(key, {"count": 0, "examples": []})
+            entry["count"] += 1
+            if len(entry["examples"]) < 5:
+                entry["examples"].append(str(item.get("hrid") or item.get("id")))
+        return value
+
+    def _date(self, text: str) -> str | None:
+        return legacy_date(text, self.local_tz, self.date_format, self.now)
 
     def build(self, item: dict, holdings: dict, instance: dict, loans: dict) -> dict:
         ref = self.ref
@@ -156,9 +181,9 @@ class RowBuilder:
         cn = item.get("effectiveCallNumberComponents") or {}
         status = item.get("status") or {}
 
-        legacy_count = _int(_note(item, self.legacy_count)) if self.legacy_count else 0
-        legacy_last = norm(_note(item, self.legacy_last), self.local_tz) if self.legacy_last else None
-        legacy_created = norm(_note(item, self.legacy_created), self.local_tz) if self.legacy_created else None
+        legacy_count = self._legacy("circ_count_note_type", self.legacy_count, item, read_count) or 0
+        legacy_last = self._legacy("last_circ_date_note_type", self.legacy_last, item, self._date)
+        legacy_created = self._legacy("created_date_note_type", self.legacy_created, item, self._date)
 
         last_checkout = latest(loans.get("last_loan"), legacy_last)
         last_checkin = norm((item.get("lastCheckIn") or {}).get("dateTime"))

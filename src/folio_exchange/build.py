@@ -49,6 +49,30 @@ class BuildReport:
     bibs_marc_missing_consortium: int = 0
     marc_unreadable: int = 0            # SRS records that could not be read or written: sent as brief records
     marc_problem_hrids: list[str] = field(default_factory=list)
+    # Legacy notes present but unusable, per legacy setting: {"count": n, "examples": [item HRIDs]}
+    legacy_unparsed: dict[str, dict] = field(default_factory=dict)
+
+
+_LEGACY_FALLBACK = {
+    "created_date_note_type": ("a date", "carry FOLIO's record-creation date instead"),
+    "last_circ_date_note_type": ("a date", "carry only FOLIO's last checkout"),
+    "circ_count_note_type": ("a whole number", "count FOLIO's loans only"),
+}
+
+
+def legacy_warnings(rep: BuildReport, legacy: dict) -> list[str]:
+    """Plain warnings for legacy notes that were present but could not be read."""
+    pattern = legacy.get("date_format")
+    date_hint = ("Dates need a day, month and year from 1800 to today, as 1998-03-15 or "
+                 + (f"in legacy.date_format ({pattern})." if pattern else
+                    "3/15/1998; set legacy.date_format if they are written another way."))
+    out = []
+    for key, entry in rep.legacy_unparsed.items():
+        what, fallback = _LEGACY_FALLBACK[key]
+        hint = date_hint if what == "a date" else "Counts need one whole number, e.g. 12 or Checkouts: 1,234."
+        out.append(f"{entry['count']:,} '{legacy.get(key)}' notes (legacy.{key}) could not be read as {what}, so "
+                   f"those items {fallback} (for example {', '.join(entry['examples'])}). {hint}")
+    return out
 
 
 class _MarcSink:
@@ -269,6 +293,7 @@ def build(cache: Cache, feed: Feed, run_dir: Path, *, limit_bibs: int | None = N
     for o, w in writers:
         rep.outputs[o["name"]] = [w.path.name]
     rep.files = [name for o in feed.outputs for name in rep.outputs.get(o["name"], [])]
+    rep.legacy_unparsed = rows_builder.unparsed
     if marc_builder is not None:
         rep.marc_001_corrected = marc_builder.fixed_001
         rep.marc_999_corrected = marc_builder.fixed_999

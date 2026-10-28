@@ -171,24 +171,147 @@ def is_due(
 
 # ------------------------------------------------------------- OS scheduler
 def task_name(site_root: Path) -> str:
-    return f"FOLIO-Exchange ({Path(site_root).name})".replace('"', "")
+    root = Path(site_root)
+    label = root.name or str(root).rstrip("\\/:") or "site"      # a drive root such as C:\ has no name
+    return f"FOLIO-Exchange ({label})".replace('"', "")
+
+
+def win_quote(arg: str) -> str:
+    """One argument in double quotes, escaped by the Windows C runtime rules: a quote becomes \\", and
+    backslashes are doubled where they come before a quote (so C:\\ stays C:\\ rather than escaping it)."""
+    out, slashes = "", 0
+    for c in arg:
+        if c == "\\":
+            slashes += 1
+            continue
+        out += "\\" * (slashes * 2 + 1) + c if c == '"' else "\\" * slashes + c
+        slashes = 0
+    return f'"{out}{chr(92) * slashes * 2}"'
+
+
+def ps_quote(text: str) -> str:
+    """One PowerShell string literal in single quotes: nothing inside is expanded. PowerShell also takes the
+    typographic single quotes as quote marks, so each of them is doubled like ' is."""
+    return "'" + "".join(c * 2 if c in "'‘’‚‛" else c for c in text) + "'"
+
+
+def register_command(site_root: Path, executable: str, shell: str = "powershell") -> str:
+    """``folio-exchange schedule --register`` for this site, for PowerShell (``& '...'``) or Command Prompt.
+    It registers the same task as ``windows_task_xml``; schtasks asks for the Windows password itself."""
+    site = str(Path(site_root).resolve())
+    exe = (executable or "folio-exchange").replace(chr(34), "")
+    if shell == "powershell":
+        return f"& {ps_quote(exe)} --site {ps_quote(site)} schedule --register"
+    return f"{win_quote(exe)} --site {win_quote(site)} schedule --register"
 
 
 def os_command(site_root: Path, executable: str, system: str, user: str | None = None) -> str:
-    """The command that registers an hourly ``run --due`` with the OS scheduler. Shown, never run.
+    """The commands that register an hourly ``run --due`` with the OS scheduler by hand. Shown, never run.
 
-    On Windows the task runs as ``user`` whether or not anyone is logged on (schtasks asks for that
-    user's Windows password), because secrets in Credential Manager belong to the user who stored them."""
+    On Windows: PowerShell lines (Windows PowerShell 5.1 and PowerShell 7) that register the same task as
+    ``windows_task_xml``, so it also starts on battery power, starts as soon as it can after a missed start and
+    stops after TASK_TIME_LIMIT; schtasks /Create /TR would leave Task Scheduler's defaults, which skip a laptop's
+    runs on battery. The task runs as ``user`` whether or not anyone is signed in, since secrets in Credential
+    Manager belong to the user who stored them: Get-Credential asks for that user's Windows password, which never
+    appears in the command or its history. Elsewhere: a crontab line at minute 7."""
     site = str(Path(site_root).resolve())
     exe = executable or "folio-exchange"
     if system.lower().startswith("win"):
-        exe = exe.replace('"', "")
-        action = f'\\"{exe}\\" --site \\"{site}\\" run --due'
-        who = f' /RU "{user}" /RP' if user else ""
-        return f'schtasks /Create /TN "{task_name(site)}" /SC HOURLY /MO 1 /ST 00:07 /TR "{action}"{who} /F'
+        command, arguments = windows_task_action(site, exe)
+        lines = [
+            f"$action = New-ScheduledTaskAction -Execute {ps_quote(command)} -Argument {ps_quote(arguments)}",
+            "$trigger = New-ScheduledTaskTrigger -Once -At '2020-01-01 00:07' -RepetitionInterval "
+            "(New-TimeSpan -Hours 1)",
+            "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries "
+            "-StartWhenAvailable -DontStopOnIdleEnd -MultipleInstances IgnoreNew "
+            f"-ExecutionTimeLimit (New-TimeSpan -Hours {TASK_TIME_LIMIT_HOURS})",
+        ]
+        register = (f"Register-ScheduledTask -TaskName {ps_quote(task_name(Path(site)))} -Action $action "
+                    "-Trigger $trigger -Settings $settings")
+        if user:
+            lines.append(f"$cred = Get-Credential -UserName {ps_quote(user)} -Message "
+                         "'Your Windows password, so the task runs while nobody is signed in'")
+            register += " -User $cred.UserName -Password $cred.GetNetworkCredential().Password"
+        return "\n".join(lines + [register + " -Force"])
     q = lambda v: "'" + v.replace("'", "'\"'\"'") + "'"
     log = str(Path(site) / "logs" / "cron.log")
     return f"7 * * * * {q(exe)} --site {q(site)} run --due >> {q(log)} 2>&1"
+
+
+TASK_TIME_LIMIT_HOURS = 12
+TASK_TIME_LIMIT = f"PT{TASK_TIME_LIMIT_HOURS}H"   # a pass still going after this is stopped (Task Scheduler's default: 72 hours)
+
+
+def windows_task_action(site_root: Path, executable: str) -> tuple[str, str]:
+    """The program and the arguments the task starts: ``run --due`` for this site."""
+    site = str(Path(site_root).resolve())
+    return win_quote(executable.replace(chr(34), "")), f"--site {win_quote(site)} run --due"
+
+
+def windows_task_xml(site_root: Path, executable: str, user: str | None = None) -> str:
+    """The task, in Task Scheduler's XML: every hour at minute 7, as ``user`` whether or not anyone is signed in.
+    Unlike schtasks' own defaults it starts and keeps running on battery power, starts as soon as it can after a
+    missed start (the computer was off or asleep), never starts twice at once, and stops after TASK_TIME_LIMIT."""
+    from xml.sax.saxutils import escape
+
+    command, arguments = windows_task_action(site_root, executable)
+    who = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    logon = "Password" if user else "InteractiveToken"
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>FOLIO-Exchange: runs the feeds that are due ({escape(str(Path(site_root).resolve()))})</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2020-01-01T00:07:00</StartBoundary>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">{who}
+      <LogonType>{logon}</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>{TASK_TIME_LIMIT}</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(command)}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def windows_task_args(site_root: Path, xml_file: Path | str, user: str | None = None) -> list[str]:
+    """The schtasks command that registers the task from ``windows_task_xml`` saved in ``xml_file`` (UTF-16), as
+    arguments for running it directly (no shell). With a user, schtasks itself asks for that user's Windows
+    password, once."""
+    args = ["schtasks", "/Create", "/TN", task_name(Path(site_root).resolve()), "/XML", str(xml_file)]
+    return args + (["/RU", user, "/RP", "*"] if user else []) + ["/F"]
 
 
 def os_helpers(site_root: Path, system: str) -> dict[str, str]:

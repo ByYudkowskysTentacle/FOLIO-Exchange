@@ -34,12 +34,14 @@ SITE_DEFAULTS: dict[str, Any] = {
         "timeout_seconds": 120,
         "max_retries": 5,
         "verify_tls": True,
+        "ca_bundle": None,
         "srs_include_shared": False,
     },
     "sync": {"mode": "auto", "full_refresh_days": 30},
     "paths": {"data": "data", "out": "out", "logs": "logs", "feeds": "feeds", "recipes": ["recipes"]},
     "runs": {"keep_local_runs": 5, "history_months": 12, "max_attempts_per_slot": 3, "timezone": None},
-    "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None},
+    "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None, "heartbeat": None},
+    "recipe_sources": [],
 }
 
 EMAIL_DEFAULTS: dict[str, Any] = {
@@ -74,6 +76,7 @@ class Site:
     paths: dict
     runs: dict
     alerts: dict
+    recipe_sources: list
     cache_path: Path = field(init=False)
     history_path: Path = field(init=False)
     lock_path: Path = field(init=False)
@@ -226,7 +229,12 @@ def load_site(root: str | os.PathLike) -> Site:
     reject_secrets(raw, where)
     problems = unknown_keys(raw, SITE_DEFAULTS, "site")
     for section, defaults in SITE_DEFAULTS.items():
-        if isinstance(raw.get(section), dict):
+        if isinstance(defaults, list):
+            if section in raw and raw[section] is None:
+                raw[section] = []                      # every entry commented out
+            if raw.get(section) is not None and not isinstance(raw[section], list):
+                problems.append(f"{section}: expected a list")
+        elif isinstance(raw.get(section), dict):
             problems += unknown_keys(raw[section], defaults, section)
         elif raw.get(section) is not None:
             problems.append(f"{section}: expected a mapping of settings")
@@ -273,6 +281,9 @@ def validate_site(cfg: dict) -> list[str]:
     for key in ("verify_tls", "srs_include_shared"):
         if not isinstance(f.get(key), bool):
             p.append(f"folio.{key}: must be true or false")
+    if f.get("ca_bundle") is not None and not (isinstance(f["ca_bundle"], str) and f["ca_bundle"].strip()):
+        p.append("folio.ca_bundle: the path of a PEM file of trusted certificates, or windows (the Windows "
+                 "certificate store)")
 
     s = cfg["sync"]
     if s.get("mode") not in {"auto", "full", "delta"}:
@@ -287,6 +298,11 @@ def validate_site(cfg: dict) -> list[str]:
     rec = paths.get("recipes")
     if not (isinstance(rec, str) or (isinstance(rec, list) and all(isinstance(x, str) for x in rec))):
         p.append("paths.recipes: must be a folder path or a list of them")
+
+    from .sources import source_problems
+
+    for n, entry in enumerate(cfg["recipe_sources"]):
+        p += source_problems(entry, f"recipe_sources[{n}]")
 
     r = cfg["runs"]
     for key, minimum in (("keep_local_runs", 0), ("history_months", 1), ("max_attempts_per_slot", 1)):
@@ -305,6 +321,8 @@ def validate_site(cfg: dict) -> list[str]:
         p.append("alerts.webhook_format: must be slack (Slack, Mattermost, Google Chat) or teams (Teams Workflows)")
     if a.get("webhook") is not None and not credentials.is_secret_ref(a["webhook"]):
         p.append("alerts.webhook: must be keyring or env:NAME (the URL itself is a secret)")
+    if a.get("heartbeat") is not None and not credentials.is_secret_ref(a["heartbeat"]):
+        p.append("alerts.heartbeat: must be keyring or env:NAME (a monitor's ping URL is a secret)")
     email = a.get("email")
     if email is not None:
         if not isinstance(email, dict):
@@ -330,3 +348,31 @@ def validate_site(cfg: dict) -> list[str]:
             if email.get("username") and not credentials.is_secret_ref(email.get("secret")):
                 p.append("alerts.email.secret: must be keyring or env:NAME")
     return p
+
+
+def rewrite_key(path: Path, key: str, value: str) -> None:
+    """Set a top-level ``key: value`` line in a settings file, keeping its comments and layout."""
+    text = path.read_text(encoding="utf-8-sig")
+    line = f"{key}: {value}"
+    pattern = re.compile(rf"^{re.escape(key)}:.*$", re.M)
+    text = pattern.sub(line, text, count=1) if pattern.search(text) else text.rstrip("\n") + f"\n{line}\n"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def password_note(site: Site) -> str | None:
+    """When the FOLIO password comes from an environment variable, what the scheduled task needs to have it."""
+    source = site.folio_password_source()
+    if not source.startswith("environment ("):
+        return None
+    name = source[len("environment ("):-1]
+    if str(site.folio.get("secret") or "").startswith("env:") and name != "FOLIO_PASSWORD":
+        return (f"The FOLIO password is read from the environment variable {name}. Set {name} for the user the "
+                "scheduled task runs as, too.")
+    if site.folio.get("secret") == "env:FOLIO_PASSWORD":
+        return ("The FOLIO password is read from the environment variable FOLIO_PASSWORD. Set it for the user the "
+                "scheduled task runs as, too.")
+    return ("The FOLIO password comes from this window's FOLIO_PASSWORD, not from the keyring that site.yaml "
+            "names. The scheduled task will not have it: run `folio-exchange secret set folio` (as the user the "
+            "task runs as), or set FOLIO_PASSWORD for that user.")

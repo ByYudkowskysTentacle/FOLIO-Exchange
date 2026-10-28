@@ -1,0 +1,3 @@
+# Findings gitleaks reports that are made-up test values, not secrets (commit:file:rule:line).
+# tests/test_setup.py SFTP_PASSWORD: an invented password the tests check never leaks anywhere.
+aac6f6dc09652a094639f667d8d0096f1e63da99:tests/test_setup.py:generic-api-key:20

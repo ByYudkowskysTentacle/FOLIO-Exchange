@@ -29,6 +29,7 @@ delivery:
   remote_dir: "."                # cHQ says which folder bibs and items go in
   # Pinned server key. `folio-exchange check --delivery` shows the server's; confirm it with cHQ.
   host_key_fingerprint: "SHA256:confirm-this-value-with-collectionHQ"
+  host_key_type: ssh-rsa         # collectionHQ's server key is RSA; logins ask for that type
   secret: keyring                # `folio-exchange secret set chq` stores the SFTP password
 
 schedule: Sun 03:30

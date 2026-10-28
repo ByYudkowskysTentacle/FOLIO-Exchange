@@ -44,6 +44,13 @@
         },
         "srs_include_shared": {
           "type": "boolean"
+        },
+        "ca_bundle": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Check FOLIO's certificate against these instead of the usual public ones: the path of a PEM file (relative to the site folder), or windows for the Windows certificate store, which also trusts what the library's IT has added. For campus networks that inspect TLS; better than verify_tls: false."
         }
       }
     },
@@ -196,6 +203,75 @@
               "type": "null"
             }
           ]
+        },
+        "heartbeat": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(keyring|env:[A-Za-z_][A-Za-z0-9_]*)$",
+              "description": "Where the secret lives: keyring, or env:NAME. Never the secret itself."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A dead-man's-switch monitor's ping URL (keyring or env:NAME), requested after every hourly run --due, so a monitor notices when the scheduled task stops running."
+        }
+      }
+    },
+    "recipe_sources": {
+      "type": "array",
+      "description": "This site's own vendor recipe sources, added to the curated list that ships with FOLIO-Exchange.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "vendor",
+          "title",
+          "repo",
+          "recipes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$",
+            "description": "A GitHub repository, owner/name."
+          },
+          "branch": {
+            "type": "string",
+            "description": "Default main."
+          },
+          "path": {
+            "type": "string",
+            "description": "The folder holding <recipe-id>/<version>.yaml; default recipes."
+          },
+          "recipes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            },
+            "description": "The recipe ids this source may provide."
+          },
+          "homepage": {
+            "type": "string",
+            "pattern": "^https://"
+          }
         }
       }
     }

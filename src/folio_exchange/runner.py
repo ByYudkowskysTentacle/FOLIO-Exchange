@@ -16,19 +16,30 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import __version__, checks, credentials, delivery, notify, schedule
-from .build import BuildReport, build
+from .build import BuildReport, build, legacy_warnings
 from .cache import Cache
-from .client import FolioClient, FolioError, LoginFailed
-from .config import Site, read_yaml
+from .client import FolioClient, FolioError, LoginFailed, tls_verify
+from .config import BUNDLED_RECIPES, Site, read_yaml
 from .dates import now_utc
 from .errors import ConfigError, DeliveryError, FxError, LockBusy, SafetyCheckFailed
 from .history import History, current_user, file_digest
 from .lock import RunLock
-from .recipe import Feed, feed_paths
+from .recipe import (
+    Feed,
+    collision_with,
+    feed_paths,
+    key_text,
+    layout_changes,
+    layout_signature,
+    load_all,
+    recipe_digest,
+)
 from .sync import Syncer, reads_to_sync
 
 log = logging.getLogger(__name__)
 
+UPGRADE_META = "upgrade:"            # history meta: upgrade:<feed> = {"to": version, "changes": [...]}
+SETTINGS_AUDITED = "settings_audited"  # history meta: set once the first settings audit stored its snapshots
 CODES = {"success": 0, "built": 0, "preview": 0, "blocked": 2, "held": 2, "failed": 1}
 RELEASABLE = {"held", "blocked", "built"}
 
@@ -67,7 +78,7 @@ def client_for(site: Site) -> FolioClient:
     f = site.folio
     return FolioClient(
         f["base_url"], f["tenant"], f["username"], site.folio_password() or "",
-        timeout=float(f["timeout_seconds"]), max_retries=int(f["max_retries"]), verify_tls=bool(f["verify_tls"]),
+        timeout=float(f["timeout_seconds"]), max_retries=int(f["max_retries"]), verify_tls=tls_verify(f, site.root),
     )
 
 
@@ -92,17 +103,51 @@ def _major(version: str | None) -> str | None:
     return str(version).split(".", 1)[0] if version else None
 
 
-def hold_reason(hist: History, feed: Feed) -> str | None:
-    """Why the next delivery must wait for a person, or None. A first delivery to a destination, and the first
-    after a major recipe version change, are held."""
+def hold_reason(hist: History, feed: Feed, source: str | None = None) -> str | None:
+    """Why the next delivery must wait for a person, or None. A first delivery to a destination, the first
+    after a major recipe version change, the first whose layout differs from the last delivery to that
+    destination, and the first from another FOLIO (``source``, as ``folio_source`` gives it) are held. A
+    delivery recorded before layouts or sources were kept has none: that alone never holds."""
     dest = delivery.destination_key(feed.delivery)
     last = hist.last_delivered(feed.name, dest)
     if last is None:
         return f"first delivery to {dest}"
+    reasons = []
+    before = last.get("folio_source") or (last.get("report") or {}).get("folio_source")
+    if source and before and source != before:
+        reasons.append(f"first delivery from FOLIO {source}; the last came from {before}")
     if _major(last.get("recipe_version")) != _major(feed.recipe.version_str):
-        return (f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
-                f"{last.get('recipe_version')})")
-    return None
+        reasons.append(f"first delivery on recipe {feed.recipe.ref} (the last delivery used version "
+                       f"{last.get('recipe_version')})")
+        reasons += upgrade_review(hist, feed)
+    note = layout_note(last, layout_signature(feed))
+    if note:
+        reasons.append(note)
+    return "; ".join(reasons) or None
+
+
+def upgrade_review(hist: History, feed: Feed) -> list[str]:
+    """What `upgrade` found the new major version changes in the feed's settings, when it moved to this major."""
+    try:
+        stored = json.loads(hist.get_meta(f"{UPGRADE_META}{feed.name}") or "{}")
+    except ValueError:
+        return []
+    if _major(stored.get("to")) != _major(feed.recipe.version_str) or not stored.get("changes"):
+        return []
+    return ["the new version changes: " + "; ".join(map(str, stored["changes"]))]
+
+
+def layout_note(last: dict | None, layout: object) -> str | None:
+    """What changed in the files' layout since the delivery ``last``, or None when nothing did, or when either
+    side has no recorded layout (runs from before layouts were kept)."""
+    before = ((last or {}).get("report") or {}).get("layout")
+    if not isinstance(before, dict) or not isinstance(layout, dict):
+        return None
+    changes = layout_changes(before, layout)
+    if not changes:
+        return None
+    when = _local((last or {}).get("started"))
+    return f"the files' layout changed since the last delivery on {when}: " + "; ".join(changes)
 
 
 def _local(iso: str | None) -> str:
@@ -121,9 +166,10 @@ def next_step(feed: Feed, status: str, run_dir: Path | None) -> str:
                 f"folio-exchange release {feed.name}")
     if status == "failed":
         return f"Fix the problem above, then run: folio-exchange run {feed.name}"
-    if status == "built" and not feed.delivers:
-        return (f"The files are in{where}. This feed has no delivery set up yet; add one with "
-                "`folio-exchange init` before anything can be sent.")
+    if status in ("built", "success") and not feed.delivers:
+        return (f"Dry run: nothing was sent. The files are in{where}; `folio-exchange history {feed.name}` "
+                "lists the runs. This feed has no delivery set up yet: when the vendor's details are ready, run "
+                "`folio-exchange init` again and choose how the files are delivered.")
     if status == "built":
         return f"To send these files, run: folio-exchange release {feed.name}"
     return ""
@@ -134,7 +180,76 @@ def alert(site: Site, feed: str | None, status: str, text: str, *, force: bool =
     if not force and not notify.should_alert(site.alerts, status):
         return []
     subject = f"FOLIO-Exchange [{site.name}]{f' {feed}' if feed else ''}: {status.upper()}"
-    return notify.send(site.alerts, subject, text, account=site.name)
+    sent = notify.send(site.alerts, subject, text, account=site.name)
+    if not sent and status != "test" and notify.has_channel(site.alerts):
+        _keep_unsent(site, subject, text)          # a test is for the person waiting on it, never for later
+    return sent
+
+
+UNSENT = "unsent_alerts"          # history meta: alerts no channel took, sent again by a later pass
+UNSENT_KEEP = 20
+
+
+def _keep_unsent(site: Site, subject: str, text: str) -> None:
+    """Keep an alert that no channel took, to send on a later pass. Never raises: when the history cannot be
+    written (perhaps why the pass failed), only the copy is lost."""
+    try:
+        with History(site.history_path) as hist:
+            kept = _unsent(hist)
+            kept.append({"subject": subject, "text": text, "raised": now_utc().isoformat(timespec="seconds")})
+            hist.set_meta(UNSENT, json.dumps(kept[-UNSENT_KEEP:]))
+    except (sqlite3.Error, OSError) as exc:
+        log.warning("Could not keep the unsent alert to send later: %s", type(exc).__name__)
+
+
+def _unsent(hist: History) -> list[dict]:
+    try:
+        kept = json.loads(hist.get_meta(UNSENT) or "[]")
+    except ValueError:
+        return []
+    return [a for a in kept if isinstance(a, dict)] if isinstance(kept, list) else []
+
+
+def resend_alerts(site: Site, hist: History) -> int:
+    """Send the alerts that could not be sent before, oldest first, each saying when it was first raised. Stops
+    at the first that still fails (the channel is still out of reach). Returns how many were sent.
+
+    Each is taken off the list in history before it is sent, and put back if the send fails, so a history that
+    cannot be written (a full disk) sends nothing rather than the same alerts again on every pass."""
+    if not notify.has_channel(site.alerts):
+        return 0
+    done = 0
+    while kept := _unsent(hist):
+        a, rest = kept[0], kept[1:]
+        try:
+            hist.set_meta(UNSENT, json.dumps(rest) if rest else None)
+        except sqlite3.Error as exc:
+            log.warning("Could not update the alerts kept to send later, so none is sent now: %s",
+                        type(exc).__name__)
+            break
+        subject = str(a.get("subject"))
+        if subject.endswith(": TEST"):
+            continue                                   # kept by an older version; a test is never sent late
+        text = f"First raised {_local(a.get('raised'))}, when it could not be sent.\n{a.get('text', '')}"
+        if not notify.send(site.alerts, subject, text, account=site.name):
+            try:
+                hist.set_meta(UNSENT, json.dumps([a, *_unsent(hist)][-UNSENT_KEEP:]))
+            except sqlite3.Error as exc:
+                log.warning("Could not keep the unsent alert to send later: %s", type(exc).__name__)
+            break
+        done += 1
+    return done
+
+
+def start_pass(site: Site, hist: History) -> None:
+    """What every pass does first, with the run lock held: send the alerts that could not be sent before, and
+    mark runs left 'running' by a process that stopped as failed (with an alert)."""
+    resend_alerts(site, hist)
+    stale = hist.fail_stale()
+    if stale:
+        log.warning("%d earlier run(s) never finished; marked as failed", stale)
+        alert(site, None, "failed", f"{stale} earlier run(s) stopped without finishing and were marked "
+                                    "failed. Check logs/folio-exchange.log.")
 
 
 def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) -> None:
@@ -172,7 +287,9 @@ def redact(data, key: str = ""):
         return [redact(v, key) for v in data]
     if key.lower() in credentials.SECRET_KEYS:
         return "[removed: secrets never go in files]"
-    if key in ("secret", "webhook") and data is not None and not credentials.is_secret_ref(data):
+    if (key in ("private_key", "known_hosts") and key_text(data)) or (isinstance(data, str) and "PRIVATE KEY" in data):
+        return "[removed: key text, not the path of a key file]"
+    if key in ("secret", "webhook", "heartbeat") and data is not None and not credentials.is_secret_ref(data):
         return "[removed: not keyring or env:NAME]"
     return data
 
@@ -182,34 +299,75 @@ def _flatten(data, prefix: str = "") -> dict[str, object]:
     if isinstance(data, dict):
         for k, v in data.items():
             out.update(_flatten(v, f"{prefix}.{k}" if prefix else str(k)))
+    elif isinstance(data, list) and any(isinstance(v, dict) for v in data):    # e.g. outputs, columns
+        for i, v in enumerate(data):
+            out.update(_flatten(v, f"{prefix}[{i}]"))
     else:
         out[prefix] = data
     return out
 
 
-def audit_settings(site: Site, hist: History) -> list[str]:
-    """Audit hand edits to site.yaml and the feed files since the last check (the files hold no secrets)."""
+def site_recipe_paths(site: Site) -> list[Path]:
+    """The recipe files in the site's own recipe folders (not the ones bundled with the program)."""
+    bundled = BUNDLED_RECIPES.resolve()
+    skip = {bundled, site.root.resolve()}
+    return [p for d in site.recipe_dirs if d.is_dir() and d.resolve() not in skip
+            for p in sorted(d.glob("*/*.yaml")) if p.is_file()]
+
+
+def _site_rel(site: Site, path: Path) -> str:
+    return path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
+
+
+def audit_settings(site: Site, hist: History, written: set[str] | None = None) -> list[str]:
+    """Audit hand edits to site.yaml, the feed files and the site's own recipe files since the last check (the
+    files hold no secrets). A file added or removed is audited with its settings, except on a new site's first
+    audit, which only records what is there, and a file in ``written`` (site-relative paths the caller just
+    wrote and audited itself), whose first snapshot is stored silently."""
     changed: list[str] = []
-    for path in [site.root / "site.yaml", *feed_paths(site)]:
-        rel = path.relative_to(site.root).as_posix() if path.is_relative_to(site.root) else str(path)
+    written = {Path(p).as_posix() for p in written or ()}
+    feeds = feed_paths(site)
+    known = dict(hist.db.execute("SELECT key, value FROM meta WHERE key GLOB 'settings:*' AND value IS NOT NULL"))
+    established = bool(known) or hist.get_meta(SETTINGS_AUDITED) is not None
+    present: set[str] = set()
+    for path in [site.root / "site.yaml", *feeds, *site_recipe_paths(site)]:
+        rel = _site_rel(site, path)
         key = f"settings:{rel}"
+        present.add(key)
         try:
             current = redact(read_yaml(path))
         except ConfigError:
             continue
-        stored = hist.get_meta(key)
+        stored = known.get(key)
         snapshot = json.dumps(current, sort_keys=True, default=str)
         if stored == snapshot:
             continue
         hist.set_meta(key, snapshot)
         if stored is None:
+            if established and rel not in written:
+                hist.audit(None, path.stem if path in feeds else None, "settings file added",
+                           {"file": rel, "settings": current})
+                changed.append(rel)
             continue
-        before, after = _flatten(json.loads(stored)), _flatten(current)
+        before, after = _flatten(redact(json.loads(stored))), _flatten(current)
         diff = {k: {"from": before.get(k), "to": after.get(k)}
                 for k in sorted(set(before) | set(after)) if before.get(k) != after.get(k)}
-        hist.audit(None, path.stem if rel.startswith(site.paths["feeds"]) else None, "settings changed",
+        if not diff:
+            continue                          # only masked in a snapshot stored before the mask
+        hist.audit(None, path.stem if path in feeds else None, "settings changed",
                    {"file": rel, "changes": diff})
         changed.append(rel)
+    feeds_rel = _site_rel(site, site.feeds_dir)
+    for key in sorted(set(known) - present):
+        rel = key.removeprefix("settings:")
+        feed = Path(rel).stem if Path(rel).parent == Path(feeds_rel) else None
+        hist.audit(None, feed, "settings file removed",
+                   {"file": rel, "settings": redact(json.loads(known[key]))})
+        hist.db.execute("DELETE FROM meta WHERE key=?", (key,))
+        hist.db.commit()
+        changed.append(rel)
+    if not established:
+        hist.set_meta(SETTINGS_AUDITED, datetime.now(timezone.utc).isoformat(timespec="seconds"))
     for path in feed_paths(site):
         key = f"feed_seen:{path.stem}"
         if hist.get_meta(key) is None:
@@ -225,6 +383,13 @@ def feed_created(hist: History, feed: Feed) -> datetime:
     return datetime.fromtimestamp(feed.path.stat().st_mtime, timezone.utc)
 
 
+def delivery_clash(site: Site, feed: Feed) -> str | None:
+    """For a paused feed run or released by hand: another feed of the site, paused or not, that sends one of
+    its file names to the same place. Loading compares enabled feeds only (a clash there stops both), so an
+    enabled feed owns its file names and keeps running; the paused copy is refused here."""
+    return None if feed.enabled else collision_with(feed, load_all(site)[0])
+
+
 # ------------------------------------------------------------------ runs
 def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
              sync_report: dict | None = None) -> RunResult:
@@ -232,44 +397,61 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
     out_base = site.out_dir / feed.name
     run_dir = _new_run_dir(out_base, hist=hist)
     dest = delivery.destination_key(feed.delivery)
-    previous = hist.last_run(feed.name)
-    run_id = hist.start_run(feed.name, feed.recipe.id, feed.recipe.version_str, opts.trigger, run_dir, dest)
+    # what the alerts compare with: never a preview, whose warnings come from a sample
+    previous = next((r for r in hist.runs(feed.name, 100) if r.get("status") != "preview"), None)
+    source = folio_source(site)
+    run_id = hist.start_run(feed.name, feed.recipe.id, feed.recipe.version_str, opts.trigger, run_dir, dest,
+                            folio_source=source)
     report: dict = {
         "version": __version__, "feed": feed.name, "recipe": feed.recipe.id,
         "recipe_version": feed.recipe.version_str, "trigger": opts.trigger, "started": now_utc().isoformat(),
         "run_dir": str(run_dir), "destination": delivery.describe_destination(feed.delivery),
+        "recipe_sha256": recipe_digest(feed.recipe), "layout": layout_signature(feed), "folio_source": source,
     }
+    if site.folio.get("verify_tls") is False:
+        report["tls_unchecked"] = True                 # FOLIO's certificate was not checked (folio.verify_tls)
     status, code, error = "success", 0, None
     rep: BuildReport | None = None
     digests: list[dict] = []
     sent: list[str] = []
+    would_hold: str | None = None          # why a delivery would wait; kept on built and blocked runs too
     try:
         if sync_report is not None:
             report["sync"] = sync_report
         elif not opts.skip_sync:
             report["sync"] = sync(site, set(feed.reads), opts.full)
-        cache = Cache(site.cache_path)
+        cache = None
         try:
+            cache = Cache(site.cache_path)
+            other = other_folio(cache, site)
+            if other:
+                raise FxError(f"The local cache holds records from {other}, not {folio_source(site)}. Run the feed "
+                              "without --skip-sync (or `folio-exchange sync`) to download this FOLIO's records.")
             not_ready = cache_not_ready(cache, feed)
             if not_ready:
                 raise FxError(f"The cache cannot be used for feed {feed.name} yet ({not_ready}). Run it without "
                               "--skip-sync, or run `folio-exchange sync` first.")
             rep = build(cache, feed, run_dir)
         except sqlite3.DatabaseError as exc:
-            cache.close()
+            if cache is not None:
+                cache.close()
+            if not cache_damaged(exc):
+                raise FxError(cache_problem(site, exc)) from None
             moved = quarantine_cache(site)
             raise FxError(f"The local cache was damaged ({exc}); it was moved aside to {moved.name}. Run the feed "
                           "again without --skip-sync to download everything afresh.") from None
         finally:
-            cache.close()
+            if cache is not None:
+                cache.close()
         report["build"] = as_dict(rep)
-        warnings = marc_warnings(site, rep)
+        warnings = marc_warnings(site, rep) + legacy_warnings(rep, feed.legacy)
         if warnings:
             report["warnings"] = warnings
             for w in warnings:
                 log.warning("%s", w)
         digests = [file_digest(run_dir / name) for name in rep.files]
         report["files"] = digests
+        would_hold = hold_reason(hist, feed, source) if feed.delivers else None
         checks.required_fields(feed, rep)
         last = hist.last_delivered(feed.name, dest)
         report["last_delivered_items"] = last.get("items") if last else None
@@ -277,21 +459,29 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
             checks.item_ratio(feed, rep.items_written, last.get("items") if last else None)
         if opts.no_deliver:
             status = "built"
+            if would_hold:
+                report["would_hold"] = would_hold
             log.info("--no-deliver: files left in %s", run_dir)
         elif not feed.delivers:
             log.info("Feed %s has transport none; files stay in %s", feed.name, run_dir)
         else:
-            reason = hold_reason(hist, feed)
-            if reason:
+            clash = delivery_clash(site, feed)
+            if clash:
+                raise FxError(f"Nothing was sent: {clash}")
+            if would_hold:
                 status, code = "held", 2
-                report["held"] = reason
-                log.warning("Held for review (%s). %s", reason, next_step(feed, "held", run_dir))
+                report["held"] = would_hold
+                log.warning("Held for review (%s). %s", would_hold, next_step(feed, "held", run_dir))
             else:
                 sent = delivery.deliver([run_dir / n for n in rep.files], feed.delivery, feed.name)
                 report["delivered"] = sent
     except SafetyCheckFailed as exc:
         status, code = "blocked", 2
-        error = (f"{exc} The files are in {run_dir}. If the drop is not expected, fix it in FOLIO and run "
+        also = ""
+        if would_hold:
+            report["would_hold"] = would_hold
+            also = f" It would also have been held for review: {would_hold}."
+        error = (f"{exc}{also} The files are in {run_dir}. If the drop is not expected, fix it in FOLIO and run "
                  f"`folio-exchange run {feed.name}` again; this run is then never sent.")
         log.error("%s", error)
     except DeliveryError as exc:
@@ -363,19 +553,64 @@ def cache_not_ready(cache: Cache, feed: Feed) -> str | None:
 def _prune(site: Site, feed: Feed, hist: History) -> None:
     last = hist.last_delivered(feed.name)
     # Runs waiting for release are kept; once a later delivery supersedes them they can be pruned.
-    protect = {Path(r["run_dir"]) for r in hist.runs(feed.name, 200)
+    protect = {run_path(site, r["run_dir"]) for r in hist.runs(feed.name, 200)
                if r.get("run_dir") and r.get("status") in ("held", "blocked")
                and (not last or r["id"] > last["id"])}
     if last and last.get("run_dir"):
-        protect.add(Path(last["run_dir"]))
+        protect.add(run_path(site, last["run_dir"]))
     delivery.prune_runs(site.out_dir / feed.name, int(site.runs["keep_local_runs"]), protect)
 
 
-def quarantine_cache(site: Site) -> Path:
-    """Move a damaged cache (and its -wal/-shm files) aside; the next sync starts afresh with a full download.
-    History is never touched."""
+def run_path(site: Site, stored: str | Path) -> Path:
+    """Where a run's folder is now. History may hold the absolute path from before the site folder moved, so the
+    folder is looked for as <out>/<feed>/<stamp> under the site's current output folder (the old place only
+    while it still exists and the new one does not)."""
+    path = Path(stored)
+    if not path.is_absolute():
+        return site.out_dir / path
+    here = site.out_dir / path.parent.name / path.name
+    return here if here.exists() or not path.exists() else path
+
+
+SQLITE_CORRUPT, SQLITE_NOTADB = 11, 26
+
+
+def cache_damaged(exc: sqlite3.DatabaseError) -> bool:
+    """True only when SQLite says the file itself is damaged or is not a database. A full disk, an I/O error, a
+    lock or a file that cannot be opened is not damage: moving a healthy cache aside then loses it."""
+    code = getattr(exc, "sqlite_errorcode", None)        # Python 3.11+
+    if code is not None:
+        return code & 0xFF in (SQLITE_CORRUPT, SQLITE_NOTADB)
+    text = str(exc).lower()
+    return "malformed" in text or "not a database" in text
+
+
+def cache_problem(site: Site, exc: sqlite3.DatabaseError) -> str:
+    """A cache error that is not damage, in words that say what to look at. The cache is left as it is."""
+    text, where = str(exc).lower(), site.cache_path.parent
+    kept = "The cache was left as it is, so the next run carries on from it."
+    if "full" in text:
+        return (f"The disk is full ({exc}). Free some space on the drive that holds {where} (and on the system "
+                f"drive, where large builds keep temporary files), then run again. {kept}")
+    if "locked" in text or "busy" in text:
+        return (f"The local cache is in use by another program ({exc}), perhaps a backup or a virus scan. Run "
+                f"again later. {kept}")
+    if "unable to open" in text:
+        return (f"The local cache could not be opened ({exc}). Check that {where} exists and that this Windows "
+                "account may change it, then run again.")
+    return f"The local cache could not be read or written ({exc}). Check the disk that holds {where}. {kept}"
+
+
+def quarantine_cache(site: Site, kind: str = "broken") -> Path:
+    """Move a damaged cache, or one filled from another FOLIO (``kind="other-folio"``), and its -wal/-shm
+    files aside; the next sync starts afresh with a full download. History is never touched. Names are never
+    reused, so one quarantine never replaces another."""
     stamp = now_utc().strftime("%Y%m%d-%H%M%S")
-    moved = site.cache_path.with_name(f"cache.broken-{stamp}.sqlite")
+    moved = site.cache_path.with_name(f"cache.{kind}-{stamp}.sqlite")
+    n = 1
+    while any(moved.with_name(moved.name + s).exists() for s in ("", "-wal", "-shm")):
+        n += 1
+        moved = site.cache_path.with_name(f"cache.{kind}-{stamp}-{n:02d}.sqlite")
     for suffix in ("", "-wal", "-shm"):
         src = site.cache_path.with_name(site.cache_path.name + suffix)
         if src.exists():
@@ -383,17 +618,54 @@ def quarantine_cache(site: Site) -> Path:
     return moved
 
 
+def folio_source(site: Site) -> str:
+    """Which FOLIO the cache's records come from: the API address and the tenant."""
+    return source_of(site.folio)
+
+
+def source_of(folio: dict) -> str:
+    """``folio_source`` for a site.yaml ``folio:`` section."""
+    return f"{str(folio.get('base_url') or '').rstrip('/').lower()} tenant {folio.get('tenant')}"
+
+
+def source_change_note(before: dict | None, after: dict) -> str | None:
+    """What a person should know when a site is pointed at another FOLIO (address or tenant), or None."""
+    if not before or not before.get("base_url") or source_of(before) == source_of(after):
+        return None
+    return (f"This site now reads from {source_of(after)} instead of {source_of(before)}. Each feed that has "
+            "delivered files before holds its next run for review, so the files from this FOLIO are looked at "
+            "before they reach the vendor (send them with `folio-exchange release <feed>`, or Release on the page).")
+
+
+def other_folio(cache: Cache, site: Site) -> str | None:
+    """The FOLIO a cache was filled from, when it is not this site's (a changed address or tenant)."""
+    have = cache.get_meta("folio_source")
+    return have if have is not None and have != folio_source(site) else None
+
+
 def sync(site: Site, reads: set[str], full: bool = False) -> dict:
-    """Update the shared cache. A damaged cache is moved aside once and rebuilt with a full download."""
+    """Update the shared cache. A damaged cache is moved aside once and rebuilt with a full download, and so is
+    one filled from another FOLIO: a delta on top of it would mix two catalogues."""
     for attempt in (1, 2):
         cache = None
         try:
             cache = Cache(site.cache_path)
-            return as_dict(Syncer(client_for(site), cache, site).run(reads, force_full=full))
+            other = other_folio(cache, site)
+            if other:
+                cache.close()
+                moved = quarantine_cache(site, "other-folio")
+                log.warning("The local cache holds records from %s, not %s; moved aside to %s, downloading "
+                            "everything from this FOLIO", other, folio_source(site), moved.name)
+                cache, full = Cache(site.cache_path), True
+            result = Syncer(client_for(site), cache, site).run(reads, force_full=full)
+            cache.set_meta("folio_source", folio_source(site))
+            return as_dict(result)
         except sqlite3.DatabaseError as exc:
             if cache is not None:
                 cache.close()
                 cache = None
+            if not cache_damaged(exc):
+                raise FxError(cache_problem(site, exc)) from None
             moved = quarantine_cache(site)
             if attempt == 2:
                 raise FxError(f"The local cache is damaged ({exc}) and could not be rebuilt; it was moved aside to "
@@ -413,11 +685,7 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
     feeds being run), so the shared cache never goes stale for another feed."""
     results: list[RunResult] = []
     with RunLock(site.lock_path), History(site.history_path) as hist:
-        stale = hist.fail_stale()
-        if stale:
-            log.warning("%d earlier run(s) never finished; marked as failed", stale)
-            alert(site, None, "failed", f"{stale} earlier run(s) stopped without finishing and were marked "
-                                        "failed. Check logs/folio-exchange.log.")
+        start_pass(site, hist)
         audit_settings(site, hist)
         hist.prune(int(site.runs["history_months"]))
         for name, err in (bad_feeds or {}).items():
@@ -507,6 +775,47 @@ def overdue(site: Site, feed: Feed, hist: History, now: datetime) -> str | None:
     return None
 
 
+def given_up(site: Site, feed: Feed, hist: History, now: datetime) -> tuple[datetime, list[dict]] | None:
+    """The feed's latest slot and its scheduled runs when every attempt the slot allows has failed (or FOLIO
+    refused the login), so nothing more is tried until the next slot; else None."""
+    if not feed.enabled:
+        return None
+    s = schedule.parse(feed.schedule)
+    slot = schedule.last_slot(s, now, site.timezone)
+    created = feed_created(hist, feed)
+    if slot is None or slot <= created:
+        return None
+    runs = hist.runs_since(feed.name, slot)
+    tries = [r for r in runs if r.get("trigger") == "schedule"]
+    if not tries or any(r.get("status") != "failed" for r in tries) or any(r.get("status") == "success"
+                                                                            for r in runs):
+        return None
+    if schedule.is_due(s, now, site.timezone, runs, int(site.runs["max_attempts_per_slot"]), created):
+        return None
+    return slot, tries
+
+
+def report_given_up(site: Site, feeds: list[Feed], hist: History, now: datetime) -> None:
+    """Alert once (remembered in history meta) when a feed's slot is given up after its last allowed attempt."""
+    for f in feeds:
+        hit = given_up(site, f, hist, now)
+        if hit is None:
+            continue
+        slot, tries = hit
+        key = f"slot_given_up:{f.name}"
+        if hist.get_meta(key) == slot.isoformat():
+            continue
+        hist.set_meta(key, slot.isoformat())
+        nxt = schedule.next_slot(schedule.parse(f.schedule), now, site.timezone)
+        until = f"its next slot ({_local(nxt.isoformat())})" if nxt else "its next slot"
+        text = (f"Feed {f.name}: the scheduled run due {_local(slot.isoformat())} was given up after {len(tries)} "
+                f"failed attempt(s), so nothing was delivered and nothing more is tried until {until}.\n"
+                f"The last attempt failed: {tries[-1].get('error') or 'see logs/folio-exchange.log'}\n"
+                f"Fix the problem, then run: folio-exchange run {f.name}")
+        log.warning("%s", text.replace("\n", " "))
+        alert(site, f.name, "failed", text)
+
+
 # ------------------------------------------------------------- release
 def releasable_run(hist: History, feed: Feed, run_dir: Path | None, force: bool = False) -> dict:
     """The run to release: the newest held, blocked or built run that no later delivery has superseded, or
@@ -541,44 +850,78 @@ def releasable_run(hist: History, feed: Feed, run_dir: Path | None, force: bool 
     return row
 
 
+def _release_ready(site: Site, hist: History, feed: Feed, run_dir: Path | None, force: bool) -> tuple[dict, dict]:
+    """The run to release and the summary shown before sending, after checking it can still be sent: its files
+    unchanged since the build, the same destination, and (for a built run) the item count."""
+    row = releasable_run(hist, feed, run_dir, force)
+    rdir = run_path(site, row["run_dir"])
+    files = row.get("files") or []
+    if not files or not rdir.is_dir():
+        raise FxError(f"{rdir} has no recorded files; it cannot be released. Run the feed again.")
+    for f in files:
+        path = rdir / f["name"]
+        if not path.is_file():
+            raise FxError(f"{path} is missing; the run cannot be released. Run the feed again.")
+        if file_digest(path)["sha256"] != f["sha256"]:
+            raise FxError(f"{path} changed after it was built (was it opened and saved in another program?). "
+                          "Run the feed again rather than sending an edited file.")
+    dest = delivery.destination_key(feed.delivery)
+    if row.get("destination") and row["destination"] != dest:
+        raise FxError(f"The feed now delivers to {dest}, but this run was built for {row['destination']}. "
+                      "Run the feed again.")
+    clash = delivery_clash(site, feed)
+    if clash:
+        raise FxError(f"Not released: {clash}")
+    last = hist.last_delivered(feed.name, dest)
+    if row["status"] == "built" and not force:
+        checks.item_ratio(feed, int(row.get("items") or 0), last.get("items") if last else None)
+    rep = row.get("report") or {}
+    would = rep.get("would_hold")
+    note = layout_note(last, rep.get("layout"))
+    reasons: list[str] = []                  # each said once: a blocked run's error already names would_hold
+    for part, core in ((row.get("error"), row.get("error")), (rep.get("held"), rep.get("held")),
+                       (f"a delivery would be held for review: {would}", would), (note, note)):
+        if core and not any(core in r for r in reasons):
+            reasons.append(part)
+    summary = {
+        "feed": feed.name, "run_dir": str(rdir), "status": row["status"], "built": row.get("started"),
+        "recipe": f"{row.get('recipe')}@{row.get('recipe_version')}", "bibs": row.get("bibs"),
+        "items": row.get("items"), "last_delivered_items": last.get("items") if last else None,
+        "last_delivered": last.get("started") if last else None,
+        "reason": reasons[0] if len(reasons) == 1 else " ".join(
+            r[:1].upper() + r[1:] + ("" if r.endswith(".") else ".") for r in reasons) or None,
+        "files": [(f["name"], f["bytes"]) for f in files], "destination": delivery.describe_destination(
+            feed.delivery),
+        "newer_runs": [r["run_dir"] for r in hist.runs(feed.name, 20)
+                       if r["id"] > row["id"] and r.get("status") in ("success",) and r.get("delivered")],
+    }
+    return row, summary
+
+
 def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False, actor: str | None = None,
             confirm=None) -> RunResult:
     """Deliver a held, blocked or built run after a person has looked at it. ``confirm(summary) -> bool``
-    is asked before anything is sent. Built runs still pass the checks unless ``force``; releasing a held
-    or blocked run is itself the person's approval."""
+    is asked before anything is sent, without the site lock held (a person may leave the question open), so
+    the run is checked again under the lock before sending. Built runs still pass the checks unless ``force``;
+    releasing a held or blocked run is itself the person's approval. A feed with no delivery is refused."""
+    if not feed.delivers:
+        raise FxError(f"Feed {feed.name} has no delivery set up, so there is nothing to send; its files stay in "
+                      "the run folder. Add a delivery with `folio-exchange init`.")
+    asked = None
+    if confirm is not None:
+        with RunLock(site.lock_path), History(site.history_path) as hist:
+            row, summary = _release_ready(site, hist, feed, run_dir, force)
+        if not confirm(summary):
+            return RunResult(feed.name, row["status"], 2, run_path(site, row["run_dir"]), {"cancelled": True, **summary})
+        asked = (row["id"], summary)
     with RunLock(site.lock_path), History(site.history_path) as hist:
-        row = releasable_run(hist, feed, run_dir, force)
-        rdir = Path(row["run_dir"])
+        row, summary = _release_ready(site, hist, feed, run_dir, force)
+        if asked is not None and asked != (row["id"], summary):
+            raise FxError(f"While you were deciding, feed {feed.name} changed (another run, or a delivery, was "
+                          "recorded), so nothing was sent. Run the release again to see what it would send now.")
+        rdir = run_path(site, row["run_dir"])
         files = row.get("files") or []
-        if not files or not rdir.is_dir():
-            raise FxError(f"{rdir} has no recorded files; it cannot be released. Run the feed again.")
-        for f in files:
-            path = rdir / f["name"]
-            if not path.is_file():
-                raise FxError(f"{path} is missing; the run cannot be released. Run the feed again.")
-            if file_digest(path)["sha256"] != f["sha256"]:
-                raise FxError(f"{path} changed after it was built (was it opened and saved in another program?). "
-                              "Run the feed again rather than sending an edited file.")
         dest = delivery.destination_key(feed.delivery)
-        if row.get("destination") and row["destination"] != dest:
-            raise FxError(f"The feed now delivers to {dest}, but this run was built for {row['destination']}. "
-                          "Run the feed again.")
-        last = hist.last_delivered(feed.name, dest)
-        if row["status"] == "built" and not force:
-            checks.item_ratio(feed, int(row.get("items") or 0), last.get("items") if last else None)
-        summary = {
-            "feed": feed.name, "run_dir": str(rdir), "status": row["status"], "built": row.get("started"),
-            "recipe": f"{row.get('recipe')}@{row.get('recipe_version')}", "bibs": row.get("bibs"),
-            "items": row.get("items"), "last_delivered_items": last.get("items") if last else None,
-            "last_delivered": last.get("started") if last else None,
-            "reason": row.get("error") or (row.get("report") or {}).get("held"),
-            "files": [(f["name"], f["bytes"]) for f in files], "destination": delivery.describe_destination(
-                feed.delivery),
-            "newer_runs": [r["run_dir"] for r in hist.runs(feed.name, 20)
-                           if r["id"] > row["id"] and r.get("status") in ("success",) and r.get("delivered")],
-        }
-        if confirm is not None and not confirm(summary):
-            return RunResult(feed.name, row["status"], 2, rdir, {"cancelled": True, **summary})
         try:
             sent = delivery.deliver([rdir / f["name"] for f in files], feed.delivery, feed.name)
         except DeliveryError as exc:
@@ -622,10 +965,13 @@ def preview(site: Site, feed: Feed, instances: int = 10) -> RunResult:
         samples = checks.sample_files(feed)
         if samples:
             report["conformance"] = checks.conformance(feed, run_dir, samples, rep.outputs)
+        warnings = legacy_warnings(rep, feed.legacy)
         try:
             checks.required_fields(feed, rep)
         except SafetyCheckFailed as exc:
-            report["warnings"] = [str(exc)]
+            warnings.append(str(exc))
+        if warnings:
+            report["warnings"] = warnings
     except FxError as exc:
         status, error = "failed", str(exc)
     except Exception as exc:  # noqa: BLE001 - report every failure the same way

@@ -13,20 +13,32 @@ records by instance id (a read).
 from __future__ import annotations
 
 import logging
+import ssl
+import sys
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from . import __version__, reads
-from .errors import FxError, PatronDataRefused
+from .errors import ConfigError, FxError, PatronDataRefused
 
 log = logging.getLogger(__name__)
 
 RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
+JUDGED = {400, 401, 403, 422}         # login answers that mean FOLIO looked at the user name and password
+# What FOLIO's certificate is checked against: True (the usual public certificates), False (not checked),
+# the path of a PEM file, or an SSL context (the Windows certificate store).
+Verify = bool | str | ssl.SSLContext
+UNTRUSTED = ("FOLIO's certificate is not trusted by this computer. If your campus or a network proxy issues its "
+             "own certificates, set folio.ca_bundle in site.yaml to that certificate's PEM file, or to windows "
+             "to trust the Windows certificate store (as web browsers on this computer do). Do not switch off "
+             "folio.verify_tls: that would let anyone on the network read the service account's password.")
 
 
 class FolioError(FxError):
@@ -66,12 +78,65 @@ def _no_redirect(resp) -> None:
         )
 
 
+def tls_verify(folio: dict, root: Path | str | None = None) -> Verify:
+    """What FOLIO's certificate is checked against, from the site's folio settings: ``verify_tls: false`` turns
+    the check off; ``ca_bundle`` is a PEM file (relative paths are from the site folder ``root``) or windows,
+    the Windows certificate store; otherwise the usual public certificates."""
+    if folio.get("verify_tls") is False:
+        return False
+    bundle = folio.get("ca_bundle")
+    if not bundle:
+        return True
+    bundle = str(bundle).strip()
+    if bundle.lower() == "windows":
+        return _windows_store()
+    path = Path(bundle).expanduser()
+    if not path.is_absolute() and root is not None:
+        path = Path(root) / path
+    if not path.is_file():
+        raise ConfigError(f"folio.ca_bundle: {path} was not found. Save the certificate (a PEM file) there, or "
+                          "set ca_bundle to windows to use the Windows certificate store.")
+    return str(path.resolve())
+
+
+def _windows_store() -> ssl.SSLContext:
+    if sys.platform != "win32":
+        raise ConfigError("folio.ca_bundle: windows (the Windows certificate store) only works on Windows. On "
+                          "this computer, set ca_bundle to the path of a PEM file of the certificates to trust.")
+    try:
+        import truststore
+    except ImportError:
+        raise ConfigError("folio.ca_bundle: windows needs the truststore package, which is missing. Install "
+                          "FOLIO-Exchange again to add it.") from None
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
+class _ContextAdapter(HTTPAdapter):
+    """Checks certificates with one SSL context (the Windows certificate store) instead of the PEM bundle."""
+
+    def __init__(self, context: ssl.SSLContext) -> None:
+        self._context = context
+        super().__init__()
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["ssl_context"] = self._context
+        super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args: Any, **kwargs: Any) -> Any:
+        kwargs["ssl_context"] = self._context
+        return super().proxy_manager_for(*args, **kwargs)
+
+
+def _untrusted(exc: Exception) -> bool:
+    text = str(exc)                           # the Windows store's own wording names the error class only
+    return any(m in text for m in ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed", "SSLCertVerificationError"))
+
+
 def _reason(exc: Exception) -> str:
     text = str(exc)
     for marker, plain in (("10061", "connection refused"), ("Connection refused", "connection refused"),
                           ("getaddrinfo", "the name was not found"), ("Name or service not known",
-                                                                      "the name was not found"),
-                          ("CERTIFICATE_VERIFY_FAILED", "its certificate is not trusted")):
+                                                                      "the name was not found")):
         if marker in text:
             return plain
     return type(exc).__name__
@@ -95,7 +160,7 @@ class FolioClient:
         *,
         timeout: float = 120,
         max_retries: int = 5,
-        verify_tls: bool = True,
+        verify_tls: Verify = True,
         user_agent: str = f"folio-exchange/{__version__}",
     ) -> None:
         if not base_url:
@@ -112,7 +177,11 @@ class FolioClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.session = requests.Session()
-        self.session.verify = verify_tls
+        if isinstance(verify_tls, ssl.SSLContext):
+            self.session.mount("https://", _ContextAdapter(verify_tls))
+            self.session.verify = True
+        else:
+            self.session.verify = verify_tls
         self.session.max_redirects = 0  # never follow a redirect: it could carry the token elsewhere
         self.session.headers.update(
             {
@@ -139,6 +208,8 @@ class FolioClient:
         try:
             resp = self.session.post(url, json=body, timeout=self.timeout, allow_redirects=False)
         except requests.ConnectionError as exc:
+            if _untrusted(exc):
+                raise FolioUnreachable(f"Cannot connect to FOLIO at {self.base_url}: {UNTRUSTED}") from None
             if self._reached:
                 raise _TransientLoginError(type(exc).__name__) from None
             raise FolioUnreachable(
@@ -152,11 +223,14 @@ class FolioClient:
         _no_redirect(resp)
         if resp.status_code in RETRY_STATUSES:
             raise _TransientLoginError(f"login returned HTTP {resp.status_code}")
-        if resp.status_code == 404:
+        first = resp.status_code
+        if first == 404:
             # Very old FOLIO releases (pre-Poppy) only have the legacy endpoint.
             resp = self.session.post(f"{self.base_url}/authn/login", json=body, timeout=self.timeout,
                                      allow_redirects=False)
             _no_redirect(resp)
+            if resp.status_code in RETRY_STATUSES:
+                raise _TransientLoginError(f"login returned HTTP 404, then HTTP {resp.status_code}")
             if resp.ok:
                 self._token = resp.headers.get("x-okapi-token")
                 self._expires = datetime.now(timezone.utc) + timedelta(days=1)
@@ -164,9 +238,19 @@ class FolioClient:
             self._token = self.session.cookies.get("folioAccessToken") or resp.headers.get("x-okapi-token")
             exp = (resp.json() or {}).get("accessTokenExpiration")
             self._expires = _parse_dt(exp) or datetime.now(timezone.utc) + timedelta(minutes=10)
+        if not resp.ok and resp.status_code not in JUDGED:
+            # No password was judged (the login module is missing or restarting, say during an upgrade): not a
+            # refusal, so a later attempt may try again.
+            also = f", then /authn/login HTTP {resp.status_code}" if first == 404 else ""
+            raise FolioUnreachable(
+                f"FOLIO's login service did not answer as expected (/authn/login-with-expiry returned HTTP {first}"
+                f"{also}), so the password was not checked. FOLIO may be part way through an upgrade or restart: "
+                "run again later (a scheduled run tries again at its next hourly start). If it continues, check "
+                "folio.base_url in site.yaml and ask your FOLIO host.", status=first)
         if not resp.ok or not self._token:
+            where = " from /authn/login; /authn/login-with-expiry returned HTTP 404" if first == 404 else ""
             self._refused = LoginFailed(
-                f"FOLIO refused the login for user '{self.username}' (HTTP {resp.status_code}). Check the user "
+                f"FOLIO refused the login for user '{self.username}' (HTTP {resp.status_code}{where}). Check the user "
                 "name, folio.tenant and the password (`folio-exchange secret status`). To avoid locking the "
                 "account, FOLIO-Exchange does not try again until you run it again."
             )
@@ -247,6 +331,8 @@ class FolioClient:
                 err = exc
             except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError, ValueError) as exc:
                 # ValueError covers a truncated/invalid JSON body
+                if _untrusted(exc):
+                    raise FolioUnreachable(f"Cannot connect to FOLIO at {self.base_url}: {UNTRUSTED}") from None
                 err = exc
             attempt += 1
             if attempt > self.max_retries:

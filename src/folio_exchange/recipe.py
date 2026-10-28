@@ -8,6 +8,8 @@ problem is reported in plain language with the file and the setting's path.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import re
 from collections.abc import Iterable
@@ -18,7 +20,9 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import credentials, schedule
-from .config import merge, read_yaml, reject_secrets
+from .config import BUNDLED_RECIPES, merge, read_yaml, reject_secrets
+from .dates import legacy_format_problem
+from .delivery import KEY_TYPES
 from .errors import ConfigError, RecipeError
 from .fields import FIELDS, suggest
 from .reads import READS
@@ -56,11 +60,12 @@ SELECTION_DEFAULTS: dict[str, Any] = {
 OPTIONS_DEFAULTS: dict[str, Any] = {"last_circ_date_from": "checkout", "loan_window_months": 12, "timezone": "UTC"}
 LEGACY_DEFAULTS: dict[str, Any] = {
     "created_date_note_type": None, "circ_count_note_type": None, "last_circ_date_note_type": None,
+    "date_format": None,
 }
 CHECKS_DEFAULTS: dict[str, Any] = {"min_item_ratio": 0.9, "must_be_filled": []}
 DELIVERY_DEFAULTS: dict[str, Any] = {
     "transport": "none", "upload_mode": "staged", "host": None, "port": 22, "username": None, "remote_dir": ".",
-    "host_key_fingerprint": None, "host_key_confirmed": True, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
+    "host_key_fingerprint": None, "host_key_type": None, "host_key_confirmed": True, "known_hosts": None, "secret": "keyring", "private_key": None, "directory": None,
 }
 # A shared recipe may only say how files travel; where they go and which server key to trust are local.
 RECIPE_DELIVERY_KEYS = ("transport", "upload_mode")
@@ -77,7 +82,7 @@ OUTPUT_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 COLUMN_KEYS = ("header", "field", "required")
 LINKS = {"999 ff $i": "instance_id", "001": "instance_hrid"}
-RESERVED_FEED_NAMES = {"folio", "smtp", "webhook", "all"}
+RESERVED_FEED_NAMES = {"folio", "smtp", "webhook", "heartbeat", "all"}
 
 
 # ------------------------------------------------------------------ versions
@@ -462,11 +467,18 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
     fp = dlv.get("host_key_fingerprint")
     if fp is not None and not (isinstance(fp, str) and fp.startswith("SHA256:") and len(fp) > 20):
         c.add("delivery.host_key_fingerprint", "must look like SHA256:... (run `folio-exchange check --delivery`)")
+    kind = dlv.get("host_key_type")
+    if kind is not None and kind not in KEY_TYPES:
+        c.add("delivery.host_key_type", f"must be one of {', '.join(KEY_TYPES)}, got {kind!r}")
     if "host_key_confirmed" in dlv:
         c.boolean(dlv["host_key_confirmed"], "delivery.host_key_confirmed")
     for key in ("host", "username", "remote_dir", "known_hosts", "private_key", "directory"):
         if dlv.get(key) is not None and not isinstance(dlv[key], str):
             c.add(f"delivery.{key}", "must be text")
+    for key in ("private_key", "known_hosts"):
+        if key_text(dlv.get(key)):
+            c.add(f"delivery.{key}", "holds the key itself, not the path of a file; give the path of the key "
+                                     "file, or store the key from the page")
 
     if data.get("default_schedule") is not None:
         try:
@@ -474,6 +486,11 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
         except ConfigError as exc:
             c.add("default_schedule", str(exc))
     return c.problems
+
+
+def key_text(value: object) -> bool:
+    """True when a delivery path setting holds key text (a line break, or PEM armour) instead of a file path."""
+    return isinstance(value, str) and ("\n" in value or "\r" in value or "PRIVATE KEY" in value)
 
 
 def load_recipe_file(path: Path) -> Recipe:
@@ -496,6 +513,20 @@ def load_recipe_file(path: Path) -> Recipe:
     return Recipe(id=data["recipe"], version=parse_version(data["version"]), data=data, path=path)
 
 
+def _normalised(content: bytes) -> bytes:
+    """A recipe file's bytes apart from line endings and a byte-order mark (a Windows checkout may store CRLF)."""
+    return content.removeprefix(b"\xef\xbb\xbf").replace(b"\r\n", b"\n")
+
+
+def recipe_digest(recipe: Recipe) -> str | None:
+    """SHA-256 of the recipe file, ignoring line endings and a byte-order mark, so two libraries can tell
+    whether they run the same recipe text. None if the file cannot be read."""
+    try:
+        return hashlib.sha256(_normalised(recipe.path.read_bytes())).hexdigest()
+    except OSError:
+        return None
+
+
 class RecipeLibrary:
     """Every recipe version in the given folders. Earlier folders win on an identical id and version."""
 
@@ -503,6 +534,7 @@ class RecipeLibrary:
         self.dirs = [Path(d) for d in dirs]
         self._recipes: dict[tuple[str, tuple[int, int, int]], Recipe] = {}
         self._problems: list[str] = []
+        self._shadowed: list[tuple[Recipe, Path]] = []      # (the copy used, a later copy it hides)
         for d in self.dirs:
             if not d.is_dir():
                 continue
@@ -514,13 +546,33 @@ class RecipeLibrary:
                 except RecipeError as exc:
                     self._problems.append(f"{path}:\n  " + str(exc).replace("\n", "\n  "))
                     continue
-                self._recipes.setdefault((r.id, r.version), r)
+                kept = self._recipes.setdefault((r.id, r.version), r)
+                if kept is not r:
+                    self._shadowed.append((kept, path))
 
     def all(self) -> list[Recipe]:
         return sorted(self._recipes.values(), key=lambda r: (r.id, r.version))
 
     def problems(self) -> list[str]:
         return list(self._problems)
+
+    def shadow_warnings(self) -> list[str]:
+        """Plain warnings for each recipe file used in place of another copy of the same id and version (usually
+        the one bundled with FOLIO-Exchange) whose content differs. Overriding is allowed, so this only warns."""
+        out = []
+        for kept, hidden in self._shadowed:
+            try:
+                same = _normalised(kept.path.read_bytes()) == _normalised(hidden.read_bytes())
+            except OSError:
+                same = False
+            if same:
+                continue
+            other = ("the copy that comes with FOLIO-Exchange" if hidden.resolve().is_relative_to(
+                BUNDLED_RECIPES.resolve()) else str(hidden))
+            out.append(f"{kept.path} is used for {kept.ref}, but it differs from {other}. Feeds on {kept.ref} send "
+                       f"what this local copy says. If the change is meant, give it its own version number so the "
+                       "run history can tell the two apart; if not, delete the local copy.")
+        return out
 
     def ids(self) -> list[str]:
         return sorted({r.id for r in self._recipes.values()})
@@ -690,7 +742,11 @@ def load_feed_data(raw: dict, path: Path, library: RecipeLibrary, root: Path | N
     legacy = c.mapping(raw.get("legacy"), "legacy")
     c.keys(legacy, LEGACY_DEFAULTS, "legacy")
     for key, value in legacy.items():
-        if value is not None and not isinstance(value, str):
+        if key == "date_format":
+            problem = legacy_format_problem(value) if value not in (None, "") else None
+            if problem:
+                c.add("legacy.date_format", problem)
+        elif value is not None and not isinstance(value, str):
             c.add(f"legacy.{key}", "must be an item note type name, or empty")
     checks = c.mapping(raw.get("checks"), "checks")
     c.keys(checks, CHECKS_DEFAULTS, "checks")
@@ -791,6 +847,153 @@ def output_names(feed: Feed) -> list[str]:
     return names
 
 
+# ------------------------------------------------------------------ layout signature
+LAYOUT_LABELS = {
+    "format": "format", "file_name": "file name", "extension": "file extension", "delimiter": "delimiter",
+    "header": "header row", "empty_value": "empty value", "date_format": "date format",
+    "split_every": "records per file", "embed_items": "items written into the MARC records",
+    "item_field": "MARC item field", "file_prefix": "file prefix", "link": "how items link to bibs",
+    "timezone": "time zone",
+}
+
+
+def layout_signature(feed: Feed) -> dict:
+    """Everything that decides the layout of what the vendor receives, as plain JSON data. A delivery whose
+    signature differs from the last delivery to the same destination is held for review.
+
+    Dates are written in ``options.timezone``, so it goes with each output's date format. Without a header row
+    a column's header is never written: columns are then recorded by field alone."""
+    tz = str(feed.options.get("timezone") or "UTC")
+    outputs: dict[str, dict] = {}
+    for o in feed.outputs:
+        sig: dict[str, Any] = {"format": o["format"], "file_name": o["file_name"]}
+        if o["format"] == "delimited":
+            sig.update({k: o.get(k) for k in ("extension", "delimiter", "header", "empty_value", "date_format")})
+            sig["timezone"] = tz
+            sig["columns"] = [[c.get("header") if o.get("header", True) else None, c.get("field")]
+                              for c in o.get("columns") or []]
+        else:
+            itf = o.get("item_field") or {}
+            embed = bool(o.get("embed_items"))
+            item_field: dict[str, Any] = {"tag": str(itf.get("tag")), "strip_existing": bool(itf.get("strip_existing"))}
+            if embed:                       # subfields, their limit and dates are written only when items are embedded
+                item_field["subfields"] = [[str(k), v] for k, v in (itf.get("subfields") or {}).items()]
+                item_field["max_per_record"] = itf.get("max_per_record")
+                sig["date_format"] = o.get("date_format")
+                sig["timezone"] = tz
+            sig.update({"split_every": int(o.get("split_every") or 0), "embed_items": embed, "item_field": item_field})
+        outputs[str(o["name"])] = sig
+    return json.loads(json.dumps({"file_prefix": feed.file_prefix, "link": feed.link, "outputs": outputs}))
+
+
+def _show(value: object) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, str):
+        return {"": "nothing (empty)", "\t": "tab", " ": "a space"}.get(value, value)
+    if isinstance(value, list):
+        return ", ".join(f"${a} {b}" if isinstance(a, str) and len(a) == 1 else f"{a} {b}" for a, b in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{k} {_show(v)}" for k, v in value.items())
+    return str(value)
+
+
+def _changed(label: str, before: object, after: object) -> str:
+    if isinstance(before, dict) and isinstance(after, dict) and label != LAYOUT_LABELS["link"]:
+        return "; ".join(_changed(f"{label} {str(k).replace('_', ' ')}", before.get(k), after.get(k))
+                         for k in dict.fromkeys([*before, *after]) if before.get(k) != after.get(k))
+    return f"{label} changed from {_show(before)} to {_show(after)}"
+
+
+def _column_name(c: tuple) -> str:
+    """A column as the change list names it: its header, or its field when no header row is written."""
+    return repr(c[0] if c[0] is not None else c[1])
+
+
+def _column_changes(before: list, after: list) -> str:
+    old, new = [tuple(c) for c in before], [tuple(c) for c in after]
+    gone, added = [c for c in old if c not in new], [c for c in new if c not in old]
+    parts: list[str] = []
+    renamed: dict[tuple, tuple] = {}
+    for c in list(gone):
+        match = (next((n for n in added if n[1] == c[1]), None)          # same field under a new header
+                 or next((n for n in added if c[0] is not None and n[0] == c[0]), None))   # same header, new field
+        if match is None:
+            continue
+        parts.append(f"{_column_name(c)} renamed to {_column_name(match)}" if match[1] == c[1]
+                     else f"{_column_name(c)} now holds {match[1]} (was {c[1]})")
+        renamed[c] = match
+        gone.remove(c)
+        added.remove(match)
+    parts += [f"{_column_name(c)} removed" for c in gone] + [f"{_column_name(c)} added" for c in added]
+    if [renamed.get(c, c) for c in old if c not in gone] != [c for c in new if c not in added]:
+        parts.append("the order changed")
+    return ", ".join(parts)
+
+
+def layout_changes(before: dict, after: dict) -> list[str]:
+    """What differs between two layout signatures, in plain words. A setting one side does not record (a
+    signature from an older version) is not compared."""
+    out = [_changed(LAYOUT_LABELS[k], before[k], after[k]) for k in ("file_prefix", "link")
+           if k in before and k in after and before[k] != after[k]]
+    old, new = before.get("outputs") or {}, after.get("outputs") or {}
+    out += [f"new {n} file added" for n in new if n not in old]
+    out += [f"{n} file no longer sent" for n in old if n not in new]
+    for name in (n for n in new if n in old):
+        headerless = old[name].get("header") is False or new[name].get("header") is False
+        for key, value in new[name].items():
+            if key not in old[name]:
+                continue
+            was = old[name][key]
+            if key == "columns" and headerless:     # headers that are never written are not compared
+                was, value = _fields_only(was), _fields_only(value)
+            if was == value:
+                continue
+            text = (f"columns changed: {_column_changes(was, value)}" if key == "columns"
+                    else _changed(LAYOUT_LABELS.get(key, key), was, value))
+            out.append(f"{name} file: {text}")
+    return out
+
+
+def _plain(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return ", ".join(map(str, value)) or "none"
+    return _show(value)
+
+
+def settings_changes(before: Feed, after: Feed) -> list[str]:
+    """What a recipe change does to a feed besides its file layout, in plain words: the checks, which records
+    are selected, the options, what is read from FOLIO, the schedule, the delivery method and the item link."""
+    out: list[str] = []
+    for label, a, b in (
+        ("check", before.checks, after.checks),
+        ("selection", before.selection, after.selection),
+        ("option", before.options, after.options),
+        ("delivery", {k: before.delivery.get(k) for k in RECIPE_DELIVERY_KEYS},
+         {k: after.delivery.get(k) for k in RECIPE_DELIVERY_KEYS}),
+    ):
+        out += [f"{label} {k} changed from {_plain(a.get(k))} to {_plain(b.get(k))}"
+                for k in dict.fromkeys([*a, *b]) if a.get(k) != b.get(k)]
+    gone = [r for r in before.reads if r not in after.reads]
+    added = [r for r in after.reads if r not in before.reads]
+    if gone:
+        out.append(f"no longer reads {', '.join(gone)} from FOLIO"
+                   + (" (bibs go out as brief records, without their MARC)" if "marc" in gone else ""))
+    if added:
+        out.append(f"now reads {', '.join(added)} from FOLIO")
+    if before.schedule != after.schedule:
+        out.append(f"schedule changed from {before.schedule} to {after.schedule}")
+    if before.link != after.link:
+        out.append(_changed(LAYOUT_LABELS["link"], before.link, after.link))
+    return out
+
+
+def _fields_only(columns: list) -> list:
+    return [[None, c[1]] for c in columns or []]
+
+
 def file_collisions(feeds: list[Feed]) -> dict[str, str]:
     """Enabled feeds that would send a file of the same name to the same place: the later one would overwrite
     the earlier at the vendor, and every check would still pass. Both feeds are reported."""
@@ -805,12 +1008,35 @@ def file_collisions(feeds: list[Feed]) -> dict[str, str]:
         for name in output_names(f):
             other = seen.setdefault((dest, name), f.name)
             if other != f.name:
-                text = (f"feeds/{other}.yaml and feeds/{f.name}.yaml both send {name} to {dest}, so one would "
-                        f"overwrite the other at the vendor. Give one of them its own file_prefix (for example "
-                        f"file_prefix: {f.name}) or a different folder.")
+                text = _collision_text(other, f.name, name, dest)
                 problems.setdefault(other, text)
                 problems.setdefault(f.name, text)
     return problems
+
+
+def _collision_text(first: str, second: str, name: str, dest: str) -> str:
+    return (f"feeds/{first}.yaml and feeds/{second}.yaml both send {name} to {dest}, so one would overwrite the "
+            f"other at the vendor. Give one of them its own file_prefix (for example file_prefix: {second}) or a "
+            "different folder.")
+
+
+def collision_with(feed: Feed, feeds: list[Feed]) -> str | None:
+    """Whether another delivering feed in ``feeds``, paused or not, sends one of ``feed``'s file names to the same
+    place. file_collisions compares enabled feeds only (a clash there stops both from loading), so a paused copy
+    is checked with this before it sends anything."""
+    from .delivery import destination_key
+
+    if not feed.delivers:
+        return None
+    dest = destination_key(feed.delivery)
+    mine = set(output_names(feed))
+    for other in feeds:
+        if other.name == feed.name or not other.delivers or destination_key(other.delivery) != dest:
+            continue
+        same = [n for n in output_names(other) if n in mine]
+        if same:
+            return _collision_text(other.name, feed.name, same[0], dest)
+    return None
 
 
 def load_feeds(site: Site, library: RecipeLibrary | None = None) -> list[Feed]:

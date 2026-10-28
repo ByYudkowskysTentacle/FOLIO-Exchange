@@ -4,7 +4,7 @@ FOLIO-Exchange is released under the MIT License (see `LICENSE`). It adapts code
 
 ## folio-chq-extract (FOLIOHQ)
 
-Parts of `src/folio_exchange/` (the FOLIO client, sync and cache, date helpers, field registry, MARC builder and SFTP delivery) and `tests/mock_folio.py` are adapted from [folio-chq-extract](https://github.com/ByYudkowskysTentacle/FOLIOHQ), which carries this license:
+Parts of `src/folio_exchange/` (the FOLIO client, sync and cache, date helpers, field registry, MARC builder and SFTP delivery) and `tests/mock_folio.py` are adapted from [folio-chq-extract](https://github.com/ByYudkowskysTentacle/FOLIOHQ) (now in FOLIOHQ's `legacy/` folder), which carries this license:
 
 ```
 MIT License

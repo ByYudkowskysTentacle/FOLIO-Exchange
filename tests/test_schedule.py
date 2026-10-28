@@ -97,8 +97,9 @@ def test_os_commands():
     from pathlib import Path
 
     win = s.os_command(Path("C:/sites/main"), r"C:\fx\folio-exchange.exe", "Windows", "LIB\\fx")
-    assert win.startswith('schtasks /Create /TN "FOLIO-Exchange (main)" /SC HOURLY')
-    assert '/RU "LIB\\fx" /RP' in win and "run --due" in win
+    assert "Register-ScheduledTask -TaskName 'FOLIO-Exchange (main)'" in win and "run --due" in win
+    assert "Get-Credential -UserName 'LIB\\fx'" in win and "-AllowStartIfOnBatteries" in win
+    assert "schtasks" not in win
     cron = s.os_command(Path("/srv/site"), "/opt/fx/bin/folio-exchange", "Linux")
     assert cron.startswith("7 * * * * '/opt/fx/bin/folio-exchange' --site ") and "run --due" in cron
     assert "schtasks /Run" in s.os_helpers(Path("C:/sites/main"), "Windows")["run now"]

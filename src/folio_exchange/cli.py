@@ -11,15 +11,14 @@ import getpass
 import json
 import logging
 import platform
-import re
-import shutil
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, credentials, delivery, reads, runner, schedule
+from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule
 from .client import probe
-from .config import BUNDLED_RECIPES, Site, find_site, load_site, read_yaml
+from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError
 from .fields import FIELDS
 from .history import History
@@ -30,6 +29,7 @@ from .recipe import (
     load_feed_data,
     load_recipe_file,
     parse_uses,
+    settings_changes,
 )
 
 log = logging.getLogger("folio_exchange")
@@ -65,6 +65,30 @@ def _utf8_console() -> None:
 
 def _site(args) -> Site:
     return load_site(find_site(args.site))
+
+
+def _new_site_root(args) -> Path | None:
+    """The folder named with --site or FOLIO_EXCHANGE_SITE when it has no site.yaml yet (a site still to be set
+    up), else None. The current folder never counts, so a mistyped command cannot start a site anywhere."""
+    import os
+
+    named = args.site or os.environ.get("FOLIO_EXCHANGE_SITE")
+    if not named:
+        return None
+    root = Path(named).expanduser()
+    if root.name == SITE_FILE:
+        root = root.parent
+    if (root / SITE_FILE).is_file() or (root / "feeds").is_dir() or (root / "data" / "history.sqlite").is_file():
+        return None              # a site (or one whose site.yaml has gone missing: that stays an error)
+    return root.resolve()
+
+
+def _make_site_folder(root: Path) -> None:
+    """Create a new site's folder, but only inside a folder that exists, so a mistyped path is noticed."""
+    try:
+        root.mkdir(exist_ok=True)
+    except FileNotFoundError:
+        raise ConfigError(f"{root.parent} does not exist, so {root} was not created. Check the path.") from None
 
 
 def _library(site: Site | None) -> RecipeLibrary:
@@ -108,6 +132,11 @@ def _yes(prompt: str) -> bool:
         return False
 
 
+def _not_sent(row: dict) -> str:
+    """A marker for a successful run that sent nothing because its feed had no delivery (transport none)."""
+    return " (not sent: transport none)" if row.get("status") == "success" and row.get("destination") == "none" else ""
+
+
 def _when(iso: str | None) -> str:
     if not iso:
         return "never"
@@ -117,35 +146,7 @@ def _when(iso: str | None) -> str:
         return iso
 
 
-def _rewrite_key(path: Path, key: str, value: str) -> None:
-    """Set a top-level ``key: value`` line in a feed file, keeping its comments and layout."""
-    text = path.read_text(encoding="utf-8-sig")
-    line = f"{key}: {value}"
-    pattern = re.compile(rf"^{re.escape(key)}:.*$", re.M)
-    text = pattern.sub(line, text, count=1) if pattern.search(text) else text.rstrip("\n") + f"\n{line}\n"
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
 # ------------------------------------------------------------------ check
-def _env_password_note(site: Site) -> str | None:
-    """When the FOLIO password comes from an environment variable, what the scheduled task needs to have it."""
-    source = site.folio_password_source()
-    if not source.startswith("environment ("):
-        return None
-    name = source[len("environment ("):-1]
-    if str(site.folio.get("secret") or "").startswith("env:") and name != "FOLIO_PASSWORD":
-        return (f"The FOLIO password is read from the environment variable {name}. Set {name} for the user the "
-                "scheduled task runs as, too.")
-    if site.folio.get("secret") == "env:FOLIO_PASSWORD":
-        return ("The FOLIO password is read from the environment variable FOLIO_PASSWORD. Set it for the user the "
-                "scheduled task runs as, too.")
-    return ("The FOLIO password comes from this window's FOLIO_PASSWORD, not from the keyring that site.yaml "
-            "names. The scheduled task will not have it: run `folio-exchange secret set folio` (as the user the "
-            "task runs as), or set FOLIO_PASSWORD for that user.")
-
-
 def _short(text: str, width: int = 200) -> str:
     import textwrap
 
@@ -166,44 +167,32 @@ def cmd_check(args) -> int:
         return 0 if sent else 1
     library = _library(site)
     feeds, errors = _feeds(site, library)
-    chosen = [f for f in feeds if (f.name == args.feed if args.feed else f.enabled)]
+    chosen = [f for f in feeds if not args.feed or f.name == args.feed]
     if args.feed and not chosen and args.feed not in errors:
         raise ConfigError(f"No feed called {args.feed!r}")
     ok = True
-    file_problems = False
     with History(site.history_path) as hist:
         changed = runner.audit_settings(site, hist)
         if changed:
             print(f"Settings changed since the last check (recorded in the audit log): {', '.join(changed)}")
         print(f"Site: {site.root}")
-        for name, err in errors.items():
-            if not args.feed or name == args.feed:
-                file_problems = True
-                print(f"Feed {name}: PROBLEM\n  " + err.replace("\n", "\n  "))
-        for p in library.problems():
-            print("Recipe file problem:\n  " + p.replace("\n", "\n  "))
         now = datetime.now(timezone.utc)
+        task = feedops.task_status(hist, chosen, now, lock_path=site.lock_path)
+        if task["state"] in ("ok", "running"):
+            print(task["text"])                 # stale and never-started come as warnings below
         for f in chosen:
-            newer = library.newer_major(f.uses)
             line = f"Feed {f.name}: {f.recipe.ref} ({f.uses}), {schedule.describe(schedule.parse(f.schedule))}"
             print(line + ("" if f.enabled else " [paused]"))
-            if newer:
-                print(f"  NOTE     {newer.ref} is available and waits for review: "
-                      f"folio-exchange upgrade {f.name} --to {newer.id}@^{newer.version[0]}.{newer.version[1]}")
-            if f.delivers and not f.checks.get("min_item_ratio"):
-                print("  WARNING  checks.min_item_ratio is 0, so a sudden drop in items would be delivered")
-            late = runner.overdue(site, f, hist, now)
-            if late:
-                print(f"  WARNING  {late}")
-    if not site.alerts.get("webhook") and not site.alerts.get("email"):
-        print("WARNING  No alert channel is set up, so a failed scheduled run would go unnoticed. "
-              "Add alerts.webhook or alerts.email to site.yaml, then run `folio-exchange check --alerts`.")
-    elif site.alerts.get("on") == "never":
-        print("WARNING  alerts.on is never: failed runs send no alert.")
+        warnings = feedops.site_warnings(site, library, chosen, errors, hist, now, only=args.feed)
+    file_problems = any(w["code"] == "feed-file" for w in warnings)
+    for w in warnings:
+        label = {"problem": "PROBLEM ", "warning": "WARNING ", "note": "NOTE    "}[w["level"]]
+        who = f"{w['feed']}: " if w["feed"] else ""
+        print(f"{label} {who}" + w["text"].replace("\n", "\n         "))
 
     source = site.folio_password_source()
     print(f"FOLIO password: {source}")
-    note = _env_password_note(site)
+    note = password_note(site)
     if note:
         print(f"NOTE     {note}")
     client = runner.client_for(site)
@@ -241,7 +230,7 @@ def cmd_check(args) -> int:
 def cmd_check_delivery(args) -> int:
     site = _site(args)
     feeds, errors = _feeds(site)
-    chosen = [f for f in feeds if (f.name == args.feed if args.feed else f.enabled)]
+    chosen = [f for f in feeds if not args.feed or f.name == args.feed]
     if args.feed and args.feed in errors:
         raise ConfigError(errors[args.feed])
     if not chosen:
@@ -250,7 +239,7 @@ def cmd_check_delivery(args) -> int:
     worst = 0
     for f in chosen:
         d = f.delivery
-        print(f"Feed {f.name}: {delivery.describe_destination(d)}")
+        print(f"Feed {f.name}: {delivery.describe_destination(d)}" + ("" if f.enabled else " [paused]"))
         if d["transport"] == "sftp":
             pin = d.get("host_key_fingerprint") or f"known_hosts ({d.get('known_hosts')})"
             if (d.get("private_key") or "").strip():
@@ -262,9 +251,16 @@ def cmd_check_delivery(args) -> int:
                 print(f"  Key not yet confirmed with the vendor; stored {d.get('host_key_fingerprint')}. "
                       "Nothing logs in until it is.")
                 try:
-                    seen = delivery.host_key_fingerprint(d["host"], int(d.get("port") or 22))
-                    print(f"  The server answers with {seen}"
-                          + (" (the same)." if seen == d.get("host_key_fingerprint") else " (DIFFERENT: ask the vendor)."))
+                    read = delivery.host_key_fingerprints(d["host"], int(d.get("port") or 22))
+                    offered = read.get("keys") or [read]
+                    same = [k for k in offered if k["sha256"] == d.get("host_key_fingerprint")]
+                    same.sort(key=lambda k: k["type"] != d.get("host_key_type"))     # the stored type first
+                    if same:
+                        print(f"  The server offers it as its {same[0]['type']} key (the same).")
+                    else:
+                        print("  The server offers none like it (DIFFERENT: ask the vendor). It offers:")
+                        for k in offered:
+                            print(f"    {k['type']}: {k['sha256']}")
                 except Exception as exc:  # noqa: BLE001 - network errors of every kind
                     print(f"  Could not read the server's key: {type(exc).__name__}: {str(exc)[:160]}")
                 print("  Compare it with the vendor's fingerprint, then run `folio-exchange init` again to confirm it.")
@@ -273,43 +269,171 @@ def cmd_check_delivery(args) -> int:
             print(f"  Connecting to {d['host']}:{d.get('port') or 22} as {d['username']}")
             print(f"  host key {pin}; {secret}")
         elif d["transport"] == "none":
-            print("  Nothing to test.")
+            print("  Nothing to test: this feed has no delivery set up (a dry run). When the vendor's details "
+                  "are ready, run `folio-exchange init` again and choose how the files are delivered.")
+            if not f.enabled:
+                print(f"  Paused: `folio-exchange feeds resume {f.name}` lets it run on its schedule again.")
             continue
         try:
             names = delivery.check_delivery(d)
         except Exception as exc:  # noqa: BLE001 - paramiko raises many types; report them all the same way
             print(f"  FAILED   {type(exc).__name__}: {str(exc)[:200]}")
+            if not f.enabled:
+                print("  Paused: leave it paused until this test passes.")
             worst = 1
             continue
         folder = d.get("directory") if d["transport"] == "local" else (d.get("remote_dir") or ".")
         if names is None:
             print(f"  OK       logged in; listing {folder} is not permitted (normal for upload-only accounts). "
                   "Nothing was uploaded.")
-            continue
-        print(f"  OK       {'logged in; ' if d['transport'] == 'sftp' else ''}{folder} has {len(names)} entries. "
-              "Nothing was uploaded.")
-        for name in names[:20]:
-            print(f"           {name}")
+        else:
+            print(f"  OK       {'logged in; ' if d['transport'] == 'sftp' else ''}{folder} has {len(names)} "
+                  "entries. Nothing was uploaded.")
+            for name in names[:20]:
+                print(f"           {name}")
+        if not f.enabled:
+            print(f"  Paused: the test passed. Resume it with `folio-exchange feeds resume {f.name}`. A first "
+                  "delivery to a new destination is still held for you to check.")
     return worst
 
 
 # ------------------------------------------------------------------ runs
+def _recipe_sources(args, site: Site | None, library: RecipeLibrary) -> int:
+    from . import sources
+
+    if args.action == "sources":
+        installed = sources.provenance(site) if site else {}
+        for s in sources.load_sources(site):
+            got = installed.get(s.id) or {}
+            print(f"{s.id:<16} {s.title}  ({s.repo}, {s.branch}; recipes: {', '.join(s.recipes)})")
+            print(f"{'':<16} " + (f"downloaded at commit {got['commit'][:12]} on {got.get('installed', '?')[:10]}"
+                                  if got.get("commit") else "not downloaded yet"))
+        return 0
+    if site is None:
+        raise ConfigError("Downloading recipes needs a site: give --site, or run it in the site folder.")
+    if not args.target:
+        raise ConfigError("Name the source to download from (see `folio-exchange recipes sources`).")
+    result = sources.check(site, library, args.target)
+    src = result["source"]
+    print(f"{src['title']}: {src['repo']} ({src['branch']}) at commit {result['commit'][:12]}")
+    for p in result["problems"]:
+        print(f"  NOTE     {p}")
+    for r in result["recipes"]:
+        label = {"new": "NEW", "installed": "have", "conflict": "REFUSED", "invalid": "REFUSED"}[r["status"]]
+        print(f"  {label:<8} {r['id']} {r['version']}" + (f": {r.get('title')}" if r.get("title") else ""))
+        if r["status"] == "new":
+            if r.get("changes"):
+                print(f"           {_short(str(r['changes']), 300)}")
+            print(f"           reads: {', '.join(r.get('reads') or [])}; patron data: {r.get('patron_data')}")
+            if r.get("picked_up_by"):
+                print(f"           feeds that use it from their next run: {', '.join(r['picked_up_by'])}")
+        if r.get("problem"):
+            print(f"           {_short(r['problem'], 400)}")
+    if not result["new"]:
+        print("Nothing new to install.")
+        return 0
+    if not (args.yes or _yes(f"Install {len(result['new'])} new version(s) into {site.recipe_dirs[0]}?")):
+        print("Nothing installed.")
+        return 2
+    done = sources.install(site, library, args.target, result["commit"], via="cli")
+    print(f"Installed: {', '.join(done['installed'])}. Recorded in the audit log.")
+    return 0
+
+
 def cmd_run(args) -> int:
+    new = _new_site_root(args) if args.due else None
+    if new is not None and new.is_dir():
+        print(f"{new} is not set up yet (no {SITE_FILE}), so nothing is due. Open the page to set it up.")
+        return 0
     site = _site(args)
+    if not args.due:
+        return _run(args, site)
+    started = datetime.now(timezone.utc)
+    previous: dict = {}
+    try:                                   # beside the lock too, so a pass that cannot write history still shows
+        previous = feedops.mark_pass_start(site.lock_path, started)
+    except OSError as exc:
+        log.warning("Could not note the start of this scheduled pass beside the run lock: %s", exc)
+    try:
+        with History(site.history_path) as hist:
+            feedops.record_due_start(hist, started)
+    except sqlite3.Error as exc:
+        log.warning("Could not record the start of this scheduled pass: %s", exc)
+    # The heartbeat goes at the start of the pass as well as the end, so a monitor hears from a long pass (a
+    # first full sync can take hours) as soon as it starts; its period must still allow for the longest pass.
+    notify.heartbeat(site.alerts, site.name)
+    error, alerted = None, False
+    try:
+        return _run(args, site)
+    except Exception as exc:  # noqa: BLE001 - alert first (without the history: it may be what failed), then stop
+        error = f"{type(exc).__name__}: {exc}"
+        alerted = _pass_failed(site, exc, error, previous)
+        raise
+    finally:
+        try:
+            feedops.mark_pass_end(site.lock_path, started, error, alerted)
+        except OSError as exc:
+            log.warning("Could not note how this scheduled pass ended: %s", exc)
+        notify.heartbeat(site.alerts, site.name)
+
+
+def _pass_failed(site: Site, exc: Exception, error: str, previous: dict) -> bool:
+    """Alert that a scheduled pass failed, without needing the run history. The same failure as the last pass's,
+    already alerted, is not sent again every hour. Returns whether the alert went (now or before)."""
+    if not isinstance(exc, (FxError, OSError, sqlite3.Error)):
+        log.exception("The scheduled pass failed: %s", error)        # main shows the others plainly
+    if previous.get("error") == error and previous.get("alerted"):
+        return True
+    text = (f"The scheduled pass failed: {error}\nFeeds due in this pass may not have run or been recorded. If the "
+            "disk is full, free some space; logs/folio-exchange.log has the details, and `folio-exchange check` "
+            "shows the site's state.")
+    return bool(runner.alert(site, None, "failed", text))
+
+
+LOCK_STUCK = "lock_stuck_since"            # history meta: the lock holder's start already alerted about
+
+
+def _lock_busy(site: Site, exc: LockBusy, feeds: list[Feed]) -> int:
+    """A scheduled pass found the site's lock taken: skip this hour. When one run (a manual run or a release
+    that stalled, a stuck process) has held it for hours while some feed is due, alert once for that run. A
+    scheduled pass that stalls never meets this (Task Scheduler starts no second one): `check` and the page say
+    it is stuck, the heartbeat stops, and once the task's 12-hour limit ends it the next pass reports it."""
+    log.info("%s Skipping this hour; the next start will catch up.", exc)
+    since = feedops.run_started(site.lock_path)
+    now = datetime.now(timezone.utc)
+    if since is None or now - since < feedops.LOCK_STUCK_AFTER:
+        return 0
+    stamp = since.isoformat(timespec="seconds")
+    with History(site.history_path) as hist:
+        if hist.get_meta(LOCK_STUCK) == stamp or not runner.due_feeds(site, feeds, now, hist):
+            return 0                         # alerted already, or nothing would have run this hour anyway
+        hist.set_meta(LOCK_STUCK, stamp)
+    text = "Scheduled runs are being skipped. " + feedops.stuck_text(since, now)
+    log.warning("%s", text)
+    runner.alert(site, None, "failed", text)
+    return 0
+
+
+def _run(args, site: Site) -> int:
     feeds, errors = _feeds(site)
     opts = runner.RunOptions(full=args.full, no_deliver=args.no_deliver, skip_sync=args.skip_sync,
                              force=args.force, trigger="schedule" if args.due else "manual")
     bad: dict[str, str] = {}
     if args.due:
         bad = runner.active_problems(site, errors)
-        with History(site.history_path) as hist:
-            runner.audit_settings(site, hist)
-            now = datetime.now(timezone.utc)
-            chosen = runner.due_feeds(site, feeds, now, hist)
-            for f in feeds:
-                late = runner.overdue(site, f, hist, now)
-                if late and f not in chosen:
-                    log.warning("Feed %s is %s", f.name, late)
+        try:
+            with runner.RunLock(site.lock_path), History(site.history_path) as hist:
+                runner.start_pass(site, hist)        # a pass killed on a slot's last attempt is reported now
+                runner.audit_settings(site, hist)
+                now = datetime.now(timezone.utc)
+                runner.report_given_up(site, feeds, hist, now)
+                chosen = runner.due_feeds(site, feeds, now, hist)
+                for f in feeds:
+                    late = runner.overdue(site, f, hist, now)
+                    if late and f not in chosen:
+                        log.warning("Feed %s is %s", f.name, late)
+        except LockBusy as exc:
+            return _lock_busy(site, exc, feeds)
         if not chosen and not bad:
             log.info("No feed is due.")
             return 0
@@ -324,9 +448,11 @@ def cmd_run(args) -> int:
         results = runner.run_many(site, chosen, opts, all_feeds=feeds, bad_feeds=bad)
     except LockBusy as exc:
         if args.due:
-            log.info("%s Skipping this hour; the next start will catch up.", exc)
-            return 0
+            return _lock_busy(site, exc, feeds)
         raise
+    if args.due:
+        with History(site.history_path) as hist:
+            runner.report_given_up(site, feeds, hist, datetime.now(timezone.utc))
     print(json.dumps([_summary(r) for r in results] if len(results) != 1 else _summary(results[0]), indent=2))
     return runner.worst_code(results)
 
@@ -444,18 +570,11 @@ def cmd_feeds(args) -> int:
     if args.action in ("pause", "resume"):
         if not args.feed:
             raise ConfigError(f"Name the feed to {args.action}.")
-        path = site.feeds_dir / f"{args.feed}.yaml"
-        if not path.is_file():
-            raise ConfigError(f"No feed file {path}")
-        current = read_yaml(path).get("enabled", True)
-        if current is (args.action == "resume"):
-            print(f"Feed {args.feed} is already {'running' if current else 'paused'}.")
-            return 0
-        _rewrite_key(path, "enabled", "false" if args.action == "pause" else "true")
-        with History(site.history_path) as hist:
-            hist.audit(None, args.feed, f"feed {args.action}d", {"file": str(path)})
-            runner.audit_settings(site, hist)
-        print(f"Feed {args.feed} {args.action}d.")
+        res = feedops.set_enabled(site, args.feed, args.action == "resume")
+        if not res["changed"]:
+            print(f"Feed {args.feed} is already {'running' if res['enabled'] else 'paused'}.")
+        else:
+            print(f"Feed {args.feed} {args.action}d.")
         return 0
     library = _library(site)
     feeds, errors = _feeds(site, library)
@@ -464,6 +583,11 @@ def cmd_feeds(args) -> int:
         return 0
     now = datetime.now(timezone.utc)
     with History(site.history_path) as hist:
+        task = feedops.task_status(hist, feeds, now, lock_path=site.lock_path)
+        if task["state"] != "unneeded":
+            warn = "WARNING  "
+            label = {"ok": "", "running": "", "stuck": warn, "stale": warn, "never": "NOTE     "}[task["state"]]
+            print(f"{label}{task['text']}\n")
         for f in feeds:
             s = schedule.parse(f.schedule)
             nxt = schedule.next_slot(s, now, site.timezone)
@@ -474,23 +598,34 @@ def cmd_feeds(args) -> int:
                   + (f"; next {nxt.astimezone(site.timezone):%a %Y-%m-%d %H:%M}" if nxt and f.enabled else ""))
             print(f"  delivers  {delivery.describe_destination(f.delivery)}")
             if last:
-                print(f"  last run  {_when(last['started'])}: {last['status']}"
+                print(f"  last run  {_when(last['started'])}: {last['status']}{_not_sent(last)}"
                       + (f" ({Path(last['run_dir']).name})" if last.get("run_dir") else ""))
                 if last.get("error"):
                     print(f"            {_short(last['error'], 300)}")
-                if last["status"] in ("held", "blocked", "built", "failed"):
+                if last["status"] in ("held", "blocked", "built", "failed") or not f.delivers:
                     step = runner.next_step(f, last["status"], Path(last["run_dir"]) if last.get("run_dir") else None)
-                    print(f"  next      {step}")
+                    if step:
+                        print(f"  next      {step}")
             else:
                 print("  last run  never")
                 print(f"  next      folio-exchange run {f.name}"
-                      + ("   (the first delivery is held for you to check)" if f.delivers else ""))
+                      + ("   (the first delivery is held for you to check)" if f.delivers else
+                         " --no-deliver   (a dry run: the files stay in the run folder)"))
+            if not f.enabled:
+                test = f"test the delivery with `folio-exchange check --delivery {f.name}`, then " if f.delivers else ""
+                print(f"  paused    scheduled runs skip it; {test}resume it with "
+                      f"`folio-exchange feeds resume {f.name}`.")
             newer = library.newer_major(f.uses)
             if newer:
                 print(f"  update    {newer.ref} is available (held for review; see `folio-exchange upgrade`)")
             late = runner.overdue(site, f, hist, now)
             if late:
                 print(f"  WARNING   {late}")
+            from . import sources
+
+            local = sources.local_minor_warning(site, library, f)
+            if local:
+                print(f"  WARNING   {local}")
     for name, err in errors.items():
         print(f"{name}  PROBLEM\n  " + err.replace("\n", "\n  "))
     return 1 if errors else 0
@@ -544,7 +679,11 @@ def cmd_recipes(args) -> int:
             print(f"{rid:<24} {latest.title}  (versions: {', '.join(r.version_str for r in versions)})")
         for p in library.problems():
             print("PROBLEM " + p)
+        for w in library.shadow_warnings():
+            print("WARNING " + w)
         return 1 if library.problems() else 0
+    if action in ("sources", "get"):
+        return _recipe_sources(args, site, library)
     if action == "validate":
         if not args.target:
             raise ConfigError("Name the recipe file to validate.")
@@ -614,15 +753,22 @@ def cmd_upgrade(args) -> int:
             a, b = [c["header"] for c in old["columns"]], [c["header"] for c in o["columns"]]
             if a != b:
                 print(f"  {o['name']}: columns change from\n    {a}\n  to\n    {b}")
+    changes = settings_changes(feed, new)
+    if changes:
+        print(f"  What else changes for {feed.name}:")
+        for text in changes:
+            print(f"    - {text}")
     if new.recipe.version[0] != feed.recipe.version[0] and feed.delivers:
         print("  This is a new major version: the next delivery is held until you release it.")
     if not (args.yes or _yes(f"Change {feed.path.name} to uses: {target}?")):
         print("Nothing changed.")
         return 2
-    _rewrite_key(feed.path, "uses", target)
+    rewrite_key(feed.path, "uses", target)
     with History(site.history_path) as hist:
         hist.audit(None, feed.name, "recipe upgraded", {"from": feed.recipe.ref, "to": new.recipe.ref,
-                                                         "uses": target})
+                                                         "uses": target, "changes": changes})
+        hist.set_meta(f"{runner.UPGRADE_META}{feed.name}",
+                      json.dumps({"to": new.recipe.version_str, "changes": changes}))
         runner.audit_settings(site, hist)
     print(f"Done. Run `folio-exchange preview {feed.name}` to look at the new layout.")
     return 0
@@ -650,7 +796,7 @@ def cmd_history(args) -> int:
                 raise ConfigError(f"No run {args.show!r} in the history.")
             print(f"Run {row['id']} of {row['feed']} ({row.get('recipe')}@{row.get('recipe_version')}), "
                   f"{row.get('trigger')}, started {_when(row['started'])}, finished {_when(row.get('finished'))}")
-            print(f"  status     {row['status']}")
+            print(f"  status     {row['status']}{_not_sent(row)}")
             if row.get("error"):
                 print(f"  problem    {row['error']}")
             rep = row.get("report") or {}
@@ -673,9 +819,12 @@ def cmd_history(args) -> int:
             folder = Path(r["run_dir"]).name if r.get("run_dir") else "-"
             print(f"{r['id']:>5}  {_when(r['started'])}  {r['feed']:<14} {r['status']:<8} "
                   f"items {r.get('items') if r.get('items') is not None else '-':>8}  {folder:<22} "
-                  f"{_short(r.get('error') or '', 80) if r.get('error') else ''}")
+                  f"{_short(r.get('error') or '', 80) if r.get('error') else _not_sent(r).strip()}")
         print("(Times are this computer's; run folder names are in UTC.)")
     return 0
+
+
+ALERT_TARGETS = ("webhook", "heartbeat")       # secret targets that are site.yaml alerts settings
 
 
 def _secret_target(site: Site, target: str) -> tuple[str, str, str | None, str]:
@@ -686,6 +835,8 @@ def _secret_target(site: Site, target: str) -> tuple[str, str, str | None, str]:
                 "FOLIO password")
     if target == "webhook":
         return credentials.WEBHOOK_SERVICE, site.name, site.alerts.get("webhook"), "alert webhook URL"
+    if target == "heartbeat":
+        return credentials.HEARTBEAT_SERVICE, site.name, site.alerts.get("heartbeat"), "heartbeat URL"
     if target == "smtp":
         email = site.alerts.get("email") or {}
         if not email.get("username"):
@@ -704,8 +855,7 @@ def cmd_secret(args) -> int:
     site = _site(args)
     if args.action == "status":
         targets = ["folio"]
-        if site.alerts.get("webhook"):
-            targets.append("webhook")
+        targets += [t for t in ALERT_TARGETS if site.alerts.get(t)]
         if (site.alerts.get("email") or {}).get("username"):
             targets.append("smtp")
         feeds, _errors = _feeds(site)
@@ -721,7 +871,7 @@ def cmd_secret(args) -> int:
               "A scheduled task must run as the same user.)")
         return 1 if missing else 0
     if not args.target:
-        raise ConfigError("Say which secret: folio, smtp, webhook, or a feed name.")
+        raise ConfigError("Say which secret: folio, smtp, webhook, heartbeat, or a feed name.")
     service, account, ref, what = _secret_target(site, args.target)
     if ref and str(ref).startswith("env:"):
         print(f"The {what} is read from the environment variable {ref[4:]} ({args.target}'s secret: {ref}). "
@@ -730,13 +880,17 @@ def cmd_secret(args) -> int:
     value = getpass.getpass(f"{what} for {account} (not shown): ")
     credentials.store(service, account, value)
     with History(site.history_path) as hist:
-        hist.audit(None, None if args.target in ("folio", "smtp", "webhook") else args.target,
+        hist.audit(None, None if args.target in ("folio", "smtp", *ALERT_TARGETS) else args.target,
                    "secret stored", {"what": what, "service": service, "account": account})
     print(f"Stored the {what} in the system keyring ({service}, {account}).")
+    if args.target in ALERT_TARGETS and not ref:
+        print(f"It is used once site.yaml says so: add `{args.target}: keyring` under alerts.")
     return 0
 
 
 def cmd_schedule(args) -> int:
+    if args.register:
+        return _register_task(args)
     site = _site(args)
     feeds, _errors = _feeds(site)
     now = datetime.now(timezone.utc)
@@ -748,31 +902,141 @@ def cmd_schedule(args) -> int:
         print(f"  {f.name:<16} {schedule.describe(s)}"
               + (f"; next {nxt.astimezone(site.timezone):%a %Y-%m-%d %H:%M}" if nxt and f.enabled else "")
               + ("" if f.enabled else " [paused]"))
-    exe = shutil.which("folio-exchange") or str(Path(sys.executable).with_name(
-        "folio-exchange.exe" if platform.system() == "Windows" else "folio-exchange"))
+    from .launcher import program_path
+
+    exe = program_path()
     system = platform.system()
     user = None
     if system == "Windows":
         import os
 
         user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
-    note = _env_password_note(site)
+    note = password_note(site)
     if note:
         print(f"\nWARNING  {note}")
     print("\nNothing runs until the computer's scheduler starts `run --due` every hour. Register it once with:\n")
-    print("  " + schedule.os_command(site.root, exe, system, user))
-    if system == "Windows":
-        print("\n  Run this in a Command Prompt as the user who stored the secrets. It asks for that user's "
-              "Windows password, so the task runs even when nobody is logged on.")
+    if system != "Windows":
+        print("  " + schedule.os_command(site.root, exe, system, user))
+    else:
+        print("  In PowerShell:")
+        print("  " + schedule.register_command(site.root, exe, "powershell"))
+        print("\n  Or in Command Prompt (cmd.exe):")
+        print("  " + schedule.register_command(site.root, exe, "cmd"))
+        if any(c in exe + str(site.root) for c in "&^|<>%"):
+            print("\n  WARNING  The program or site path contains one of & ^ | < > %, which Command Prompt treats "
+                  "specially. Use the PowerShell form.")
+        print("\n  Run it as the user who stored the secrets. It asks for that user's Windows password, so the task "
+              "runs even when nobody is signed in. The task also runs on battery power and catches up after the "
+              "computer was off or asleep.")
+        print("\n  To register the same task by hand instead, paste these lines into PowerShell:\n")
+        print("\n".join("  " + line for line in schedule.os_command(site.root, exe, system, user).splitlines()))
+        print("\n  These work in PowerShell or Command Prompt:\n")
     for label, cmd in schedule.os_helpers(site.root, system).items():
         print(f"  {label + ':':<13} {cmd}")
+    if system == "Windows":
+        print("\n  In the last result, \"Task To Run\" should show the folio-exchange.exe path and --site folder, "
+              "each in quotes.")
+    return 0
+
+
+def _register_task(args, run=None, root: Path | None = None) -> int:
+    """Register the hourly `run --due` with the Windows Task Scheduler. schtasks asks for the Windows password
+    itself; nothing here sees it. Works before the site is set up (the runs find nothing due until then)."""
+    import getpass
+    import os
+    import subprocess
+
+    from .launcher import program_path
+
+    root = root or _new_site_root(args) or find_site(args.site).resolve()
+    if not root.is_dir():
+        raise ConfigError(f"No folder {root}")
+    if platform.system() != "Windows":
+        print("Add this line with `crontab -e`:\n")
+        print("  " + schedule.os_command(root, program_path(), platform.system()))
+        return 0
+    import tempfile
+
+    user = f"{os.environ.get('USERDOMAIN', '')}\\{getpass.getuser()}".lstrip("\\")
+    print(f"Registering \"{schedule.task_name(root)}\": every hour at minute 7, as {user}, also on battery power. "
+          "Windows asks for that user's password, so the task can run while nobody is signed in.")
+    with tempfile.TemporaryDirectory(prefix="fx-task-") as tmp:      # the task definition holds no secret
+        xml_file = Path(tmp) / "task.xml"
+        xml_file.write_text(schedule.windows_task_xml(root, program_path(), user), encoding="utf-16")
+        done = (run or subprocess.run)(schedule.windows_task_args(root, xml_file, user))
+    if done.returncode != 0:
+        print(f"schtasks did not register the task (exit {done.returncode}). Nothing else was changed; run "
+              "this command again to retry.")
+        return 1
+    print("Registered. `folio-exchange schedule` shows how to run it now, see its last result or remove it.")
     return 0
 
 
 def cmd_ui(args) -> int:
     from .ui import serve
 
-    serve(find_site(args.site), port=args.port, open_browser=not args.no_browser)
+    root = _new_site_root(args)
+    if root is not None:
+        _make_site_folder(root)                        # a new site: the page starts with the FOLIO connection
+        print(f"New site at {root}: the page starts with the FOLIO connection.")
+    serve(root or find_site(args.site), port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
+def cmd_rename_site(args, run=None) -> int:
+    """Rename the site folder (same parent). In a console the scheduled task can be registered again at once,
+    since schtasks can ask for the Windows password here; the old task is removed once the new one is in."""
+    import subprocess
+
+    from . import siteops
+
+    root = find_site(args.site).resolve()
+    problem = siteops.name_problem(args.name.strip())
+    if problem:
+        raise ConfigError(problem)
+    print(f"Rename the site folder {root} to {root.parent / args.name.strip()}?")
+    if not args.yes and not _yes("Rename it now?"):
+        print("Nothing was changed.")
+        return 2
+    res = siteops.rename_site(root, args.name, via="cli", run=run)
+    print(f"Renamed. The site folder is now {res['root']}.")
+    task = res["task"]
+    for note in res["notes"]:
+        if not (task and note.startswith("The scheduled task")):
+            print("  " + note)
+    if task is None:
+        return 0
+    print(f"The scheduled task \"{task['old']}\" still runs the old folder.")
+    if args.yes or not _yes("Register the task for the new folder now? Windows asks for your password."):
+        print(f"Register it later with: {task['register']}\nthen remove the old one with: {task['remove']}")
+        return 0
+    if _register_task(args, run=run, root=Path(res["root"])) != 0:
+        print(f"The old task is still there; remove it once the new one is registered: {task['remove']}")
+        return 1
+    done = (run or subprocess.run)(["schtasks", "/Delete", "/TN", task["old"], "/F"])
+    print("Removed the old task." if done.returncode == 0 else f"Remove the old task with: {task['remove']}")
+    return 0
+
+
+def cmd_launcher(args) -> int:
+    from . import launcher
+
+    root = _new_site_root(args)
+    if root is not None:
+        _make_site_folder(root)                        # set up later, on the page the launcher opens
+    else:
+        root = _site(args).root
+    if args.folder:
+        folder = Path(args.folder).expanduser().resolve()
+        if not folder.is_dir():
+            raise ConfigError(f"No folder {folder}")
+    else:
+        folder = launcher.desktop() or root
+    path = launcher.write(root, folder, launcher.program_path(), platform.system())
+    print(f"Made {path}")
+    print(f"Double-click it to open the page for {root}. Its window keeps the page running; press Ctrl+C "
+          "there to stop. If FOLIO-Exchange is installed somewhere else later, or the site folder moves, run "
+          "this command again.")
     return 0
 
 
@@ -790,6 +1054,18 @@ def cmd_init(args) -> int:
 
 
 # ------------------------------------------------------------------ main
+def _version_text() -> str:
+    """The version, and the git commit when pip recorded one (an install from git+https://...)."""
+    try:
+        from importlib.metadata import distribution
+
+        info = json.loads(distribution("folio-exchange").read_text("direct_url.json") or "{}")
+        commit = (info.get("vcs_info") or {}).get("commit_id")
+    except Exception:  # noqa: BLE001 - the version is enough when the commit cannot be known
+        commit = None
+    return f"folio-exchange {__version__}" + (f" (commit {commit[:12]})" if commit else "")
+
+
 class _Parser(argparse.ArgumentParser):
     """Usage mistakes exit 1: exit code 2 means a blocked or held run, and a scheduler must not mistake one
     for the other."""
@@ -804,7 +1080,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="Scheduled, recipe-driven exports from FOLIO to vendors.")
     p.add_argument("-s", "--site", help="the site folder (default: FOLIO_EXCHANGE_SITE, else the current folder)")
     p.add_argument("-v", "--verbose", action="store_true")
-    p.add_argument("--version", action="version", version=f"folio-exchange {__version__}")
+    p.add_argument("--version", action="version", version=_version_text())
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     i = sub.add_parser("init", help="guided setup: connect to FOLIO, choose a recipe, preview, deliver, schedule")
@@ -844,9 +1120,13 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("action", nargs="?", choices=["list", "pause", "resume"], default="list")
     fd.add_argument("feed", nargs="?")
     rc = sub.add_parser("recipes", help="list recipes, show one, validate a file, or print a layout summary")
-    rc.add_argument("action", nargs="?", choices=["list", "show", "validate", "summary"], default="list")
-    rc.add_argument("target", nargs="?", help="recipe id (id@range), feed name, or a file to validate")
-    u = sub.add_parser("upgrade", help="move a feed to another recipe version, after showing what changes")
+    rc.add_argument("action", nargs="?", choices=["list", "show", "validate", "summary", "sources", "get"],
+                    default="list")
+    rc.add_argument("target", nargs="?", help="recipe id (id@range), feed name, a file to validate, or (for get) "
+                                              "a source from `recipes sources`")
+    rc.add_argument("--yes", action="store_true", help="get: install without asking")
+    u = sub.add_parser("upgrade", help="move a feed to another recipe version, after showing what changes "
+                       "(not an update of FOLIO-Exchange itself)")
     u.add_argument("feed")
     u.add_argument("--to", help="the new range, e.g. chq-academic@^2.0 (default: the newest version)")
     u.add_argument("--yes", action="store_true")
@@ -858,11 +1138,18 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--show", metavar="RUN", help="a run id (from the list) or run folder")
     se = sub.add_parser("secret", help="store a secret in the system keyring, or show where each comes from")
     se.add_argument("action", choices=["set", "status"])
-    se.add_argument("target", nargs="?", help="folio, smtp, webhook, or a feed name")
-    sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
+    se.add_argument("target", nargs="?", help="folio, smtp, webhook, heartbeat, or a feed name")
+    sc = sub.add_parser("schedule", help="next runs, and the command that registers the hourly task")
+    sc.add_argument("--register", action="store_true", help="register the hourly task now (Windows asks for "
+                                                             "your Windows password)")
     ui = sub.add_parser("ui", help="open a simple page in your browser to look at feeds and run them")
-    ui.add_argument("--port", type=int, default=8765, help="port on this computer (default 8765)")
+    ui.add_argument("--port", type=int, help="port on this computer (default 8765, or a free one if it is taken)")
     ui.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    rn = sub.add_parser("rename-site", help="rename the site folder (its name shows on the page and in alerts)")
+    rn.add_argument("name", help="the new folder name, in the same place")
+    rn.add_argument("--yes", action="store_true", help="do not ask first (the scheduled task is then left to you)")
+    la = sub.add_parser("launcher", help="make a file to double-click that opens the page for this site")
+    la.add_argument("--folder", help="where to put it (default: your desktop)")
     return p
 
 
@@ -870,7 +1157,7 @@ HANDLERS = {
     "init": cmd_init, "check": cmd_check, "preview": cmd_preview, "run": cmd_run, "release": cmd_release,
     "deliver": cmd_release, "sync": cmd_sync, "build": cmd_build, "feeds": cmd_feeds, "recipes": cmd_recipes,
     "upgrade": cmd_upgrade, "fields": cmd_fields, "history": cmd_history, "secret": cmd_secret,
-    "schedule": cmd_schedule, "ui": cmd_ui,
+    "schedule": cmd_schedule, "ui": cmd_ui, "launcher": cmd_launcher, "rename-site": cmd_rename_site,
 }
 NO_SITE = {"init", "fields", "recipes"}
 
@@ -898,6 +1185,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2 if exc.__class__.__name__ in ("SafetyCheckFailed", "HeldForRelease") else 1
     except OSError as exc:
         log.error("%s: %s", type(exc).__name__, exc)
+        return 1
+    except sqlite3.Error as exc:
+        log.error("A file in the site's data folder could not be read or written (%s: %s). Check that its drive "
+                  "has free space and that no other program (a backup or an antivirus scan) holds it open, then "
+                  "run again.", type(exc).__name__, exc)
         return 1
 
 

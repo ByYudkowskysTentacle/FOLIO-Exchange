@@ -1,4 +1,7 @@
-"""Secrets come from the environment or the OS keyring, never from files.
+"""Secrets come from the environment or the OS keyring, never from settings files.
+
+(An SFTP private key is a file of its own, named by a feed's ``private_key``; the page keeps one it is given
+in the site's ``keys`` folder, readable only by this user. See ``setupops.store_private_key``.)
 
 Files hold a *secret reference* instead of a secret: ``keyring`` (Windows Credential
 Manager, macOS Keychain, Secret Service) or ``env:NAME``. Nothing here ever logs,
@@ -18,9 +21,11 @@ FOLIO_SERVICE = "folio-exchange/folio"
 SFTP_SERVICE = "folio-exchange/sftp"
 SMTP_SERVICE = "folio-exchange/smtp"
 WEBHOOK_SERVICE = "folio-exchange/webhook"
+HEARTBEAT_SERVICE = "folio-exchange/heartbeat"
 
 # Keys that must never appear in a site, feed or recipe file, whatever their value.
-SECRET_KEYS = frozenset({"password", "passphrase", "private_key_passphrase", "token", "api_key", "webhook_url"})
+SECRET_KEYS = frozenset({"password", "passphrase", "private_key_passphrase", "token", "api_key", "webhook_url",
+                         "heartbeat_url"})
 
 _REF = re.compile(r"^(keyring|env:[A-Za-z_][A-Za-z0-9_]*)$")
 

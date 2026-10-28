@@ -19,7 +19,9 @@ The editable spec is a Claude Docs document owned by the maintainer: https://cla
 
 ## Relation to FOLIOHQ
 
-[FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ) (`folio-chq-extract`) is phase 0: a working tool for collectionHQ Academic, and the reference implementation. Reuse its tested pieces rather than rewriting them:
+[FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ) is the home of the collectionHQ Academic recipe and its setup guide. Its `recipes/chq-academic/` is the source of the bundled `src/folio_exchange/recipes/chq-academic/`: change the recipe there first, then copy the folder here unchanged (FOLIOHQ's tests fail when the two differ). Its `docs/setup.md` and `docs/layout.md` are the collectionHQ documentation; keep commands and behaviour they describe in step with this code.
+
+FOLIOHQ's original tool, `folio-chq-extract` (phase 0, the reference implementation), now lives in its `legacy/` folder as a fallback until the first real delivery from FOLIO-Exchange. FOLIOHQ's CI checks that the recipe here writes byte-identical files to it. Reuse its tested pieces rather than rewriting them:
 - the client (login, retries, keyset paging)
 - sync and cache (deltas, deletion detection)
 - the field registry
@@ -27,13 +29,13 @@ The editable spec is a Claude Docs document owned by the maintainer: https://cla
 - delivery (pinned-key SFTP, staged or direct upload)
 - credentials (environment or OS keyring)
 
-Its `CLAUDE.md` lists the FOLIO API facts that code depends on.
+FOLIOHQ's `CLAUDE.md` lists the FOLIO API facts that code depends on.
 
 ## Ground rules
 
 - **Eureka first.** Okapi-based FOLIO keeps working only while the same code serves both; no Okapi-only fixes, features or tests.
 - **Never read or export patron data** unless a recipe declares it and an admin approves it. Do not add user or patron endpoints casually.
-- **Secrets** come only from environment variables or the OS keyring. Never put them in recipes, config, logs, commits or chat. Tests never touch the real keyring.
+- **Secrets** come only from environment variables or the OS keyring. The one exception is an SFTP private key saved from the page: too large for Credential Manager, it is a file in the site's `keys` folder that only the Windows user can read. Never put secrets in recipes, config, logs, commits or chat. Tests never touch the real keyring.
 - **Signing in:** do not sign in to a production service (FOLIO tenant, vendor SFTP) with a password yourself. Give the person a command to run, and read only its output.
 - **This repo is public.** Never commit credentials, `config.yaml`, `.env`, cache data or output files, or personal names and emails. Commits use the GitHub noreply address.
 - **Recipes stay declarative:** no executable code in recipes.

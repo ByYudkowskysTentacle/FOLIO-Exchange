@@ -1,12 +1,12 @@
 # Working notes
 
-_Last updated: 26 October 2026, after the v1 build. Read with `docs/spec.md` and `docs/design.md`._
+_Last updated: 27 October 2026, after the second review round's fixes. Read with `docs/spec.md` and `docs/design.md`._
 
 ## Where things stand
 
 - **FOLIO-Exchange** v1 is built and tested offline (see below); not yet released or run against a real tenant. The spec sheet is `docs/spec.md`.
-- **Phase 0 is [FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ)** (`folio-chq-extract`), a working one-vendor tool for collectionHQ Academic. It is the reference implementation this platform generalizes. Its `docs/HANDOFF.md` has its own status and open questions.
-- **FOLIOHQ status:**
+- **[FOLIOHQ](https://github.com/ByYudkowskysTentacle/FOLIOHQ)** is, since 27 Oct 2026, the home of the `chq-academic` recipe and the collectionHQ Academic setup guide (`docs/setup.md`) and file layout (`docs/layout.md`). Its `docs/HANDOFF.md` has the collectionHQ status and open questions.
+- **Phase 0, `folio-chq-extract`**, the one-vendor tool this platform generalizes, moved to FOLIOHQ's `legacy/` folder. It stays installable and tested as a fallback until FOLIO-Exchange makes its first real delivery. Its status:
   - Tested end to end against FOLIO's public reference systems (Okapi and Eureka).
   - The cHQ Academic file layout is implemented.
   - The cHQ SFTP login is verified.
@@ -21,8 +21,11 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - The whole pipeline: recipe library and feed overlay, read-only FOLIO client with patron and redirect guards, sync, MARC and delimited builders, checks, SFTP and local delivery, run history and audit, schedules, alerts, the runner, the command line and the guided `init`.
 - Safety from the review: first delivery held per destination and per recipe major version; `release` shows the run, checks file hashes and asks first; partial SFTP deliveries recorded; manual runs never cancel a scheduled delivery; full syncs refuse a truncated download; https and TLS for SMTP required; shared recipes cannot set where files go or which server key to trust; relative paths taken from the site folder; hand edits to settings audited.
 - A design and function review on 27 Oct (`docs/review-2026-10-27.md`) verified 71 findings; the 27 in "Fix now" are fixed, and the rest are planned in `docs/improvement-plan.md`.
+- Batch 1 of the plan is done: any change to a feed's delivered layout holds the next delivery and says what changed; `check`, `feeds` and the page warn when the hourly task has not run for two hours, and an optional heartbeat URL tells an outside monitor; `check` warns about folders other Windows users can change, and the guide installs under `%LOCALAPPDATA%`; `folio.ca_bundle` (a PEM file or the Windows certificate store) replaces turning TLS checks off; the page opens only through a one-time link; staff data is dropped from cached records; dependencies are pinned in `constraints.txt`. No release tag yet: the guide and installer still install `main`.
+- Batch 2 of the plan is done: a shared feed-operations core (`feedops.py`), paused and dry-run feeds handled plainly on the command line, a schedule command that works in PowerShell, guide sections for going live and updating, and a keyboard-usable, self-refreshing page.
+- A second review round on 27 Oct (`docs/review-2026-10-27-round-2.md`) verified 19 findings in the areas the first covered thinly: values in the files, unattended runs, living with the tool over time, and settings as a safety boundary. All 19 are fixed on the branch `claude/review-2`: legacy notes read strictly, a hold on the first delivery from another FOLIO, alerts for failing or given-up passes, a task that runs on battery, typed SFTP key pins, and a fuller settings audit among them.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
-- `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data.
+- `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to FOLIOHQ from the same data. Since 27 Oct 2026, FOLIOHQ's CI checks it on every change.
 - 202 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
 
 **Eureka trial (26 Oct 2026).** Run against the public Eureka Snapshot reference system (`https://folio-etesting-snapshot-kong.ci.folio.org`, tenant `diku`, the published demo login), delivering to a local folder:
@@ -33,11 +36,11 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - Fixed from what it showed: previews sampled the first instances by id, and on this tenant (like a library with many e-resources) none had items, so previews were empty. They now start from items. Also: the password note in `check` and `schedule` now matches where `site.yaml` says the password is; the wizard writes `secret: env:FOLIO_PASSWORD` when the password stays in the environment, and no empty `filters`; `check --delivery` names the local folder.
 - In this sample data every instance with items is FOLIO-source, so the default chq feed sends generated bibs only; a real tenant will mostly send SRS MARC, as the all-bibs feed showed.
 
-**Not done:** nothing has run against the library's own tenant or a vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. FOLIOHQ remains the path to gate 1.
+**Not done:** nothing has run against the library's own tenant or a vendor server; the Windows scheduled task, keyring use under it, and the Teams card are untested outside mocks. Since 27 Oct 2026, gate 1 goes through FOLIO-Exchange, with FOLIOHQ's legacy tool as the fallback.
 
 **Next**
 1. A dry run against the library's own tenant: `docs/dry-run.md` is the guide. The operator runs it; the password goes from their keyboard into Windows Credential Manager and is never shared.
-2. Gate 1 in FOLIOHQ (see Next steps below).
+2. Gate 1: the first delivery to collectionHQ, following FOLIOHQ's `docs/setup.md` (see Next steps below).
 3. Try the hourly Windows task (`folio-exchange schedule`) on the library PC, with the password in Credential Manager.
 
 ## Decisions
@@ -56,6 +59,8 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 | 2026-10-26 | A delivery to a new destination, or on a new recipe major version, waits for a person to release it | A test delivery to a local folder must not disarm the review of the first real upload |
 | 2026-10-26 | Recipe minor and patch versions never change an output's bytes; any layout change is a new major | `^1.0` updates automatically, so a vendor must never see an unreviewed change |
 | 2026-10-26 | A shared recipe sets only how files travel (transport, upload mode); hosts, folders and server keys are local | A recipe from another site must not choose where files go or which server to trust |
+| 2026-10-27 | FOLIOHQ becomes the home of the `chq-academic` recipe and its documentation; its tool moves to `legacy/` as a fallback, and gate 1 runs on FOLIO-Exchange | One engine to maintain. The recipe and the collectionHQ docs live with what was learned about collectionHQ, and byte parity, checked in FOLIOHQ's CI, lets a library switch either way |
+| 2026-10-27 | Legacy item notes are read strictly here (ISO 8601, `legacy.date_format`, or free text with a day, month and year; dates from 1800 to tomorrow; one whole number for counts), while FOLIOHQ's legacy tool still reads them leniently. FOLIOHQ's setup docs should state the accepted note formats, and add `host_key_type: ssh-rsa` to collectionHQ's pin | Lenient reading sent wrong dates and counts with no warning (second review round). The legacy tool is a fallback, not worth changing; byte parity runs without legacy settings, so it still holds. collectionHQ's server key is RSA, and a typed pin keeps deliveries working if the server adds a newer key type |
 
 Still open: patron data, upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
 
@@ -63,7 +68,7 @@ Still open: patron data, upkeep and funding, a proposal to the FOLIO community (
 
 **Vendor specs**
 - cHQ Academic links items to bibs on **Bib record ID = FOLIO instance UUID = MARC 999 ff $i**, which SRS writes. It does not use 001 or a barcode. FOLIOHQ enforces 999 ff $i on every record (`MarcBuilder.finalize`).
-- cHQ's PSV layout has 20 columns, pipe-delimited, with `None` for empty values and its own header names. FOLIOHQ's `config.example.yaml` reproduces it exactly.
+- cHQ's PSV layout has 20 columns, pipe-delimited, with `None` for empty values and its own header names. The `chq-academic` recipe and FOLIOHQ's `legacy/config.example.yaml` reproduce it exactly.
 - Vendor sample files get mangled in transit. cHQ's sample `.marc` had its field and subfield separators (0x1E, 0x1F) turned into newlines and ` $`, so no MARC reader could open it. Validate binary MARC on intake, and ask vendors for the original file, zipped.
 
 **collectionHQ SFTP (US)**
@@ -92,18 +97,23 @@ Still open: patron data, upkeep and funding, a proposal to the FOLIO community (
 
 **GitHub**
 - On this account, GitHub Actions in private repos is blocked by billing; public repos run free.
-- Current Node 24 action versions (Oct 2026): `actions/checkout@v7`, `actions/setup-python@v7`, `actions/cache@v6`, `actions/upload-artifact@v7`.
+- Current Node 24 action versions (Oct 2026): `actions/checkout@v7`, `actions/setup-python@v7`, `actions/cache@v6`, `actions/upload-artifact@v7`. CI pins each action to the full commit SHA of its tag, with the tag in a comment; look the commit up read-only with `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` when moving to a new version.
 - Commits use the GitHub noreply address, so no personal email is published.
+
+**Refreshing `constraints.txt`** (on purpose, in a change of its own; CI and the installer both install with it):
+1. In a fresh venv on Windows with Python 3.12, install FOLIO-Exchange alone, so pip picks the newest versions: `py -3.12 -m venv ../venv-constraints` (outside the repository), then `../venv-constraints/Scripts/python -m pip install .`
+2. `../venv-constraints/Scripts/python -m pip freeze --exclude folio-exchange` lists the runtime packages. Put those lines in `constraints.txt` under its header. Keep the environment markers: `sys_platform == "win32"` on `pywin32-ctypes`, and the `python_version` pairs for packages whose newest version needs Python 3.11 (check on PyPI which version is the newest for 3.10). Leave out the Linux-only and older-Python packages the header names.
+3. Install the dev tools with the new file (`../venv-constraints/Scripts/python -m pip install -c constraints.txt -e ".[dev]"`), run the tests and ruff, and let CI check Linux (Python 3.10 to 3.13) before merging.
 
 ## Next steps
 
-1. **Finish phase 0 in FOLIOHQ.**
-   - **Connect:** get the library's FOLIO API (Kong) URL, the tenant ID and a read-only service account, then run `folio-chq check` and `run --no-deliver`.
+1. **Gate 1 with FOLIO-Exchange**, following FOLIOHQ's `docs/setup.md`:
+   - **Connect:** get the library's FOLIO API (Kong) URL, the tenant ID and a read-only service account, then run `folio-exchange init`, `check` and `run chq --no-deliver`.
    - **Analyze:** review locations, call numbers and counts in that output.
-   - **Agree with cHQ:** the remote folder, plus a sample for their approval.
-   - **First delivery:** passing it is gate 1.
+   - **Agree with cHQ:** the remote folder and host key, plus a sample for their approval.
+   - **First delivery:** `run chq`, then `release chq`. cHQ accepting it is gate 1. If FOLIO-Exchange is blocked, FOLIOHQ's legacy tool sends the same files.
 2. **Here, in parallel:**
    - ~~Decide the license~~: MIT, 26 Oct 2026.
-   - Turn the recipe example in the spec into a draft recipe schema.
-   - Plan how FOLIOHQ's core splits into reusable parts: the client, sync and cache, the field registry, the builders and delivery.
+   - ~~Turn the recipe example in the spec into a draft recipe schema~~: `schemas/recipe.schema.json`, 26 Oct 2026.
+   - ~~Plan how FOLIOHQ's core splits into reusable parts~~: done in the v1 build, 26 Oct 2026.
 3. **Keep the spec current:** edit the live copy, then refresh `docs/spec.md` from it.

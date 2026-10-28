@@ -10,7 +10,11 @@ import hashlib
 import logging
 import os
 import shutil
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from . import credentials
 from .errors import ConfigError, DeliveryError, FxError
@@ -25,16 +29,163 @@ def sha256_fingerprint(key) -> str:
     return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
 
 
-def host_key_fingerprint(host: str, port: int = 22, timeout: float = 30) -> str:
-    """Read the server's host key without logging in, for a person to compare with the vendor's."""
+def md5_fingerprint(key) -> str:
+    """The older aa:bb:... form some vendors still quote."""
+    return ":".join(f"{b:02x}" for b in hashlib.md5(key.asbytes(), usedforsecurity=False).digest())
+
+
+_quiet_lock = threading.Lock()
+_quiet_depth = [0, logging.NOTSET]       # handshakes being probed now, and the level to put back after them
+
+
+@contextmanager
+def _quiet_handshakes() -> Iterator[None]:
+    """Keep paramiko from logging an error with a traceback for each key type a probing handshake finds missing
+    (an expected answer, not a fault), even when several probes overlap."""
+    logger = logging.getLogger("paramiko.transport")
+    with _quiet_lock:
+        if not _quiet_depth[0]:
+            _quiet_depth[1] = logger.level
+            logger.setLevel(logging.CRITICAL)
+        _quiet_depth[0] += 1
+    try:
+        yield
+    finally:
+        with _quiet_lock:
+            _quiet_depth[0] -= 1
+            if not _quiet_depth[0]:
+                logger.setLevel(_quiet_depth[1])
+
+
+def _probe_order() -> list[str]:
+    """The key types to probe, the common ones (Ed25519, then RSA, the usual older pin) before ECDSA."""
+    return sorted(KEY_TYPES, key=lambda kind: kind.startswith("ecdsa"))
+
+
+def _read_host_key(host: str, port: int, timeout: float, key_type: str | None = None) -> dict[str, str]:
     import paramiko
 
-    transport = paramiko.Transport((host, int(port or 22)))
+    off = {"keys": disabled_host_key_algorithms(key_type)} if key_type else None
+    transport = paramiko.Transport((host, port), disabled_algorithms=off)
     try:
         transport.start_client(timeout=timeout)
-        return sha256_fingerprint(transport.get_remote_server_key())
+        key = transport.get_remote_server_key()
+        return {"sha256": sha256_fingerprint(key), "md5": md5_fingerprint(key), "type": key.get_name()}
     finally:
         transport.close()
+
+
+def host_key_fingerprints(host: str, port: int = 22, timeout: float = 30) -> dict[str, Any]:
+    """Read the server's host keys without logging in, for a person to compare with the vendor's. The result
+    describes the key the server prefers, {"sha256": "SHA256:...", "md5": "aa:bb:...", "type": "ssh-ed25519"}, and
+    lists under "keys" every key it offers (that one first, then one per other type in ``KEY_TYPES``), since a
+    vendor may quote the fingerprint of an older kind than the one the server leads with. The SHA-256 value is
+    pinned with the key's type (``host_key_type``), so later logins ask for a key of that type even if the server
+    adds a newer kind."""
+    import paramiko
+
+    port = int(port or 22)
+    first = _read_host_key(host, port, timeout)
+    offered = [first]
+    for kind in _probe_order():
+        if kind == first["type"]:
+            continue
+        try:
+            with _quiet_handshakes():
+                key = _read_host_key(host, port, min(timeout, 10), kind)
+        except (paramiko.SSHException, EOFError, OSError):     # the server has no key of this type
+            continue
+        if key["type"] == kind and all(key["sha256"] != k["sha256"] for k in offered):
+            offered.append(key)
+    return {**first, "keys": offered}
+
+
+def host_key_fingerprint(host: str, port: int = 22, timeout: float = 30) -> str:
+    """Read the server's host key without logging in, for a person to compare with the vendor's."""
+    return host_key_fingerprints(host, port, timeout)["sha256"]
+
+
+# The host key types a pin can name (as the key reports its type), and the algorithms that ask for each.
+KEY_TYPES: dict[str, tuple[str, ...]] = {
+    "ssh-ed25519": ("ssh-ed25519",),
+    "ecdsa-sha2-nistp256": ("ecdsa-sha2-nistp256",),
+    "ecdsa-sha2-nistp384": ("ecdsa-sha2-nistp384",),
+    "ecdsa-sha2-nistp521": ("ecdsa-sha2-nistp521",),
+    "ssh-rsa": ("rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"),
+}
+
+
+def disabled_host_key_algorithms(key_type: str) -> list[str]:
+    """Every host key algorithm except those for ``key_type`` (paramiko's ``disabled_algorithms["keys"]``), so
+    the server is asked for its key of that type even when it also has a newer kind."""
+    import paramiko
+
+    allowed = KEY_TYPES.get(key_type, (key_type,))
+    every = dict.fromkeys([*paramiko.Transport._preferred_keys, *(a for t in KEY_TYPES.values() for a in t)])
+    return [a for a in every if a not in allowed]
+
+
+def _connect_pinned(login: dict, expected: str, key_type: str | None):
+    """Log in only to a server whose host key has the pinned SHA-256 value; any other key is refused before
+    logging in. With the pinned key's type only that type is negotiated, and a server that no longer offers that
+    type is reported as a changed key. A pin without a type (from before types were kept) is tried in paramiko's
+    own order first, then once for each other key type it has not yet seen."""
+    import paramiko
+
+    class Mismatch(paramiko.SSHException):
+        pass
+
+    seen: set[str] = set()
+
+    class Pinned(paramiko.MissingHostKeyPolicy):
+        def missing_host_key(self, _client, hostname, key):
+            seen.add(key.get_name())
+            got = sha256_fingerprint(key)
+            if got != expected:
+                raise Mismatch(f"Host key for {hostname} is {got}, expected {expected}")
+
+    tries: list[str | None] = [key_type] if key_type else [None, *_probe_order()]
+    first: Exception | None = None
+    for kind in tries:
+        if kind in seen:                       # the server already showed its key of this type
+            continue
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(Pinned())
+        extra = {"disabled_algorithms": {"keys": disabled_host_key_algorithms(kind)}} if kind else {}
+        try:
+            if kind and not key_type:
+                with _quiet_handshakes():
+                    client.connect(**login, **extra)
+            else:
+                client.connect(**login, **extra)
+            return client
+        except paramiko.IncompatiblePeer as exc:        # the server has no key of this type
+            client.close()
+            if key_type:
+                raise Mismatch(f"Host key for {login['hostname']}: the server no longer offers the pinned {key_type} key "
+                               f"(pinned {expected}){_offered_now(login)}") from exc
+            first = first or exc
+        except Mismatch as exc:
+            client.close()
+            if key_type:
+                raise
+            first = first or exc
+        except BaseException:
+            client.close()
+            raise
+    raise first or paramiko.SSHException(f"Host key for {login['hostname']}: none matches {expected}")
+
+
+def _offered_now(login: dict) -> str:
+    """'; it now offers <type> SHA256:...' naming the server's preferred key, or '' when it cannot be read."""
+    import paramiko
+
+    try:
+        with _quiet_handshakes():
+            key = _read_host_key(login["hostname"], int(login.get("port") or 22), 10)
+    except (paramiko.SSHException, EOFError, OSError):
+        return ""
+    return f"; it now offers {key['type']} {key['sha256']}"
 
 
 def _secret(d: dict) -> str | None:
@@ -57,22 +208,6 @@ def _connect(d: dict):
             "log in to it. Once the vendor confirms their fingerprint, run `folio-exchange init` again and answer "
             "that it matches."
         )
-    client = paramiko.SSHClient()
-    if expected:
-
-        class _Pinned(paramiko.MissingHostKeyPolicy):
-            def missing_host_key(self, _client, hostname, key):
-                got = sha256_fingerprint(key)
-                if got != expected:
-                    raise paramiko.SSHException(f"Host key for {hostname} is {got}, expected {expected}")
-
-        client.set_missing_host_key_policy(_Pinned())
-    else:
-        kh = os.path.expanduser(d.get("known_hosts") or "~/.ssh/known_hosts")
-        if os.path.exists(kh):
-            client.load_host_keys(kh)
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
-
     key_path = (d.get("private_key") or "").strip()
     secret = _secret(d)
     if not key_path and not secret:
@@ -81,19 +216,22 @@ def _connect(d: dict):
             f"({credentials.source(d.get('secret'), credentials.SFTP_SERVICE, credentials.sftp_account(d['username'], host))}). "
             "Store it with `folio-exchange secret set <feed>`."
         )
-    client.connect(
-        hostname=host,
-        port=int(d.get("port") or 22),
-        username=d["username"],
-        password=None if key_path else secret,
-        key_filename=os.path.expanduser(key_path) if key_path else None,
-        passphrase=secret if key_path else None,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=60,
-        banner_timeout=60,
-        auth_timeout=60,
-    )
+    login = {
+        "hostname": host, "port": int(d.get("port") or 22), "username": d["username"],
+        "password": None if key_path else secret,
+        "key_filename": os.path.expanduser(key_path) if key_path else None,
+        "passphrase": secret if key_path else None,
+        "look_for_keys": False, "allow_agent": False, "timeout": 60, "banner_timeout": 60, "auth_timeout": 60,
+    }
+    if not expected:
+        client = paramiko.SSHClient()
+        kh = os.path.expanduser(d.get("known_hosts") or "~/.ssh/known_hosts")
+        if os.path.exists(kh):
+            client.load_host_keys(kh)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        client.connect(**login)
+    else:
+        client = _connect_pinned(login, expected, (d.get("host_key_type") or "").strip() or None)
     transport = client.get_transport()
     if transport is not None:
         transport.set_keepalive(30)               # notice a connection that has silently gone away
@@ -116,6 +254,32 @@ def _remote_dir(d: dict) -> str:
 
 def _where(d: dict, name: str) -> str:
     return f"sftp://{d['username']}@{d['host']}:{int(d.get('port') or 22)}/{_remote_dir(d)}/{name}"
+
+
+def plain_error(exc: BaseException, d: dict) -> str:
+    """A delivery failure in words a librarian can act on (the page shows this instead of the raw error)."""
+    import socket
+
+    import paramiko
+
+    host, port, user = d.get("host") or "the server", int(d.get("port") or 22), d.get("username") or "the user"
+    if isinstance(exc, (ConfigError, DeliveryError)):
+        return str(exc)
+    if isinstance(exc, socket.gaierror):
+        return f"Could not find the server {host}: check the server name the vendor gave you."
+    if isinstance(exc, ConnectionRefusedError):
+        return f"{host} refused the connection on port {port}: check the port, and that this network may reach it."
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return (f"No answer from {host} on port {port}: a firewall, or a VPN that is not connected, may be blocking "
+                "it.")
+    if isinstance(exc, paramiko.AuthenticationException):
+        return f"{host} did not accept the login for {user}: check the user name and the stored password or key."
+    if isinstance(exc, paramiko.SSHException) and "Host key for" in str(exc):
+        return (f"{exc}. This may not be the vendor's server, so nothing was sent and nothing more will be: ask the "
+                "vendor before going on.")
+    if isinstance(exc, PermissionError):
+        return f"The folder cannot be written to ({exc.strerror or exc})."
+    return f"{type(exc).__name__}: {exc}"
 
 
 def check_delivery(d: dict) -> list[str] | None:

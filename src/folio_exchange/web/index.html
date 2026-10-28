@@ -19,20 +19,22 @@
 
   <div class="layout">
     <nav class="sidebar" aria-label="Feeds">
+      <div class="sidebar-add"><button class="btn btn-primary btn-block" id="btn-add-feed" type="button">Add a vendor feed</button></div>
       <div class="sidebar-head">Feeds</div>
       <ul class="feed-list" id="feed-list"></ul>
       <div class="sidebar-head">Site</div>
       <ul class="feed-list">
         <li><button class="nav-item" id="nav-connection" type="button"><span class="badge badge-muted">FOLIO</span><span class="nav-text"><span class="nav-name">Connection</span><span class="nav-sub" id="nav-connection-sub"></span></span></button></li>
+        <li><button class="nav-item" id="nav-recipes" type="button"><span class="badge badge-muted">GET</span><span class="nav-text"><span class="nav-name">Recipes</span><span class="nav-sub">vendors' file layouts</span></span></button></li>
         <li><button class="nav-item" id="nav-activity" type="button"><span class="badge badge-muted">LOG</span><span class="nav-text"><span class="nav-name">Activity</span><span class="nav-sub">changes, releases, overrides</span></span></button></li>
+        <li><button class="nav-item" id="nav-options" type="button"><span class="badge badge-muted">SET</span><span class="nav-text"><span class="nav-name">Options</span><span class="nav-sub">this site's folder and name</span></span></button></li>
       </ul>
       <div class="sidebar-foot" id="sidebar-foot"></div>
     </nav>
 
     <main class="main" id="main">
       <div class="empty" id="empty">
-        <p class="empty-title">Choose a feed</p>
-        <p>Each feed sends one vendor its files on a schedule. Pick one on the left to see its layout, run it, or look at past runs.</p>
+        <p class="empty-title">Loading…</p>
       </div>
     </main>
   </div>
@@ -41,5 +43,6 @@
     <form method="dialog" class="modal-body" id="modal-body"></form>
   </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="sr-only" id="live" role="status" aria-live="polite"></div>
 </body>
 </html>

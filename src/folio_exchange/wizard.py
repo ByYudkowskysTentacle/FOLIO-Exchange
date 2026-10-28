@@ -20,18 +20,16 @@ from pathlib import Path
 import requests
 
 from . import credentials, delivery, runner, schedule
-from .client import FolioClient, probe
+from .client import FolioClient, probe, tls_verify
 from .config import SITE_FILE, load_site, read_yaml, write_yaml
 from .errors import ConfigError, FxError
 from .history import History
-from .recipe import ID_RE, RESERVED_FEED_NAMES, RecipeLibrary, load_feed
-
-SITE_HEADER = """FOLIO-Exchange site settings, written by `folio-exchange init`.
-No passwords live here: see `folio-exchange secret status`."""
-FEED_HEADER = """FOLIO-Exchange feed: this library's settings over a shared recipe.
-Edit by hand or re-run `folio-exchange init`; `folio-exchange check` validates it."""
-STATUSES = ["Withdrawn", "Lost and paid", "Declared lost", "Missing", "Long missing", "Claimed returned",
-            "Unavailable", "Unknown", "In process", "On order", "Order closed"]
+from .recipe import RecipeLibrary, load_feed
+from .setupops import FEED_HEADER, SITE_HEADER, STATUSES
+from .setupops import feed_name_problem as _feed_name_problem
+from .setupops import own_comments as _own_comments
+from .setupops import schedule_problem as _schedule_problem
+from .setupops import url_problem as _url_problem
 
 
 class Prompter:
@@ -145,33 +143,15 @@ class ScriptedPrompter(Prompter):
 
 
 # ------------------------------------------------------------------ helpers
-def _url_problem(url: str) -> str | None:
-    host = url.split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
-    if url.startswith("https://") and len(url) > 9:
-        return None
-    if url.startswith("http://") and host in ("localhost", "127.0.0.1"):
-        return None
-    return "Enter the full address, starting with https:// (on Eureka, the Kong gateway URL)."
-
-
-def _feed_name_problem(name: str) -> str | None:
-    if not ID_RE.match(name):
-        return "Use lowercase letters, digits and hyphens, e.g. chq."
-    if name in RESERVED_FEED_NAMES:
-        return f"{name!r} is reserved; choose another name."
-    return None
+TLS_OFF_WARNING = ("WARNING  folio.verify_tls is false in site.yaml, so FOLIO's certificate is not checked: anyone "
+                   "between this computer and FOLIO could read the service account's password. If FOLIO's "
+                   "certificate comes from your campus or a network proxy, set folio.ca_bundle to that "
+                   "certificate's PEM file (or to windows, for the Windows certificate store) and set verify_tls "
+                   "back to true.")
 
 
 def _required(answer: str) -> str | None:
     return None if answer.strip() else "This is needed."
-
-
-def _schedule_problem(text: str) -> str | None:
-    try:
-        schedule.parse(text)
-    except ConfigError as exc:
-        return str(exc)
-    return None
 
 
 def _in_site(root: Path, folder: str) -> Path:
@@ -190,16 +170,6 @@ def _load_existing(path: Path, label: str) -> dict:
     except ConfigError as exc:
         raise ConfigError(f"{exc}\n{label} could not be read, so init stopped without changing it. Fix the "
                           "file (or move it aside to start afresh), then run init again.") from None
-
-
-def _own_comments(path: Path, header: str) -> bool:
-    """True when the file holds comments that init did not write (they would be lost on rewrite)."""
-    ours = {f"# {line}".rstrip() if line else "#" for line in header.splitlines()}
-    try:
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return False
-    return any("#" in line and line.rstrip() not in ours for line in lines)
 
 
 class _Writer:
@@ -225,7 +195,7 @@ def _audit(root: Path, feed: str | None, action: str, detail: dict) -> None:
         return
     with History(site.history_path) as hist:
         hist.audit(None, feed, action, detail)
-        runner.audit_settings(site, hist)
+        runner.audit_settings(site, hist, {detail["file"]} if detail.get("file") else set())
 
 
 def _paused_by_person(root: Path, name: str) -> bool:
@@ -262,7 +232,7 @@ def _secret_ref(p: Prompter, service: str, account: str, what: str, env_default:
 
 # ------------------------------------------------------------------ wizard
 def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None = None,
-               read_host_key: Callable[[str, int], str] | None = None) -> int:
+               read_host_key: Callable[[str, int], str | dict] | None = None) -> int:
     try:
         return _run_wizard(root, prompter, library=library, read_host_key=read_host_key)
     except ConfigError as exc:
@@ -271,14 +241,15 @@ def run_wizard(root: Path, prompter: Prompter, *, library: RecipeLibrary | None 
 
 
 def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
-                read_host_key: Callable[[str, int], str] | None) -> int:
+                read_host_key: Callable[[str, int], str | dict] | None) -> int:
     root = Path(root)
-    read_host_key = read_host_key or delivery.host_key_fingerprint
+    read_host_key = read_host_key or delivery.host_key_fingerprints
     p.say("FOLIO-Exchange setup. Answers in [brackets] are the defaults; press Enter to keep them.")
     p.say(f"Site folder: {root}")
     if "onedrive" in str(root).lower() or "dropbox" in str(root).lower():
         p.say("WARNING  This folder looks synced to the cloud. The cache and lock files break in synced "
-              "folders; a plain local folder such as C:\\FOLIO-Exchange\\<tenant> is safer.")
+              "folders; a plain local folder that only you can change, such as "
+              "%LOCALAPPDATA%\\FOLIO-Exchange\\<tenant>, is safer.")
         if not p.confirm("Use it anyway?", False):
             return 1
     root.mkdir(parents=True, exist_ok=True)
@@ -296,6 +267,7 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
             p.say(f"site.yaml has a problem, so its FOLIO connection is asked again:\n{exc}")
     if effective:
         p.say(f"Found site.yaml: {effective['base_url']} (tenant {effective['tenant']}, user {effective['username']}).")
+    before = dict(effective) if effective else None
     if not effective or p.confirm("Change the FOLIO connection?", False):
         p.say("\nFOLIO connection. Ask your FOLIO host for the API address (on Eureka, the Kong gateway), the "
               "tenant id, and a read-only service account.")
@@ -327,10 +299,12 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                 p.say("Nothing was entered. Run init again when you have the password.")
                 return 1
             password = typed
+    if effective.get("verify_tls") is False:
+        p.say(TLS_OFF_WARNING)
     client = FolioClient(effective["base_url"], effective["tenant"], effective["username"], password,
                          timeout=float(effective.get("timeout_seconds", 120)),
                          max_retries=int(effective.get("max_retries", 5)),
-                         verify_tls=bool(effective.get("verify_tls", True)))
+                         verify_tls=tls_verify(effective, root))
     try:
         client.connect()
     except (FxError, requests.RequestException) as exc:
@@ -342,6 +316,9 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
               "tenant and account, then run init again.")
         return 1
     p.say(f"Logged in to {client.base_url} as {client.username}.")
+    moved = runner.source_change_note(before, effective)
+    if moved:
+        p.say(f"NOTE  {moved}")
     if typed:                                          # only a password FOLIO accepted is kept
         credentials.store(credentials.FOLIO_SERVICE, account, typed)
         p.say("  Stored in the system keyring.")
@@ -492,27 +469,53 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         d["remote_dir"] = p.ask("Folder on the server (the vendor says which; . is the login folder)",
                                 d.get("remote_dir") or ".")
         try:
-            key = read_host_key(d["host"], d["port"])
+            read = read_host_key(d["host"], d["port"])
         except Exception as exc:  # noqa: BLE001 - network errors of every kind
             p.say(f"Could not reach {d['host']}:{d['port']} ({type(exc).__name__}: {exc}).")
-            key = None
-        if key:
-            p.say(f"The server's key fingerprint is {key}")
-            confirmed_before = d.get("host_key_fingerprint") == key and d.get("host_key_confirmed", True) is not False
-            pin = p.choose("Does it match the fingerprint the vendor gave you?", [
-                ("yes", "yes, it matches"),
-                ("unconfirmed", "I don't have the vendor's value yet: keep it, but don't connect until I confirm it"),
-                ("no", "no, it differs: don't trust this server"),
-            ], "yes" if confirmed_before else "unconfirmed")
+            read = None
+        # every key the server offers, as {sha256, md5?, type?}, the one it prefers first
+        offered: list[dict] = []
+        if isinstance(read, dict):
+            offered = list(read.get("keys") or [read])
+        elif read:
+            offered = [{"sha256": read}]
+        if offered:
+            pinned_before = (d.get("host_key_fingerprint") if d.get("host_key_confirmed", True) is not False
+                             else None)
+            unsure = ("unconfirmed", "I don't have the vendor's value yet: keep it, but don't connect until I "
+                      "confirm it")
+            if len(offered) == 1:
+                key_type = offered[0].get("type")
+                p.say(f"The server's {key_type + ' ' if key_type else ''}key fingerprint is {offered[0]['sha256']}")
+                choices = [("yes", "yes, it matches"), unsure, ("no", "no, it differs: don't trust this server")]
+                picks = {"yes": offered[0]}
+                question = "Does it match the fingerprint the vendor gave you?"
+            else:
+                p.say(f"The server offers {len(offered)} keys; the vendor's fingerprint should match one of them:")
+                for k in offered:
+                    md5 = f" (MD5 {k['md5']})" if k.get("md5") else ""
+                    p.say(f"  {k.get('type') or 'key'}: {k['sha256']}{md5}")
+                picks = {f"yes:{k.get('type') or n}": k for n, k in enumerate(offered, 1)}
+                choices = [*((c, f"the {k.get('type') or 'key'} key matches") for c, k in picks.items()), unsure,
+                           ("no", "none of them matches: don't trust this server")]
+                question = "Which key matches the fingerprint the vendor gave you?"
+            before = next((c for c, k in picks.items() if k["sha256"] == pinned_before), None)
+            pin = p.choose(question, choices, before or "unconfirmed")
             if pin == "no":
                 p.say("Stopped: a different key can mean the wrong server. Ask the vendor before going on.")
                 d.pop("host_key_fingerprint", None)
+                d.pop("host_key_type", None)
                 d.pop("host_key_confirmed", None)
                 d["transport"] = "none"
                 raw["delivery"] = d
                 save_feed("feed delivery left off by init (host key mismatch)")
                 return 1
-            d["host_key_fingerprint"] = key
+            chosen = picks.get(pin, offered[0])
+            d["host_key_fingerprint"] = chosen["sha256"]
+            if chosen.get("type") in delivery.KEY_TYPES:
+                d["host_key_type"] = chosen["type"]
+            else:
+                d.pop("host_key_type", None)
             if pin == "unconfirmed":
                 d["host_key_confirmed"] = False
                 keep_paused = True
@@ -617,12 +620,29 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
 
     # 9. Done
     p.say(f"\nSaved {SITE_FILE} and feeds/{name}.yaml in {root}.")
-    if not raw["enabled"]:
-        p.say(f"The feed is paused. When it is ready, run `folio-exchange feeds resume {name}`.")
-    p.say("Next steps:")
-    p.say(f"  1. folio-exchange -s \"{root}\" run {name}     (the first delivery is held for you to check)")
-    p.say(f"  2. folio-exchange -s \"{root}\" release {name} (sends it once you are happy)")
-    p.say(f"  3. folio-exchange -s \"{root}\" schedule      (shows the one command that schedules it)")
+    fx = f"folio-exchange -s \"{root}\""
+    if d.get("transport") in ("sftp", "local"):
+        if not raw["enabled"]:
+            first = ("Once the vendor has given you the key fingerprint, run init again to confirm it. Then t"
+                     if d.get("host_key_confirmed") is False else "T")
+            p.say(f"The feed is paused. {first}est the delivery with `{fx} check --delivery {name}`, then resume it "
+                  f"with `{fx} feeds resume {name}`.")
+        p.say("Next steps:")
+        p.say(f"  1. {fx} run {name}   (the first delivery is held for you to check)")
+        p.say(f"  2. {fx} release {name}   (sends it once you are happy)")
+        p.say(f"  3. {fx} schedule   (shows the command that schedules it)")
+    else:
+        if not raw["enabled"]:
+            p.say(f"The feed is paused. When it is ready, run `{fx} feeds resume {name}`.")
+        p.say("Next steps for a dry run (nothing is sent anywhere):")
+        p.say(f"  1. {fx} check   (login, permissions and record counts)")
+        p.say(f"  2. {fx} preview {name}   (a few rows from a sample)")
+        p.say(f"  3. {fx} run {name} --no-deliver   (the full files, in a dated folder under "
+              f"{site.out_dir / name})")
+        p.say(f"  4. {fx} history   (the runs; history --show <number> for one)")
+        p.say("When the vendor's delivery details are ready, run init again and choose how the files are "
+              "delivered. The first real delivery is then held for you to check and release.")
+    p.say(f"  Tip: `{fx} launcher` puts a file on your desktop that opens the page for this site.")
     if os.name == "nt":
         p.say(f"  Tip: setx FOLIO_EXCHANGE_SITE \"{root}\" lets you leave out -s in new windows.")
     return 0
