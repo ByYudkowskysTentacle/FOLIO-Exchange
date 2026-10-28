@@ -162,7 +162,7 @@ def next_step(feed: Feed, status: str, run_dir: Path | None) -> str:
     if status == "held":
         return f"Check the files in{where}, then run: folio-exchange release {feed.name}"
     if status == "blocked":
-        return (f"Look at the files and the reason above. If the change is expected, run: "
+        return (f"Look at the files and the reason above. If they are right to send as they are, run: "
                 f"folio-exchange release {feed.name}")
     if status == "failed":
         return f"Fix the problem above, then run: folio-exchange run {feed.name}"
@@ -481,8 +481,8 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         if would_hold:
             report["would_hold"] = would_hold
             also = f" It would also have been held for review: {would_hold}."
-        error = (f"{exc}{also} The files are in {run_dir}. If the drop is not expected, fix it in FOLIO and run "
-                 f"`folio-exchange run {feed.name}` again; this run is then never sent.")
+        error = (f"{exc}{also} The files are in {run_dir}. A later run of {feed.name} replaces this one, which "
+                 "is then never sent.")
         log.error("%s", error)
     except DeliveryError as exc:
         status, code, error = "failed", 1, str(exc)
@@ -967,7 +967,7 @@ def preview(site: Site, feed: Feed, instances: int = 10) -> RunResult:
             report["conformance"] = checks.conformance(feed, run_dir, samples, rep.outputs)
         warnings = legacy_warnings(rep, feed.legacy)
         try:
-            checks.required_fields(feed, rep)
+            checks.required_fields(feed, rep, preview=True)
         except SafetyCheckFailed as exc:
             warnings.append(str(exc))
         if warnings:

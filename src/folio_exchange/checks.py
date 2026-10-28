@@ -18,15 +18,33 @@ if TYPE_CHECKING:
     from .recipe import Feed
 
 
-def required_fields(feed: Feed, report: BuildReport) -> None:
-    """Block when any delivered row has a ``must_be_filled`` field empty."""
+def required_fields(feed: Feed, report: BuildReport, *, preview: bool = False) -> None:
+    """Block when any delivered row has a ``must_be_filled`` field empty.
+
+    The message says which fields the recipe requires and which the feed file added: a feed file can
+    add to the recipe's list but not take from it, so only the feed's own are offered for removal. A
+    preview cannot be released, so its message leaves out `release`."""
     empty = {name: n for name, n in report.unfilled.items() if n}
-    if empty:
-        listed = ", ".join(f"{name}: {n:,} rows" for name, n in sorted(empty.items()))
-        raise SafetyCheckFailed(
-            f"Some rows are missing values the vendor needs ({listed}). Files were built but not delivered. "
-            "Fix the records in FOLIO, or remove the field from checks.must_be_filled in the feed file."
-        )
+    if not empty:
+        return
+    listed = ", ".join(f"{name}: {n:,} rows" for name, n in sorted(empty.items()))
+    recipe_must = set((feed.recipe.data.get("checks") or {}).get("must_be_filled") or [])
+    from_recipe = [name for name in sorted(empty) if name in recipe_must]
+    from_feed = [name for name in sorted(empty) if name not in recipe_must]
+    text = [f"Some rows are missing values the vendor needs ({listed})."]
+    text.append("A full run would be blocked." if preview else "Files were built but not delivered.")
+    if from_recipe:
+        text.append(f"The recipe {feed.recipe.ref} requires {', '.join(from_recipe)}; the feed file cannot "
+                    f"remove {'it' if len(from_recipe) == 1 else 'them'}.")
+    if from_feed:
+        text.append(f"The feed file's checks.must_be_filled adds {', '.join(from_feed)}.")
+    fix = "Fix the records in FOLIO and run the feed again"
+    if from_feed:
+        fix += f", or remove {', '.join(from_feed)} from checks.must_be_filled in the feed file"
+    text.append(fix + ".")
+    if not preview:                    # its own sentence: the page drops the ones that name a command
+        text.append(f"If the files are right as they are, send them with `folio-exchange release {feed.name}`.")
+    raise SafetyCheckFailed(" ".join(text))
 
 
 def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> None:
@@ -35,8 +53,9 @@ def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> No
     if last_delivered and ratio and items_written < last_delivered * ratio:
         raise SafetyCheckFailed(
             f"Item count fell from {last_delivered:,} to {items_written:,} (below {ratio:.0%} of the last "
-            "delivery). Files were built but not delivered. If the drop is expected (weeding, a location "
-            f"removed), look at the files, then send them with `folio-exchange release {feed.name}`."
+            "delivery). Files were built but not delivered. If the drop is not expected, fix the cause in FOLIO "
+            "and run the feed again. If it is expected (weeding, a location removed), look at the files, then "
+            f"send them with `folio-exchange release {feed.name}`."
         )
 
 

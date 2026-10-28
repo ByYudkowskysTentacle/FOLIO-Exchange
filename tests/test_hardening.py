@@ -92,6 +92,21 @@ def test_a_ca_bundle_relative_to_the_site_folder_is_trusted(https_folio, tmp_pat
     assert client.get("/locations")["locations"]
 
 
+def test_a_ca_bundle_wins_over_the_environments_bundle(https_folio, tmp_path, monkeypatch):
+    mock, ca = https_folio
+    import certifi
+    for name in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):    # IT set a bundle that does not hold the campus CA
+        monkeypatch.setenv(name, certifi.where())
+    client = _client(mock.url, tls_verify({"verify_tls": True, "ca_bundle": str(ca)}, None))
+    client.connect()
+    assert client.get("/locations")["locations"]
+    assert _client(mock.url, False).session.merge_environment_settings(mock.url, {}, None, None, None)[
+        "verify"] is False                                      # verify_tls: false is not turned back on either
+    # with nothing in site.yaml the environment's bundle still applies, as it does for any requests program
+    default = _client(mock.url, tls_verify({"verify_tls": True}, None)).session
+    assert default.merge_environment_settings(mock.url, {}, None, None, None)["verify"] == certifi.where()
+
+
 def test_an_untrusted_certificate_names_ca_bundle_as_the_fix(https_folio):
     mock, _ca = https_folio
     with pytest.raises(FolioUnreachable) as err:

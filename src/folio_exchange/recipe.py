@@ -445,10 +445,10 @@ def validate_recipe(data: dict, where: str, *, shared: bool = True) -> list[str]
         c.add("checks.min_item_ratio", f"must be a number from 0 (off) to 1, got {ratio!r}")
     for name in c.text_list(chk.get("must_be_filled"), "checks.must_be_filled"):
         c.field(name, "checks.must_be_filled", read_set)
-        if name == "barcode" and {**SELECTION_DEFAULTS, **sel}.get("include_items_without_barcode"):
-            c.add("checks.must_be_filled", "barcode must be filled, but selection keeps items without a "
-                                                  "barcode, so every run would be blocked; set "
-                                                  "include_items_without_barcode: false or drop the check")
+        if shared and name == "barcode" and {**SELECTION_DEFAULTS, **sel}.get("include_items_without_barcode"):
+            c.add("checks.must_be_filled", "barcode must be filled, but selection keeps items without a barcode, "
+                                           "so every run would be blocked; set selection.include_items_without_"
+                                           "barcode: false or remove barcode from checks.must_be_filled")
 
     dlv = c.mapping(data.get("delivery"), "delivery")
     c.keys(dlv, RECIPE_DELIVERY_KEYS if shared else DELIVERY_DEFAULTS, "delivery")
@@ -775,6 +775,14 @@ def load_feed_data(raw: dict, path: Path, library: RecipeLibrary, root: Path | N
     }
     problems = c.problems + [p.replace(f"{where}: selection.", f"{where}: filters.")
                              for p in validate_recipe(merged, where, shared=False)]
+    if "barcode" in must and merged["selection"].get("include_items_without_barcode"):
+        # checked here, not in validate_recipe: only the feed's own additions to must_be_filled can be removed
+        in_recipe = "barcode" in ((r.get("checks") or {}).get("must_be_filled") or [])
+        problems.append(f"{where}: checks.must_be_filled: barcode must be filled"
+                        + (f" (the recipe {recipe.ref} requires it)" if in_recipe else "")
+                        + ", but filters.include_items_without_barcode is true, so every run would be blocked; "
+                        "set filters.include_items_without_barcode: false"
+                        + ("" if in_recipe else " or remove barcode from checks.must_be_filled"))
     d = merged["delivery"]
     if d["transport"] == "sftp":
         for key in ("host", "username"):
