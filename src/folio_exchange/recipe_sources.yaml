@@ -5,12 +5,12 @@
 # commit. Vendors (or their partner libraries) are added here by pull request; a site can add its own
 # sources under `recipe_sources:` in site.yaml.
 sources:
-  - id: foliohq
+  - id: foliohq             # the repository's name until 28 Oct 2026, kept so installed sites keep their record
     vendor: collectionHQ
-    title: collectionHQ (FOLIOHQ)
-    description: collectionHQ Academic, maintained in FOLIOHQ with collectionHQ's implementation team.
-    repo: ByYudkowskysTentacle/FOLIOHQ
+    title: collectionHQ (cHQ FOLIO Exchange Recipe)
+    description: collectionHQ Academic, maintained in cHQ FOLIO Exchange Recipe with collectionHQ's implementation team.
+    repo: ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe
     branch: main
     path: recipes
     recipes: [chq-academic]
-    homepage: https://github.com/ByYudkowskysTentacle/FOLIOHQ
+    homepage: https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe

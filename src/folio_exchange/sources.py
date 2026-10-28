@@ -1,6 +1,6 @@
 """Vendor recipes from GitHub: a curated list of sources, downloads pinned to a commit, updates on request.
 
-A source is a folder in a GitHub repository holding ``<recipe-id>/<version>.yaml`` files, such as FOLIOHQ's
+A source is a folder in a GitHub repository holding ``<recipe-id>/<version>.yaml`` files, such as cHQ FOLIO Exchange Recipe's
 ``recipes`` folder. The list ships with FOLIO-Exchange (``recipe_sources.yaml``; vendors are added by pull
 request), and a site may add its own under ``recipe_sources`` in ``site.yaml``. Nothing else is downloaded.
 

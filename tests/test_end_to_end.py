@@ -227,7 +227,7 @@ def test_chq_academic_psv_layout(site, folio, monkeypatch):
     assert psv.name.startswith("test_items_") and psv.name.endswith(".psv")
 
     raw = psv.read_bytes()
-    assert not raw.startswith(b"\xef\xbb\xbf") and b"\r\n" in raw          # UTF-8, no BOM, CRLF as in FOLIOHQ
+    assert not raw.startswith(b"\xef\xbb\xbf") and b"\r\n" in raw          # UTF-8, no BOM, CRLF as in folio-chq-extract
     lines = psv.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "|".join(h for h, _ in CHQ_ACADEMIC_COLUMNS)
     with open(psv, newline="", encoding="utf-8") as fh:

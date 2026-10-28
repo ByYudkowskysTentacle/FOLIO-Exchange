@@ -2,7 +2,7 @@
 
 _27 October 2026. Follows the design and function review in `docs/review-2026-10-27.md`; IDs refer to its findings. The "Fix now" group (27 findings) is done. This plans everything else._
 
-Each batch is one or a few pull requests, each with regression tests. Whenever the builders change, byte parity with FOLIOHQ is re-checked.
+Each batch is one or a few pull requests, each with regression tests. Whenever the builders change, byte parity with the legacy tool is re-checked.
 
 ## Batch 1: safety and unattended running
 
@@ -39,6 +39,8 @@ Make daily use comfortable, and give the page the same operations as the command
 | 2.3 | **Page usability and accessibility.** Make History rows, both tab sets and the Run menu work by keyboard, with correct ARIA roles. Fix contrast on the Run button, recipe label and small badges (WCAG 2.2 AA). Refresh the sidebar and the open feed every 30 to 60 seconds, and when the tab becomes visible. Use the page's own wording instead of command lines, readable settings, and an Open folder button. Let narrow windows scroll as one page. | UI-6, UI-7, UI-8, UI-9, UI-10 | Keyboard-only review of a past run and release works; contrast checks pass; a scheduled run's result appears without a reload. |
 
 ## Batch 3: large catalogues
+
+_Tabled on 28 October 2026: the pilot library's catalogue is about 70,000 records. The desktop app (`docs/desktop-plan.md`) comes first._
 
 Measure first, then remove the full re-downloads that make a weekly run take hours. About three days.
 
@@ -87,7 +89,7 @@ The review's completeness check named four areas that the first round covered th
 
 - **Batch 1 first:** it guards deliveries and the unattended schedule.
 - **Batch 2:** 2.1 comes before the page work in 2.3, which builds on it.
-- **Batch 3** starts with the benchmark (3.0), so every change there is measured.
+- **Batch 3** is tabled until a library with a large catalogue needs it. It starts with the benchmark (3.0), so every change there is measured.
 - **Batch 4** can run alongside any other batch.
 - **Batch 5** waits for the partner library's choice of a second vendor, except 5.2 and the `requires` key in 5.3, which are cheap and safe now.
-- **FOLIOHQ** stays the path to gate 1 throughout.
+- **cHQ FOLIO Exchange Recipe** (formerly FOLIOHQ) keeps the setup guide for gate 1 throughout.
