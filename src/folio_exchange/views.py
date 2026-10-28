@@ -317,10 +317,12 @@ def release_summary(site_root: Path, name: str) -> dict:
     return captured
 
 
-def release(site_root: Path, name: str, run_dir: Path | str) -> dict:
-    """Send a held, blocked or built run after a person has looked at it, with every safety check."""
+def release(site_root: Path, name: str, run_dir: Path | str, expected: dict | None = None) -> dict:
+    """Send a held, blocked or built run after a person has looked at it, with every safety check. ``expected``,
+    the ``release_summary`` the person confirmed, makes the release refuse when that changed meanwhile (see
+    ``runner.release``)."""
     site, _library, feed, _feeds = find_feed(site_root, name)
-    res = runner.release(site, feed, Path(run_dir))
+    res = runner.release(site, feed, Path(run_dir), expected=expected)
     return run_result(site, feed, res)
 
 

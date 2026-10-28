@@ -21,7 +21,7 @@ from folio_exchange import siteops, views  # noqa: E402
 from folio_exchange.desktop import app as desktop_app  # noqa: E402
 from folio_exchange.desktop import model, pages, places, single  # noqa: E402
 from folio_exchange.desktop import window as window_module  # noqa: E402
-from folio_exchange.desktop.pages import FeedPage  # noqa: E402
+from folio_exchange.desktop.feed import FeedPage  # noqa: E402
 from folio_exchange.desktop.picker import NewSiteDialog, SitePicker  # noqa: E402
 from folio_exchange.desktop.window import MainWindow, app_command  # noqa: E402
 from folio_exchange.desktop.worker import JobWatcher  # noqa: E402
@@ -87,7 +87,7 @@ def test_the_window_shows_the_sites_feeds(qtbot, site):
     w.select("feed:chq")
     assert w.stack.currentWidget() is w.feed
     assert "chq-academic@" in w.feed.fields["recipe"].text()
-    assert w.feed.fields["schedule"].text() and w.feed.fields["last"].text() == "No runs yet"
+    assert w.feed.fields["schedule"].text() and w.feed.fields["last"].text() == "never"
     assert "vendor-drop" in w.feed.fields["delivery"].text()
 
 
@@ -301,7 +301,7 @@ def test_titles_and_errors_are_shown_as_written_never_as_markup(qtbot, monkeypat
     sneaky = 'Academic <img src="file://example.invalid/share/x.png"> <b>bold</b>'
     page = FeedPage()
     qtbot.addWidget(page)
-    page.show_feed({"name": "chq", "title": sneaky})
+    page.show_feed({"name": "chq", "title": sneaky}, [])
     assert page.title.textFormat() == Qt.TextFormat.PlainText and page.title.text() == sneaky
     boxes = []
     monkeypatch.setattr(QMessageBox, "exec", lambda box: boxes.append((box.textFormat(), box.text())) or 0)
@@ -518,12 +518,15 @@ def test_a_late_finish_from_an_older_check_leaves_the_newer_one_alone(qtbot, sit
     w.check_connection()                                   # the person presses Check again
     second = w.watcher
     assert second is not first
+    # The older one reported its end before the newer began (D2 review, qt-4: else a feed's result stayed
+    # "running"), and only once.
+    assert [f["result"]["n"] for f in finished] == [1]
     first.poll()                                           # the older watcher's late finish
-    assert w.watcher is second and finished == []          # neither shown nor taking the newer one's place
+    assert w.watcher is second and len(finished) == 1      # neither shown again nor taking the newer one's place
     qtbot.waitUntil(lambda: len(gates) == 2, timeout=5000)  # the newer check's thread has reached it
     gates[1].set()
-    qtbot.waitUntil(lambda: bool(finished), timeout=5000)
-    assert finished[0]["result"]["n"] == 2 and w.watcher is None
+    qtbot.waitUntil(lambda: len(finished) == 2, timeout=5000)
+    assert finished[1]["result"]["n"] == 2 and w.watcher is None
 
 
 def test_the_picker_lists_recent_sites_without_looking_at_them(qtbot, tmp_path, monkeypatch):

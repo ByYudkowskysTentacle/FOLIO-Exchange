@@ -1,6 +1,6 @@
 # Desktop app plan
 
-_28 October 2026. Decisions taken; D1 (groundwork and shell) is built, D2 is next. Batch 3 (large catalogues) is tabled, because the pilot library's catalogue is about 70,000 records._
+_28 October 2026. Decisions taken; D1 (groundwork and shell) and D2 (feeds and activity) are built, D3 is next. Batch 3 (large catalogues) is tabled, because the pilot library's catalogue is about 70,000 records._
 
 ## Why
 

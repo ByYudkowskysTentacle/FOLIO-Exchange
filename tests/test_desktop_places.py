@@ -150,6 +150,89 @@ def test_words_for_people():
     assert model.file_problems(summary) == ["x: broken", "r.yaml: bad"]
 
 
+def test_the_page_s_words_for_feeds_and_runs():
+    # A sentence naming a command the app has a button for is left out; one it has no button for stays.
+    held = "Item count fell. Then send them with `folio-exchange release chq`. Or run `folio-exchange init`."
+    assert model.page_words(held) == "Item count fell. Or run `folio-exchange init`."
+    assert model.page_words("Run `folio-exchange run chq`.") == "Run `folio-exchange run chq`."   # never empty
+    assert model.job_words("release", "chq") == "send of chq" and model.job_words("check", None) == "connection check"
+    assert model.job_words("rename", None) == "rename"
+    assert model.next_step("held", True).startswith("Look at the files (Open folder)")
+    assert model.next_step("built", False) == "This feed has nowhere to send files yet, so they stay on this computer."
+    assert model.next_step("success", True) is None
+    assert model.size(512) == "512 B" and model.size(2048) == "2.0 KB" and model.num(None) == "–"
+    assert model.num(12345) == "12,345"
+    paused = {"code": "paused", "feed": "chq", "level": "note", "text": "Paused. `folio-exchange resume chq`"}
+    assert model.warning_text(paused, True).startswith("This feed is paused")
+    assert model.warning_text({"code": "recipe-update", "text": "x"}, newer="chq-academic@2.0.0").startswith(
+        "A newer version of its recipe (chq-academic@2.0.0) is available.")
+    assert model.setting_lines({"exclude_location_codes": ["A", "B"], "bibs_without_items": False}) == [
+        "Locations left out (exclude_location_codes): A, B",
+        "Include bibs that have no items (bibs_without_items): no"]
+    assert model.detail_text({"from": "app", "files": ["a", "b"]}) == "From: app · Files: a, b"
+
+
+def test_what_a_release_would_send_in_words():
+    summary = {"built": "2026-10-27T10:00:00+00:00", "recipe": "chq-academic@1.0.0", "items": 5, "bibs": 4,
+               "last_delivered_items": None, "reason": None, "destination": "folder D:\\drop"}
+    rows = dict(model.release_rows(summary))
+    assert rows["Items"] == "5 (nothing delivered there before)"
+    assert rows["Waiting because"] == "it was built without sending"
+    assert rows["Sends to"] == "folder D:\\drop"
+
+
+def test_a_runs_summary_says_what_to_do_next():
+    run = {"status": "blocked", "started": None, "recipe": "chq-academic@1.0.0", "folder": "20261027-1",
+           "error": "Item count fell to 10% of the last delivery. Use `folio-exchange release chq`."}
+    report = {"build": {"items_skipped": {"no barcode": 2}, "bibs_written": 4, "bibs_from_srs": 3,
+                        "bibs_generated": 1}}
+    rows = dict(model.run_summary(run, report, True))
+    assert rows["Problem"] == "Item count fell to 10% of the last delivery."
+    assert rows["Next step"].startswith("Look at the files (Open folder). If they are right, use Review and send")
+    assert rows["Items left out"] == "no barcode: 2" and rows["Bibs"] == "4 (3 from MARC, 1 generated)"
+
+
+def test_a_delivery_is_described_without_its_secret():
+    d = {"transport": "sftp", "host": "h.example", "port": None, "username": "lib", "remote_dir": None,
+         "host_key_fingerprint": "SHA256:" + "k" * 43, "host_key_confirmed": True, "auth": "password",
+         "password": "system keyring (folio-exchange-sftp)"}
+    rows = dict(model.delivery_rows(d))
+    assert rows["Server"] == "h.example:22" and rows["Folder on the server"] == "."
+    assert rows["Server key"].endswith("Confirmed: it matches the fingerprint the vendor gave.")
+    assert rows["Login"] == "With a password. Stored in Windows Credential Manager (folio-exchange-sftp)."
+    assert model.delivery_rows({"transport": "none"})[0][1].startswith("Nowhere yet")
+    # Regression (parity-4): it sent people to a Change delivery button the app does not have.
+    unconfirmed = dict(model.delivery_rows({**d, "host_key_confirmed": False}))["Server key"]
+    assert unconfirmed.endswith("enter the vendor's fingerprint under Change delivery on the feed's page in the "
+                                "browser page.")
+    ok = {"status": "done", "result": {"where": "folder D:\\drop", "entries": None}}
+    assert "usual for upload-only accounts" in model.delivery_check_words(ok)
+    assert model.delivery_check_words({"status": "error", "error": "No answer"}) == "The test failed. No answer"
+
+
+def test_feeds_that_need_a_person():
+    snap = {"feeds": {
+        "a": {"waiting": {"status": "held", "started": None, "held": "first delivery to folder X"}, "last_run": None},
+        "b": {"waiting": None, "last_run": {"status": "failed", "started": None, "error": "FOLIO did not answer."}},
+        "c": {"waiting": None, "last_run": {"status": "success"}, "overdue": "No scheduled run for 3 days."},
+        "d": {"waiting": None, "last_run": {"status": "success"}}}}
+    got = model.attention(snap)
+    assert [f for f, _ in got] == ["a", "b", "c"]
+    assert got[0][1] == "a: Held for review. The run of never is waiting for you: first delivery to folder X"
+    assert got[1][1] == "b: the last run failed (never). FOLIO did not answer."
+    assert got[2][1] == ("c: No scheduled run for 3 days. Check that the task that starts scheduled runs on this "
+                         "computer is still set up and running.")
+
+
+def test_an_overdue_feed_in_needs_you_names_no_command():
+    """Regression (parity-3): Home showed the core's text, lower case and naming `run --due`."""
+    snap = {"feeds": {"chq": {"waiting": None, "last_run": None, "overdue": (
+        "overdue: last success 2026-10-20 03:30 UTC; check that the hourly `run --due` task is still running")}}}
+    (_feed, line), = model.attention(snap)
+    assert line == ("chq: Overdue: last success 2026-10-20 03:30 UTC. Check that the task that starts scheduled "
+                    "runs on this computer is still set up and running.")
+
+
 def test_main_without_qt_says_how_to_add_it(monkeypatch, capsys):
     for name in [m for m in sys.modules if m == "PySide6" or m.startswith("PySide6.")]:
         monkeypatch.delitem(sys.modules, name)
