@@ -127,6 +127,22 @@ class _ContextAdapter(HTTPAdapter):
         return super().proxy_manager_for(*args, **kwargs)
 
 
+class _SiteSession(requests.Session):
+    """A session whose own ``verify`` wins over REQUESTS_CA_BUNDLE and CURL_CA_BUNDLE once the site sets one
+    (folio.ca_bundle, the Windows store, or verify_tls: false). Plain requests lets those variables replace it
+    on every request (psf/requests#3829), so a campus certificate in site.yaml would be ignored on a computer
+    that sets them. Proxies still come from the environment; with nothing set in site.yaml, so does the bundle."""
+
+    keep_verify = False
+
+    def merge_environment_settings(self, url: str, proxies: Any, stream: Any, verify: Any,
+                                   cert: Any) -> dict[str, Any]:
+        settings = super().merge_environment_settings(url, proxies, stream, verify, cert)
+        if self.keep_verify and verify is None:
+            settings["verify"] = self.verify
+        return settings
+
+
 def _untrusted(exc: Exception) -> bool:
     text = str(exc)                           # the Windows store's own wording names the error class only
     return any(m in text for m in ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed", "SSLCertVerificationError"))
@@ -176,7 +192,8 @@ class FolioClient:
         self._password = password
         self.timeout = timeout
         self.max_retries = max_retries
-        self.session = requests.Session()
+        self.session = _SiteSession()
+        self.session.keep_verify = verify_tls is not True      # the site chose; the environment must not override
         if isinstance(verify_tls, ssl.SSLContext):
             self.session.mount("https://", _ContextAdapter(verify_tls))
             self.session.verify = True
