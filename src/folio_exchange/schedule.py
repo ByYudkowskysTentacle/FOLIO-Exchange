@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .errors import ConfigError
+from .wintools import system_tool
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 DAY_NAMES = ("Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays")
@@ -310,7 +311,7 @@ def windows_task_args(site_root: Path, xml_file: Path | str, user: str | None = 
     """The schtasks command that registers the task from ``windows_task_xml`` saved in ``xml_file`` (UTF-16), as
     arguments for running it directly (no shell). With a user, schtasks itself asks for that user's Windows
     password, once."""
-    args = ["schtasks", "/Create", "/TN", task_name(Path(site_root).resolve()), "/XML", str(xml_file)]
+    args = [system_tool("schtasks"), "/Create", "/TN", task_name(Path(site_root).resolve()), "/XML", str(xml_file)]
     return args + (["/RU", user, "/RP", "*"] if user else []) + ["/F"]
 
 

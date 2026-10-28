@@ -16,12 +16,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule
+from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule, siteops
 from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError
 from .fields import FIELDS
 from .history import History
+from .logsetup import setup_logging
 from .recipe import (
     Feed,
     RecipeLibrary,
@@ -31,30 +32,12 @@ from .recipe import (
     parse_uses,
     settings_changes,
 )
+from .wintools import system_tool
 
 log = logging.getLogger("folio_exchange")
 
 
 # ------------------------------------------------------------------ setup
-def _setup_logging(logs_dir: Path | None, verbose: bool) -> None:
-    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S")
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG if verbose else logging.INFO)
-    for old in [h for h in root.handlers if getattr(h, "_folio_exchange", False)]:
-        root.removeHandler(old)
-        old.close()
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
-    if logs_dir is not None:
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(logs_dir / "folio-exchange.log", encoding="utf-8"))
-    for h in handlers:
-        h.setFormatter(fmt)
-        h._folio_exchange = True
-        root.addHandler(h)
-    for noisy in ("urllib3", "paramiko"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-
-
 def _utf8_console() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -72,23 +55,7 @@ def _new_site_root(args) -> Path | None:
     up), else None. The current folder never counts, so a mistyped command cannot start a site anywhere."""
     import os
 
-    named = args.site or os.environ.get("FOLIO_EXCHANGE_SITE")
-    if not named:
-        return None
-    root = Path(named).expanduser()
-    if root.name == SITE_FILE:
-        root = root.parent
-    if (root / SITE_FILE).is_file() or (root / "feeds").is_dir() or (root / "data" / "history.sqlite").is_file():
-        return None              # a site (or one whose site.yaml has gone missing: that stays an error)
-    return root.resolve()
-
-
-def _make_site_folder(root: Path) -> None:
-    """Create a new site's folder, but only inside a folder that exists, so a mistyped path is noticed."""
-    try:
-        root.mkdir(exist_ok=True)
-    except FileNotFoundError:
-        raise ConfigError(f"{root.parent} does not exist, so {root} was not created. Check the path.") from None
+    return siteops.new_site_root(args.site or os.environ.get("FOLIO_EXCHANGE_SITE"))
 
 
 def _library(site: Site | None) -> RecipeLibrary:
@@ -977,18 +944,23 @@ def cmd_ui(args) -> int:
 
     root = _new_site_root(args)
     if root is not None:
-        _make_site_folder(root)                        # a new site: the page starts with the FOLIO connection
+        siteops.make_site_folder(root)                 # a new site: the page starts with the FOLIO connection
         print(f"New site at {root}: the page starts with the FOLIO connection.")
     serve(root or find_site(args.site), port=args.port, open_browser=not args.no_browser)
     return 0
+
+
+def cmd_app(args) -> int:
+    """The desktop app for the same site, for people who use a console. It needs the desktop extra."""
+    from .desktop import main as app_main
+
+    return app_main((["--site", args.site] if args.site else []) + (["--verbose"] if args.verbose else []))
 
 
 def cmd_rename_site(args, run=None) -> int:
     """Rename the site folder (same parent). In a console the scheduled task can be registered again at once,
     since schtasks can ask for the Windows password here; the old task is removed once the new one is in."""
     import subprocess
-
-    from . import siteops
 
     root = find_site(args.site).resolve()
     problem = siteops.name_problem(args.name.strip())
@@ -1013,7 +985,7 @@ def cmd_rename_site(args, run=None) -> int:
     if _register_task(args, run=run, root=Path(res["root"])) != 0:
         print(f"The old task is still there; remove it once the new one is registered: {task['remove']}")
         return 1
-    done = (run or subprocess.run)(["schtasks", "/Delete", "/TN", task["old"], "/F"])
+    done = (run or subprocess.run)([system_tool("schtasks"), "/Delete", "/TN", task["old"], "/F"])
     print("Removed the old task." if done.returncode == 0 else f"Remove the old task with: {task['remove']}")
     return 0
 
@@ -1023,7 +995,7 @@ def cmd_launcher(args) -> int:
 
     root = _new_site_root(args)
     if root is not None:
-        _make_site_folder(root)                        # set up later, on the page the launcher opens
+        siteops.make_site_folder(root)                 # set up later, on the page the launcher opens
     else:
         root = _site(args).root
     if args.folder:
@@ -1145,6 +1117,8 @@ def build_parser() -> argparse.ArgumentParser:
     ui = sub.add_parser("ui", help="open a simple page in your browser to look at feeds and run them")
     ui.add_argument("--port", type=int, help="port on this computer (default 8765, or a free one if it is taken)")
     ui.add_argument("--no-browser", action="store_true", help="do not open the browser")
+    sub.add_parser("app", help="open the desktop app for this site (it needs Qt, PySide6; without it, it says "
+                               "how to add Qt)")
     rn = sub.add_parser("rename-site", help="rename the site folder (its name shows on the page and in alerts)")
     rn.add_argument("name", help="the new folder name, in the same place")
     rn.add_argument("--yes", action="store_true", help="do not ask first (the scheduled task is then left to you)")
@@ -1158,8 +1132,9 @@ HANDLERS = {
     "deliver": cmd_release, "sync": cmd_sync, "build": cmd_build, "feeds": cmd_feeds, "recipes": cmd_recipes,
     "upgrade": cmd_upgrade, "fields": cmd_fields, "history": cmd_history, "secret": cmd_secret,
     "schedule": cmd_schedule, "ui": cmd_ui, "launcher": cmd_launcher, "rename-site": cmd_rename_site,
+    "app": cmd_app,
 }
-NO_SITE = {"init", "fields", "recipes"}
+NO_SITE = {"init", "fields", "recipes", "app"}       # app sets up its own log, for the site it opens
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1171,7 +1146,7 @@ def main(argv: list[str] | None = None) -> int:
             logs_dir = load_site(find_site(args.site)).logs_dir
         except FxError:
             logs_dir = None
-    _setup_logging(logs_dir, args.verbose)
+    setup_logging(logs_dir, args.verbose)
     try:
         return HANDLERS[args.command](args)
     except KeyboardInterrupt:

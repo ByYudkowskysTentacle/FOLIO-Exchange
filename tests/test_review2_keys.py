@@ -19,12 +19,13 @@ import pytest
 from sitekit import make_feed
 
 from folio_exchange import client as client_mod
-from folio_exchange import delivery, feedops, runner, schedule, setupops, ui
+from folio_exchange import delivery, feedops, runner, schedule, setupops, views
 from folio_exchange.cli import main
 from folio_exchange.config import load_site, read_yaml, write_yaml
 from folio_exchange.errors import FxError
 from folio_exchange.history import History
 from folio_exchange.recipe import RecipeLibrary, load_all, validate_recipe
+from folio_exchange.wintools import system_tool
 
 
 @pytest.fixture(autouse=True)
@@ -291,7 +292,7 @@ def test_the_task_definition_runs_on_battery_and_starts_late(tmp_path):
 
 def test_the_task_is_registered_from_the_definition_with_one_password_prompt(tmp_path):
     argv = schedule.windows_task_args(tmp_path, tmp_path / "task.xml", "PC\\librarian")
-    assert argv[:4] == ["schtasks", "/Create", "/TN", schedule.task_name(tmp_path)]
+    assert argv[:4] == [system_tool("schtasks"), "/Create", "/TN", schedule.task_name(tmp_path)]
     assert argv[argv.index("/XML") + 1] == str(tmp_path / "task.xml")
     assert argv[argv.index("/RU") + 1] == "PC\\librarian" and argv[argv.index("/RP") + 1] == "*"
     assert "/TR" not in argv and "/SC" not in argv and argv[-1] == "/F"
@@ -575,7 +576,7 @@ def test_held_runs_survive_a_moved_site_folder(site, tmp_path):
     s = load_site(new)
     with History(s.history_path) as h:
         row = h.get(b["id"])
-        assert ui.run_folder(s, row) == b_dir.resolve()
+        assert views.run_folder(s, row) == b_dir.resolve()
         assert h.run_by_dir(b_dir)["id"] == b["id"]
     assert main(["-s", str(new), "release", "chq", str(b_dir), "--yes"]) == 0
     with History(s.history_path) as h:
@@ -639,7 +640,7 @@ def paramiko_errors():
 
     logger, handler = logging.getLogger("paramiko"), Catch()
     level = logger.level
-    logger.setLevel(logging.WARNING)                               # as cli._setup_logging leaves it
+    logger.setLevel(logging.WARNING)                               # as logsetup.setup_logging leaves it
     logger.addHandler(handler)
     yield records
     logger.removeHandler(handler)

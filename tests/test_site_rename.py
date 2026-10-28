@@ -1,5 +1,7 @@
 """Renaming the site folder from the page (Options) and the command line (`rename-site`)."""
 import logging
+import subprocess
+import sys
 import types
 
 import pytest
@@ -7,12 +9,13 @@ from sitekit import make_feed
 from test_setup import keyring  # noqa: F401 - the in-memory keyring fixture
 from test_ui import call
 
-from folio_exchange import credentials, launcher, siteops, ui
+from folio_exchange import credentials, launcher, setupops, siteops, ui
 from folio_exchange.cli import main
 from folio_exchange.config import load_site
 from folio_exchange.errors import ConfigError, FxError
 from folio_exchange.history import History
 from folio_exchange.lock import RunLock
+from folio_exchange.wintools import system_tool
 
 
 @pytest.fixture
@@ -134,7 +137,7 @@ def test_the_scheduled_task_is_named_with_the_commands_to_move_it(lib_site, monk
 
     monkeypatch.setenv("FOLIO_EXCHANGE_SITE", str(lib_site.resolve()))
     res = siteops.rename_site(lib_site, "Lakeside", via="ui", desktop=tmp_path, run=schtasks)
-    assert asked == [["schtasks", "/Query", "/TN", f"FOLIO-Exchange ({lib_site.name})"]]
+    assert asked == [[system_tool("schtasks"), "/Query", "/TN", f"FOLIO-Exchange ({lib_site.name})"]]
     task = res["task"]
     assert task["old"] == f"FOLIO-Exchange ({lib_site.name})" and task["new"] == "FOLIO-Exchange (Lakeside)"
     assert "schedule --register" in task["register"] and "Lakeside" in task["register"]
@@ -160,9 +163,10 @@ def test_the_command_line_renames_registers_and_removes_the_old_task(lib_site, m
     assert cli.cmd_rename_site(args, run=schtasks) == 0
     out = capsys.readouterr().out
     assert "Renamed." in out and "Removed the old task." in out
-    assert calls[0][:2] == ["schtasks", "/Query"]
-    assert calls[1][:3] == ["schtasks", "/Create", "/TN"] and "FOLIO-Exchange (Lakeside)" in calls[1]
-    assert calls[2] == ["schtasks", "/Delete", "/TN", f"FOLIO-Exchange ({lib_site.name})", "/F"]
+    schtasks = system_tool("schtasks")
+    assert calls[0][:2] == [schtasks, "/Query"]
+    assert calls[1][:3] == [schtasks, "/Create", "/TN"] and "FOLIO-Exchange (Lakeside)" in calls[1]
+    assert calls[2] == [schtasks, "/Delete", "/TN", f"FOLIO-Exchange ({lib_site.name})", "/F"]
 
 
 def test_the_command_line_asks_first(lib_site, monkeypatch, capsys):
@@ -205,6 +209,65 @@ def test_the_page_will_not_rename_while_an_action_runs(lib_site):
     assert lib_site.is_dir()
 
 
+def test_a_rename_on_the_page_is_the_running_action_without_holding_the_lock(lib_site, monkeypatch):
+    """Regression: the page held the jobs' lock for the whole rename (schtasks /Query can take 30 seconds), so a
+    check started in the app's window froze the window on that lock, then ran against the old folder."""
+    import threading
+    import time
+
+    started, go = threading.Event(), threading.Event()
+    real = siteops.rename_site
+
+    def slow_rename(*a, **kw):
+        started.set()
+        assert go.wait(10)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(siteops.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(launcher, "desktop", lambda: lib_site.parent / "no-desktop")
+    monkeypatch.setattr(siteops, "rename_site", slow_rename)
+    httpd, app = ui.start_in_thread(lib_site)
+    jobs = app.jobs
+    try:
+        answer = {}
+
+        def post() -> None:
+            answer["r"] = call(app, "/api/site/rename", {"name": "Lakeside"})
+
+        poster = threading.Thread(target=post)
+        poster.start()
+        assert started.wait(10)
+        assert jobs.running() is not None and jobs.running().kind == "rename"     # the window shows it running
+        t0 = time.monotonic()
+        with pytest.raises(FxError, match=r"Another action is still running \(rename\)"):
+            jobs.start("check", None, lambda: None)                                # refused at once, not blocked
+        assert time.monotonic() - t0 < 1
+        assert jobs.lock.acquire(blocking=False)
+        jobs.lock.release()
+        go.set()
+        poster.join(10)
+        status, res, _ = answer["r"]
+        assert status == 200 and res["name"] == "Lakeside"
+        assert jobs.running() is None and jobs.current.status == "done"
+        assert app.site_root.name == "Lakeside"
+    finally:
+        go.set()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_a_rename_that_fails_on_the_page_ends_its_action(lib_site):
+    httpd, app = ui.start_in_thread(lib_site)
+    try:
+        status, err, _ = call(app, "/api/site/rename", {"name": "a|b"})
+        assert status == 400 and "cannot contain" in err["error"]
+        assert app.jobs.running() is None and app.jobs.current.status == "error"
+        assert app.jobs.start("check", None, lambda: None)                         # the next action may start
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_the_page_has_an_options_view_for_the_folder():
     from pathlib import Path
 
@@ -212,3 +275,58 @@ def test_the_page_has_an_options_view_for_the_folder():
     assert 'id="nav-options"' in (web / "index.html").read_text(encoding="utf-8")
     js = (web / "app.js").read_text(encoding="utf-8")
     assert "function renderOptions()" in js and '"/api/site/rename"' in js
+
+
+# The page now also runs inside the desktop app, which has no console: a console program it starts must not
+# flash a console window up (regressions).
+def test_looking_for_the_scheduled_task_opens_no_console_window():
+    seen = []
+    siteops._task_exists("FOLIO-Exchange (x)", lambda args, **k: seen.append(k) or types.SimpleNamespace(returncode=1))
+    assert seen[0]["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="icacls is only run on Windows")
+def test_limiting_a_file_to_its_owner_opens_no_console_window(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(setupops.subprocess, "run",
+                        lambda args, **k: seen.append(k) or subprocess.CompletedProcess(args, 0, "", ""))
+    setupops._owner_only(tmp_path / "x.key")
+    assert seen[0]["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
+# Windows' own tools are started by their full path: by a bare name Windows looks in the current folder first,
+# and the app or a command may be started from a shared folder others can write to (regressions).
+@pytest.mark.skipif(sys.platform != "win32", reason="schtasks and icacls are Windows' own")
+def test_windows_tools_are_started_from_system32_never_the_current_folder(tmp_path, monkeypatch):
+    import os
+
+    from folio_exchange import permissions, schedule, wintools
+
+    for name in ("schtasks", "icacls"):
+        path = wintools.system_tool(name)
+        assert os.path.isabs(path) and os.path.isfile(path)
+        assert os.path.normcase(os.path.dirname(path)) == os.path.normcase(wintools.system_folder())
+    (tmp_path / "schtasks.exe").write_bytes(b"planted")              # as in a shared, team-writable folder
+    (tmp_path / "icacls.exe").write_bytes(b"planted")
+    monkeypatch.chdir(tmp_path)
+    started = []
+
+    def run(args, **_k):
+        started.append(args[0])
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    siteops._task_exists("FOLIO-Exchange (x)", run)
+    monkeypatch.setattr(subprocess, "run", run)                       # setupops and permissions call it
+    setupops._owner_only(tmp_path / "x.key")
+    permissions._icacls(tmp_path)
+    started.append(schedule.windows_task_args(tmp_path, tmp_path / "task.xml")[0])
+    assert started == [wintools.system_tool("schtasks"), wintools.system_tool("icacls"),
+                       wintools.system_tool("icacls"), wintools.system_tool("schtasks")]
+    assert not any(os.path.dirname(p) == str(tmp_path) for p in started)
+
+
+def test_windows_tools_keep_their_bare_names_elsewhere(monkeypatch):
+    from folio_exchange import wintools
+
+    monkeypatch.setattr(wintools.sys, "platform", "linux")
+    assert wintools.system_tool("schtasks") == "schtasks"

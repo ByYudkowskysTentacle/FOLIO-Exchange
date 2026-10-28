@@ -1,4 +1,5 @@
-"""Site-wide operations shared by `cli.py` and `ui.py`: renaming the site folder.
+"""Site-wide operations shared by `cli.py`, `ui.py` and the desktop app: starting a new site's folder, and
+renaming the site folder.
 
 The folder's name is the site's name: the page and alerts show it, and the scheduled task, the desktop
 launcher and the stored alert addresses are named after it. Renaming keeps the folder where it is (same
@@ -21,6 +22,7 @@ from .config import SITE_FILE, load_site, read_yaml
 from .errors import ConfigError, FxError
 from .history import History
 from .lock import RunLock
+from .wintools import system_tool
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +50,27 @@ def name_problem(name: str) -> str | None:
     if any(c in name for c in "%^!&"):
         return "Leave out % ^ ! and &: Command Prompt treats them specially, which breaks the launcher and the task."
     return None
+
+
+def new_site_root(named: str | os.PathLike | None) -> Path | None:
+    """The folder ``named`` (from --site or FOLIO_EXCHANGE_SITE) when it has no site.yaml yet (a site still to be
+    set up), else None. Nothing named never counts, so a mistyped command cannot start a site anywhere."""
+    if not named:
+        return None
+    root = Path(named).expanduser()
+    if root.name == SITE_FILE:
+        root = root.parent
+    if (root / SITE_FILE).is_file() or (root / "feeds").is_dir() or (root / "data" / "history.sqlite").is_file():
+        return None              # a site (or one whose site.yaml has gone missing: that stays an error)
+    return root.resolve()
+
+
+def make_site_folder(root: Path) -> None:
+    """Create a new site's folder, but only inside a folder that exists, so a mistyped path is noticed."""
+    try:
+        Path(root).mkdir(exist_ok=True)
+    except FileNotFoundError:
+        raise ConfigError(f"{Path(root).parent} does not exist, so {root} was not created. Check the path.") from None
 
 
 def _inside(path_text: object, root: Path) -> str | None:
@@ -111,8 +134,11 @@ def _move_logs(handlers: list[logging.FileHandler], old: Path, new: Path) -> Non
 
 
 def _task_exists(name: str, run: Callable[..., Any]) -> bool:
+    """Whether the scheduled task ``name`` is registered. No console window: the desktop app has none of its
+    own, so Windows would flash one up for schtasks."""
     try:
-        done = run(["schtasks", "/Query", "/TN", name], capture_output=True, timeout=30)
+        done = run([system_tool("schtasks"), "/Query", "/TN", name], capture_output=True, timeout=30,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return False
     return done.returncode == 0

@@ -7,7 +7,7 @@ import pytest
 from sitekit import make_feed
 
 from folio_exchange import client as client_mod
-from folio_exchange import feedops, ui
+from folio_exchange import feedops, ui, views
 from folio_exchange.cli import main
 from folio_exchange.config import load_site
 from folio_exchange.errors import ConfigError
@@ -86,7 +86,7 @@ def test_the_page_shows_the_same_warnings_as_check(site):
     finally:
         httpd.shutdown()
         httpd.server_close()
-    s, library, feeds, errors = ui._load(site)
+    s, library, feeds, errors = views.load(site)
     with History(s.history_path) as hist:
         expected = feedops.site_warnings(s, library, feeds, errors, hist, datetime.now(timezone.utc))
     assert [w["code"] for w in data["warnings"]] == [w["code"] for w in expected]

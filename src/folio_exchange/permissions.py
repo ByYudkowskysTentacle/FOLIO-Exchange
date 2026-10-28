@@ -22,6 +22,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from .wintools import system_tool
+
 # Accounts that may change the files besides the person themselves: SYSTEM, Administrators, CREATOR OWNER and
 # OWNER RIGHTS (whoever made a file), and TrustedInstaller.
 TRUSTED_SIDS = ("S-1-5-18", "S-1-5-32-544", "S-1-3-0", "S-1-3-4",
@@ -169,7 +171,7 @@ def _icacls(path: Path) -> str | None:
     """icacls's listing of a path, or None when it cannot be run. Raises subprocess.TimeoutExpired when it
     does not answer in time."""
     try:
-        done = subprocess.run(["icacls", str(path)], capture_output=True, timeout=TIMEOUT,
+        done = subprocess.run([system_tool("icacls"), str(path)], capture_output=True, timeout=TIMEOUT,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
         raise
