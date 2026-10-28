@@ -19,6 +19,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ..errors import FxError
 from ..jobs import Job
 
 log = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ COLLECT_MS = 500                     # how often MainThreadCollector looks wheth
 
 class JobWatcher(QObject):
     """Streams a job's new log lines (``progress``) and, once it ends, its final state (``finished``, the
-    job's as_dict: status, result, error, seconds)."""
+    job's as_dict: status, result, error, seconds), once: a ``poll`` after that does nothing."""
 
     progress = Signal(list)
     finished = Signal(dict)
@@ -38,6 +39,7 @@ class JobWatcher(QObject):
         super().__init__(parent)
         self.job = job
         self.seen = 0
+        self.ended = False
         self.timer = QTimer(self)
         self.timer.setInterval(interval_ms)
         self.timer.timeout.connect(self.poll)
@@ -47,6 +49,8 @@ class JobWatcher(QObject):
         return self
 
     def poll(self) -> None:
+        if self.ended:
+            return
         state = self.job.as_dict(self.seen)
         if state["status"] != "running":
             state = self.job.as_dict(self.seen)     # lines are all written before the status changes
@@ -54,6 +58,7 @@ class JobWatcher(QObject):
         if state["log"]:
             self.progress.emit(state["log"])
         if state["status"] != "running":
+            self.ended = True
             self.timer.stop()
             self.finished.emit(state)
 
@@ -98,6 +103,48 @@ class Reader(QObject):
             return                               # an older read finished after a newer one began
         self.busy = False
         self.done.emit(result, error)
+
+
+class Errands(QObject):
+    """Short tasks that touch the disk (pause or resume a feed, a run's details and rows, what a release would
+    send, opening a run's folder) in daemon threads, so a slow drive never freezes the window. Unlike Reader,
+    every answer is delivered, in the order they finish: ``done(key, result, exception)``, where ``key`` is what
+    the caller passed to say what the answer is for (the window puts a request number in it to drop old ones).
+    A failure the person can act on (FxError, LookupError) is logged by the window with its message; any other
+    is logged here with its traceback."""
+
+    done = Signal(object, object, object)            # (key, result, exception): result or exception is None
+    _answer = Signal(object, object, object)         # from the errand's thread, queued to this object's thread
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.pending = 0
+        self._answer.connect(self._deliver)
+
+    def run(self, key: Any, fn: Callable[[], Any]) -> None:
+        self.pending += 1
+
+        def body() -> None:
+            try:
+                result, error = fn(), None
+            except (FxError, LookupError) as exc:
+                result, error = None, exc
+            except Exception as exc:  # noqa: BLE001 - shown in the window; the details go to the log
+                log.warning("An errand (%s) failed unexpectedly", key[0] if isinstance(key, tuple) else key,
+                            exc_info=True)
+                result, error = None, exc
+            try:
+                self._answer.emit(key, result, error)
+            except RuntimeError:                 # the window closed while this ran
+                pass
+            finally:
+                result = error = None            # no cycle through the error's traceback (see Reader)
+
+        threading.Thread(target=body, name="fx-app-errand", daemon=True).start()
+
+    def _deliver(self, key: Any, result: Any, error: Exception | None) -> None:
+        self.pending -= 1
+        self.done.emit(key, result, error)
 
 
 class MainThreadCollector(QObject):

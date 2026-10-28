@@ -89,6 +89,34 @@ def test_release_refuses_another_feeds_run(site):
     assert main(["-s", str(site), "release", "chq", str(other_run), "--yes"]) == 1
 
 
+def test_a_release_of_what_was_shown_is_refused_when_a_newer_run_failed_meanwhile(site):
+    """Regression (safety-3, D2 review): the app sent the run its question named without the comparison or the
+    newer-failed-run refusal that the core's own confirm flow applies. With ``expected`` (the summary shown) the
+    release looks again as it looked when asking, and refuses when that changed."""
+    from folio_exchange import views
+    from folio_exchange.errors import FxError
+
+    assert main(["-s", str(site), "run", "chq"]) == 2                          # held
+    shown = views.release_summary(site, "chq")
+    with pytest.raises(FxError, match="While you were deciding"):              # what was shown is not what is there
+        views.release(site, "chq", shown["run_dir"], expected={**shown, "items": 1})
+    with History(load_site(site).history_path) as hist:                         # a scheduled run fails meanwhile
+        rid = hist.start_run("chq", "chq-academic", "1.0.0", "schedule", None)
+        hist.finish_run(rid, "failed", error="FOLIO did not answer.")
+    with pytest.raises(FxError, match="failed"):
+        views.release(site, "chq", shown["run_dir"], expected=shown)
+    assert not (site / "vendor-drop").exists()
+
+
+def test_a_release_of_what_was_shown_sends_when_nothing_changed(site):
+    from folio_exchange import views
+
+    assert main(["-s", str(site), "run", "chq"]) == 2
+    shown = views.release_summary(site, "chq")
+    assert views.release(site, "chq", shown["run_dir"], expected=shown)["status"] == "success"
+    assert (site / "vendor-drop").is_dir()
+
+
 def test_preview_files_are_marked_even_without_prefix_in_the_name(site):
     make_feed(site, outputs={"items": {"file_name": "library_items_{date}"}, "bibs": {"file_name": "library_{date}"}})
     assert main(["-s", str(site), "preview", "chq", "-n", "2"]) == 0

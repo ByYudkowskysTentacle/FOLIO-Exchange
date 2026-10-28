@@ -1,5 +1,6 @@
-"""The window's content pages. Each lays out data it is given (from ``model.snapshot`` or a job) and asks for
-anything else through signals, so the window decides what runs and when.
+"""The window's content pages, and the parts the others (``feed.py``, ``activity.py``) are made of. Each page
+lays out data it is given (from ``model.snapshot`` or a job) and asks for anything else through signals, so the
+window decides what runs and when.
 
 Text uses the system font at relative sizes, so it scales with Windows' text size; nothing is said by colour
 alone; every control has an accessible name.
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -57,6 +60,13 @@ def text(value: str = "", about: str | None = None) -> QLabel:
     return label
 
 
+def caption(words: str) -> QLabel:
+    """A form row's caption, plain text like every label."""
+    label = QLabel(words)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    return label
+
+
 def button(caption: str, name: str) -> QPushButton:
     b = QPushButton(caption)
     b.setAccessibleName(name)
@@ -85,6 +95,69 @@ def set_lines(label: QLabel, lines: list[str], empty: str) -> None:
     label.setText("<ul>" + "".join(f"<li>{_esc(x)}</li>" for x in lines) + "</ul>" if lines else _esc(empty))
 
 
+def table(headers: list[str], name: str, about: str | None = None) -> QTableWidget:
+    """A read-only table that screen readers can walk, a whole row selected at a time."""
+    t = QTableWidget(0, len(headers))
+    t.setAccessibleName(name)
+    if about:
+        t.setAccessibleDescription(about)
+    t.setHorizontalHeaderLabels(headers)
+    t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    t.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    t.setTabKeyNavigation(False)                   # Tab leaves the table; the arrow keys move inside it
+    t.verticalHeader().hide()
+    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    t.horizontalHeader().setStretchLastSection(True)
+    return t
+
+
+def fill_table(t: QTableWidget, rows: list[list[str]], keys: list[object] | None = None) -> None:
+    """Put ``rows`` (plain text) in ``t``; ``keys[i]`` is kept on row i's first cell (Qt.UserRole)."""
+    t.setRowCount(len(rows))
+    for r, cells in enumerate(rows):
+        for c, value in enumerate(cells):
+            item = QTableWidgetItem(str(value))
+            if c == 0 and keys is not None:
+                item.setData(Qt.ItemDataRole.UserRole, keys[r])
+            t.setItem(r, c, item)
+
+
+def row_key(t: QTableWidget, row: int) -> object:
+    item = t.item(row, 0)
+    return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+
+def actions_row(*widgets: QWidget) -> QHBoxLayout:
+    row = QHBoxLayout()
+    for w in widgets:
+        row.addWidget(w)
+    row.addStretch(1)
+    return row
+
+
+class Facts(QWidget):
+    """(label, value) rows, each value a selectable plain-text label; shown again, the rows are replaced."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.form = QFormLayout(self)
+        self.form.setContentsMargins(0, 0, 0, 0)
+        self.values: dict[str, QLabel] = {}
+        self.rows: list[tuple[str, str]] | None = None
+
+    def show_rows(self, rows: list[tuple[str, str]]) -> None:
+        if rows == self.rows:
+            return                                  # unchanged: the focus and a selection stay put
+        self.rows = list(rows)
+        while self.form.rowCount():
+            self.form.removeRow(0)
+        self.values = {}
+        for words, value in rows:
+            self.values[words] = text(value, words)
+            self.form.addRow(caption(f"{words}:"), self.values[words])
+
+
 class Page(QScrollArea):
     """A page that scrolls as one when the window is small or the text is large."""
 
@@ -104,9 +177,9 @@ FOLIO_ROWS = (("base_url", "Address"), ("tenant", "Tenant"), ("username", "Accou
 def folio_rows(form: QFormLayout) -> dict[str, QLabel]:
     """The FOLIO connection's rows: where the password comes from, never the password."""
     labels = {}
-    for key, caption in FOLIO_ROWS:
-        labels[key] = text(about=caption)
-        form.addRow(f"{caption}:", labels[key])
+    for key, words in FOLIO_ROWS:
+        labels[key] = text(about=words)
+        form.addRow(caption(f"{words}:"), labels[key])
     return labels
 
 
@@ -129,6 +202,17 @@ class HomePage(Page):
         form = QFormLayout()
         self.folio = folio_rows(form)
         self.box.addLayout(form)
+        self.box.addWidget(heading("Needs you", 1.15))
+        self.attention = QListWidget()
+        self.attention.setAccessibleName("Feeds that need you")
+        self.attention.setAccessibleDescription("Runs waiting for you to review and send them, runs that failed "
+                                                "or were blocked, and feeds the schedule has not run. Press Enter "
+                                                "to open the feed.")
+        self.attention.itemActivated.connect(self._open_attention)
+        self.attention_shown: list[tuple[str, str]] | None = None
+        self.box.addWidget(self.attention)
+        self.calm = text("Nothing waits for you: no run is held, blocked or failed.", "Feeds that need you")
+        self.box.addWidget(self.calm)
         self.box.addWidget(heading("Scheduled runs", 1.15))
         self.task = text(about="Scheduled task")
         self.box.addWidget(self.task)
@@ -136,16 +220,8 @@ class HomePage(Page):
         self.warnings = lines_label("Warnings")
         self.box.addWidget(self.warnings)
         self.box.addWidget(heading("Feeds", 1.15))
-        self.table = QTableWidget(0, 7)
-        self.table.setAccessibleName("Feeds")
-        self.table.setHorizontalHeaderLabels(["Feed", "Title", "Recipe", "State", "Last result", "When",
-                                              "Newer recipe"])
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.verticalHeader().hide()
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table = table(["Feed", "Title", "Recipe", "State", "Last result", "When", "Newer recipe"], "Feeds",
+                           "Press Enter to open the feed.")
         self.table.cellActivated.connect(lambda row, _col: self._open(row))
         self.box.addWidget(self.table)
         self.no_feeds = text("No feeds yet. Add one in the browser page: it starts as a dry run that sends "
@@ -161,81 +237,41 @@ class HomePage(Page):
         if item is not None:
             self.open_feed.emit(item.text())
 
-    def show_site(self, summary: dict) -> None:
+    def _open_attention(self, item: QListWidgetItem) -> None:
+        self.open_feed.emit(item.data(Qt.ItemDataRole.UserRole))
+
+    def show_site(self, summary: dict, attention: list[tuple[str, str]] | None = None) -> None:
+        """``attention``: (feed, what) for each feed that needs a person (``model.attention``)."""
         self.title.setText(summary.get("name") or "Home")
         self.root.setText(f"Site folder: {summary.get('root', '')}")
+        attention = list(attention or [])
+        if attention != self.attention_shown:      # unchanged: the current line stays for the arrow keys
+            self.attention_shown = attention
+            self.attention.clear()
+            for feed, what in attention:
+                item = QListWidgetItem(what)
+                item.setData(Qt.ItemDataRole.UserRole, feed)
+                item.setData(Qt.ItemDataRole.AccessibleTextRole, what)
+                self.attention.addItem(item)
+        if attention:                              # as tall as its lines, so the page scrolls as one
+            self.attention.setMaximumHeight(len(attention) * self.attention.sizeHintForRow(0)
+                                            + 2 * self.attention.frameWidth() + 4)
+        self.attention.setVisible(bool(attention))
+        self.calm.setVisible(not attention)
         fill_folio(self.folio, summary.get("folio") or {})
         self.task.setText((summary.get("task") or {}).get("text") or "No feed runs on a schedule yet.")
         set_lines(self.warnings, model.warnings(summary), "Nothing to look at: every feed is set up to run on its own.")
         feeds = summary.get("feeds") or []
-        self.table.setRowCount(len(feeds))
-        for row, f in enumerate(feeds):
-            cells = [f["name"], f.get("title") or "", f.get("recipe") or "", "On" if f.get("enabled") else "Paused",
-                     model.status_words(f.get("last_status")), model.when(f.get("last_started")) if
-                     f.get("last_started") else "", f.get("newer_recipe") or ""]
-            for col, value in enumerate(cells):
-                self.table.setItem(row, col, QTableWidgetItem(value))
+        fill_table(self.table, [[f["name"], f.get("title") or "", f.get("recipe") or "",
+                                 "On" if f.get("enabled") else "Paused", model.status_words(f.get("last_status")),
+                                 model.when(f.get("last_started")) if f.get("last_started") else "",
+                                 f.get("newer_recipe") or ""] for f in feeds])
         self.table.setVisible(bool(feeds))
         self.no_feeds.setVisible(not feeds)
         problems = model.file_problems(summary)
         set_lines(self.problems, problems, "")
         self.problems_title.setVisible(bool(problems))
         self.problems.setVisible(bool(problems))
-
-
-class FeedPage(Page):
-    open_in_page = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.name = ""
-        self.title = heading("Feed")
-        self.box.addWidget(self.title)
-        form = QFormLayout()
-        self.fields: dict[str, QLabel] = {}
-        for key, caption in (("name", "Feed"), ("recipe", "Recipe"), ("state", "State"),
-                             ("schedule", "Schedule"), ("next", "Next run"), ("delivery", "Sends to"),
-                             ("last", "Last run"), ("waiting", "Waiting"), ("newer", "Newer recipe")):
-            self.fields[key] = text(about=caption)
-            form.addRow(f"{caption}:", self.fields[key])
-        self.form = form
-        self.box.addLayout(form)
-        self.more = text("Its layout, history and actions (preview, run, release, pause) are on the browser page "
-                         "for now.", "About this page")
-        self.box.addWidget(self.more)
-        self.open_button = button("Open this feed in the &browser page", "Open this feed in the browser page")
-        self.open_button.clicked.connect(lambda: self.open_in_page.emit(self.name))
-        row = QHBoxLayout()
-        row.addWidget(self.open_button)
-        row.addStretch(1)
-        self.box.addLayout(row)
-
-    def show_feed(self, d: dict) -> None:
-        self.name = d["name"]
-        self.title.setText(d.get("title") or d["name"])
-        recipe = d.get("recipe") or {}
-        last = d.get("last_run")
-        waiting = d.get("waiting")
-        sched = d.get("schedule") or {}
-        values = {
-            "name": d["name"],
-            "recipe": f"{recipe.get('title') or ''} ({recipe.get('ref')})" if recipe.get("title") else recipe.get("ref"),
-            "state": "On: scheduled runs include it" if d.get("enabled") else "Paused: scheduled runs skip it",
-            "schedule": sched.get("describe") or sched.get("text") or "",
-            "next": model.when(sched.get("next")) if sched.get("next") else ("none while paused" if not
-                                                                             d.get("enabled") else "none"),
-            "delivery": (d.get("delivery") or {}).get("where") or "",
-            "last": (f"{model.status_words(last['status'])}, {model.when(last.get('started'))}"
-                     + (f": {last['error']}" if last.get("error") else "")) if last else "No runs yet",
-            "waiting": (f"A run from {model.when(waiting.get('started'))} waits to be released"
-                        if waiting else ""),
-            "newer": d.get("newer_recipe") or "",
-        }
-        for key, value in values.items():
-            self.fields[key].setText(value or "")
-            self.form.setRowVisible(self.fields[key], bool(value))
-        if d.get("overdue"):
-            self.fields["next"].setText(f"{self.fields['next'].text()}. Warning: {d['overdue']}")
 
 
 class ConnectionPage(Page):

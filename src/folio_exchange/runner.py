@@ -899,11 +899,14 @@ def _release_ready(site: Site, hist: History, feed: Feed, run_dir: Path | None, 
 
 
 def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False, actor: str | None = None,
-            confirm=None) -> RunResult:
+            confirm=None, expected: dict | None = None) -> RunResult:
     """Deliver a held, blocked or built run after a person has looked at it. ``confirm(summary) -> bool``
     is asked before anything is sent, without the site lock held (a person may leave the question open), so
-    the run is checked again under the lock before sending. Built runs still pass the checks unless ``force``;
-    releasing a held or blocked run is itself the person's approval. A feed with no delivery is refused."""
+    the run is checked again under the lock before sending. ``expected`` is the summary an interface showed
+    (from a look with ``confirm`` and no ``run_dir``): the run is then looked for as it was then, so a newer
+    failed run still refuses it, and nothing is sent unless the summary is unchanged. Built runs still pass the
+    checks unless ``force``; releasing a held or blocked run is itself the person's approval. A feed with no
+    delivery is refused."""
     if not feed.delivers:
         raise FxError(f"Feed {feed.name} has no delivery set up, so there is nothing to send; its files stay in "
                       "the run folder. Add a delivery with `folio-exchange init`.")
@@ -915,8 +918,9 @@ def release(site: Site, feed: Feed, run_dir: Path | None, *, force: bool = False
             return RunResult(feed.name, row["status"], 2, run_path(site, row["run_dir"]), {"cancelled": True, **summary})
         asked = (row["id"], summary)
     with RunLock(site.lock_path), History(site.history_path) as hist:
-        row, summary = _release_ready(site, hist, feed, run_dir, force)
-        if asked is not None and asked != (row["id"], summary):
+        row, summary = _release_ready(site, hist, feed, None if expected is not None else run_dir, force)
+        if (asked is not None and asked != (row["id"], summary)) or (expected is not None and (
+                summary != expected or (run_dir is not None and run_path(site, run_dir) != Path(summary["run_dir"])))):
             raise FxError(f"While you were deciding, feed {feed.name} changed (another run, or a delivery, was "
                           "recorded), so nothing was sent. Run the release again to see what it would send now.")
         rdir = run_path(site, row["run_dir"])
