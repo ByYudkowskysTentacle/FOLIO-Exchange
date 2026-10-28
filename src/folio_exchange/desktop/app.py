@@ -15,6 +15,7 @@ from . import places, single
 from .pages import alert
 from .picker import SitePicker
 from .window import MainWindow
+from .worker import MainThreadCollector
 
 log = logging.getLogger(__name__)
 
@@ -80,12 +81,16 @@ def logs_dir(root: Path) -> Path:
 def run(named: str | None, *, verbose: bool = False, console: bool = True) -> int:
     qapp = QApplication.instance() or QApplication(["folio-exchange-app"])
     qapp.setApplicationName("FOLIO-Exchange")
+    collector = MainThreadCollector(qapp).start()       # garbage cycles freed on this thread only (see worker)
     try:
         return _run(qapp, named, verbose, console)
     except Exception as exc:  # noqa: BLE001 - before the window there is no excepthook, and pythonw no console
         log.exception("FOLIO-Exchange could not start")
         fail(f"FOLIO-Exchange could not start: {type(exc).__name__}: {exc}", console)
         return 1
+    finally:
+        collector.stop()
+        collector.deleteLater()
 
 
 def _run(qapp: QApplication, named: str | None, verbose: bool, console: bool) -> int:

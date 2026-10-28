@@ -10,7 +10,11 @@ the person started last, which is the second one), sends ``show`` and waits brie
 accepts nothing else: any other message, or more than a line, is dropped.
 
 Windows lets a second server listen on a pipe name that is already taken, so there the name is also held by a
-named mutex, which Windows removes with the process that made it.
+named mutex, which Windows removes with the process that made it. On macOS and Linux Qt puts a socket server that
+only this user may reach in place by renaming it over whatever has the name, a live socket included, so there
+the name is held by an exclusive lock (``flock``) on a file in this user's settings folder, which the system lets
+go with the process, and is taken only when nothing answers on it; a socket file that does not answer is one a
+crash left behind.
 """
 from __future__ import annotations
 
@@ -18,9 +22,12 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QLocalServer, QLocalSocket
+
+from . import places
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +41,7 @@ ERROR_ALREADY_EXISTS = 183
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TOKEN_QUERY = 0x0008
 TOKEN_USER = 1                       # TOKEN_INFORMATION_CLASS: the user the process runs as
+HOLDS = "instances"                  # macOS and Linux: the folder of lock files, in places.config_dir()
 
 
 class OpenElsewhere(Exception):
@@ -82,6 +90,9 @@ class InstanceServer(QObject):
         guard = _hold(name)
         if guard is False:
             return None
+        if sys.platform != "win32" and _answers(name):
+            _let_go(guard)                     # never take a name a window answers on, even with the lock: one
+            return None                        # with no lock, or another settings folder's, may hold it
         server = QLocalServer(self)
         server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         server.newConnection.connect(lambda: self._accept(server))
@@ -114,10 +125,16 @@ class InstanceServer(QObject):
 
 
 def _hold(name: str) -> int | None | bool:
-    """Windows: a handle to a named mutex for ``name``, or False when another start holds it. Elsewhere None
-    (the socket file itself is the guard)."""
+    """A hold on ``name`` that the system lets go with the process, or False when another start has it.
+
+    Windows: a handle to a named mutex. Elsewhere: an open file (its descriptor) in this user's settings folder
+    with an exclusive ``flock`` on it; a second open of the file, in this process or another, cannot lock it,
+    and the descriptor is not inherited by programs this one starts. None when no hold can be made there (a
+    settings folder that cannot be written, say). Either way the name is taken there only when nothing answers
+    on it, since a window that had no hold, or one started with another settings folder (another
+    ``XDG_CONFIG_HOME``), may have it."""
     if sys.platform != "win32":
-        return None
+        return _lock_file(name)
     import ctypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -132,16 +149,49 @@ def _hold(name: str) -> int | None | bool:
     return handle
 
 
+def lock_path(name: str) -> Path:
+    """macOS and Linux: the file whose lock holds ``name``. It stays when let go: removing it could let two
+    starts lock two different files of the same name."""
+    return places.config_dir() / HOLDS / f"{name}.lock"
+
+
+def _lock_file(name: str) -> int | bool | None:
+    import fcntl
+
+    path = lock_path(name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        log.warning("Could not make the lock file %s (%s); the window's name is taken only when free", path, exc)
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if isinstance(exc, BlockingIOError):
+            return False
+        log.warning("Could not lock %s (%s); the window's name is taken only when free", path, exc)
+        return None
+    return fd
+
+
 def _let_go(handle: int | None) -> None:
-    if handle and sys.platform == "win32":
+    if handle is None or handle is False:
+        return
+    if sys.platform != "win32":
+        os.close(handle)                       # lets the flock go
+        return
+    if handle:
         import ctypes
 
         ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(handle))
 
 
 def _listen(server: QLocalServer, name: str) -> bool:
-    """Listen on ``name``. A name left behind by a crashed start (a socket file on macOS and Linux; Windows
-    removes a named pipe with its process) is removed once, after a connection to it has failed."""
+    """Listen on ``name``, whose hold (``_hold``) this start has. A name left behind by a crashed start (a socket
+    file on macOS and Linux; Windows removes a named pipe with its process) is replaced: Qt renames the new
+    socket over it, or, should it report the name in use, it is removed once a connection to it has failed."""
     if server.listen(name):
         return True
     if server.serverError() == QAbstractSocket.SocketError.AddressInUseError and not _answers(name):

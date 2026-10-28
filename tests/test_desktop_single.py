@@ -35,6 +35,8 @@ def test_a_second_start_brings_the_first_to_the_front(qtbot, name):
     assert single.claim(name) == ("shown", None)
     assert shown == [1, 1]
     assert not single.InstanceServer(name).listen()         # the name stays the first one's
+    assert single.ask_to_show(name) is True                 # and the first still answers on it
+    assert shown == [1, 1, 1]
     first.close()
 
 
@@ -118,6 +120,72 @@ def test_a_name_left_by_a_crash_is_taken_over(qtbot, name):
     path = QDir(QDir.tempPath()).filePath(name)
     stale = socket.socket(socket.AF_UNIX)
     stale.bind(path)                                    # a socket file nobody listens on, as after a crash
+    stale.close()
+    kind, server = single.claim(name)
+    assert kind == "first"
+    server.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows holds the name with a named mutex")
+def test_a_live_socket_is_never_replaced(qtbot, name):
+    """Regression (Linux CI): Qt puts a socket that only this user may reach in place by renaming it over the
+    name, so a second start's listen() replaced the first window's live socket and took the name from it."""
+    first = single.InstanceServer(name)
+    assert first.listen()
+    path = first.server.fullServerName()
+    before = os.stat(path).st_ino
+    second = single.InstanceServer(name)
+    assert not second.listen()
+    assert os.stat(path).st_ino == before                   # the first one's socket, still in place
+    first.close()
+    assert second.listen()                                   # given up on close, the name can be taken
+    second.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows holds the name with a named mutex")
+def test_a_window_holding_another_lock_file_keeps_its_name(qtbot, name, monkeypatch, tmp_path):
+    """Regression: a start with another settings folder (another XDG_CONFIG_HOME, say) locked a lock file of its
+    own and replaced the live window's socket. Holding a lock is not enough: a name a window answers on is kept."""
+    monkeypatch.setattr(single.places, "config_dir", lambda: tmp_path / "one")
+    first = single.InstanceServer(name)
+    assert first.listen()
+    shown = []
+    first.shown.connect(lambda: shown.append(1))
+    monkeypatch.setattr(single.places, "config_dir", lambda: tmp_path / "other")
+    second = single.InstanceServer(name)
+    assert not second.listen()
+    assert single.ask_to_show(name) is True and shown == [1]          # the first one still has the name
+    first.close()
+    assert second.listen()                                   # the lock let go on the refusal: free again now
+    second.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows holds the name with a named mutex")
+def test_a_lock_file_left_by_a_crash_does_not_hold_the_name(qtbot, name):
+    path = single.lock_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")                                   # the file stays; only a live process's lock counts
+    kind, server = single.claim(name)
+    assert kind == "first"
+    server.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows holds the name with a named mutex")
+def test_without_a_lock_file_a_live_window_still_keeps_its_name(qtbot, name, monkeypatch, tmp_path):
+    """When the settings folder cannot be written, no lock can be taken; the name is then taken only when
+    nothing answers on it, and a socket file left by a crash is still taken over."""
+    blocked = tmp_path / "not-a-folder"
+    blocked.write_text("a file where the settings folder would be", encoding="utf-8")
+    monkeypatch.setattr(single.places, "config_dir", lambda: blocked)
+    first = single.InstanceServer(name)
+    assert first.listen() and first.guard is None
+    assert not single.InstanceServer(name).listen()
+    assert single.ask_to_show(name) is True
+    first.close()
+    import socket
+
+    stale = socket.socket(socket.AF_UNIX)
+    stale.bind(QDir(QDir.tempPath()).filePath(name))       # a socket file nobody listens on, as after a crash
     stale.close()
     kind, server = single.claim(name)
     assert kind == "first"

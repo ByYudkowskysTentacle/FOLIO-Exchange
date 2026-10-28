@@ -574,3 +574,87 @@ def test_a_window_open_in_another_windows_session_is_reported(qtbot, site, monke
     monkeypatch.setattr(desktop_app.single, "claim", lambda name: ("elsewhere", None))
     assert desktop_app.run(str(site), console=False) == 1
     assert shown == [desktop_app.ELSEWHERE] and "another Windows session" in shown[0]
+
+
+# ------------------------------------------------------------ garbage collection off the window's thread
+class _ReadFailed(Exception):
+    """An error a weak reference can follow (built-in exceptions take none)."""
+
+
+def test_a_failed_read_leaves_no_cycle_for_another_thread_to_free(qtbot):
+    """Regression: a failed read's error held its traceback, which held the reading thread's frame, which held the
+    error and the Reader. Only a garbage collection freed that cycle, and on Linux CI one ran in a reading thread
+    and freed Qt objects there, which crashed the run."""
+    import gc
+    import weakref
+
+    from folio_exchange.desktop.worker import Reader
+
+    reader = Reader()
+    got = []
+    reader.done.connect(lambda result, error: got.append(weakref.ref(error)))
+
+    def fail():
+        raise _ReadFailed("the drive is gone")
+
+    gc.disable()                        # as while the app runs; the conftest fixture has it off already
+    reader.read(fail)
+    qtbot.waitUntil(lambda: bool(got) and not any(t.name == "fx-app-read" for t in threading.enumerate()),
+                    timeout=5000)
+    assert got[0]() is None             # freed when the last reference went, with no collection
+
+
+def test_cyclic_garbage_is_collected_on_the_windows_thread_only(qtbot):
+    """Regression: with automatic collection on, a reading or job thread could free a Qt object kept alive by a
+    cycle, off the window's thread, and crash the process."""
+    import gc
+
+    from folio_exchange.desktop.worker import MainThreadCollector
+
+    class Node:
+        def __init__(self):
+            self.me = self
+
+    threads: list[str] = []
+
+    def seen(phase, info):
+        if phase == "start":
+            threads.append(threading.current_thread().name)
+
+    collector = MainThreadCollector(interval_ms=10).start()
+    gc.callbacks.append(seen)
+    try:
+        assert not gc.isenabled()
+
+        def litter():
+            for _ in range(gc.get_threshold()[0] * 5):
+                Node()                  # cycles enough to start several collections, were it on
+
+        worker = threading.Thread(target=litter, name="fx-test-litter")
+        worker.start()
+        worker.join()
+        assert "fx-test-litter" not in threads
+        qtbot.waitUntil(lambda: bool(threads), timeout=5000)
+        assert set(threads) == {threading.main_thread().name}
+    finally:
+        gc.callbacks.remove(seen)
+        collector.stop()
+    assert not gc.isenabled()           # back as it was: the conftest fixture's collector has it off
+
+
+def test_the_app_collects_garbage_on_its_own_thread(qtbot, site, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    from folio_exchange.desktop.worker import MainThreadCollector
+
+    running = []
+
+    def run(qapp, named, verbose, console):
+        running.extend(c for c in qapp.findChildren(MainThreadCollector) if c.timer.isActive())
+        return 0
+
+    monkeypatch.setattr(desktop_app, "_run", run)
+    assert desktop_app.run(str(site)) == 0
+    assert len(running) == 1
+    assert not running[0].timer.isActive()                             # stopped when the app ends
+    assert not [c for c in QApplication.instance().findChildren(MainThreadCollector) if c.timer.isActive()]

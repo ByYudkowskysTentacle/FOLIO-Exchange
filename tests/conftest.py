@@ -35,6 +35,26 @@ pytest_plugins = ["pytestqt.plugin"] if QT_LOADS else []
 
 
 @pytest.fixture(autouse=True)
+def qt_garbage_on_the_main_thread(request):
+    """A Qt test collects cyclic garbage on the main thread only, as the app does (worker.MainThreadCollector).
+    Reads and jobs run in threads of their own, and a collection there that frees a Qt object only a cycle kept
+    alive (a test's window holding a test's function that holds the window, say) crashes the whole run. Before
+    automatic collection is back on, the widgets the test closed are deleted and its cycles freed, here."""
+    if not QT_LOADS or not {"qtbot", "qapp"} & set(request.fixturenames):
+        yield
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    from folio_exchange.desktop.worker import MainThreadCollector
+
+    request.getfixturevalue("qapp")
+    collector = MainThreadCollector().start()
+    yield
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)     # the windows qtbot closed
+    collector.stop()
+
+
+@pytest.fixture(autouse=True)
 def no_real_keyring(monkeypatch):
     """Never touch the developer's real credential store; tests that need one install a fake."""
     monkeypatch.setitem(sys.modules, "keyring", None)
