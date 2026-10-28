@@ -181,8 +181,23 @@ def test_feed_rejects_secrets_and_unquoted_codes(tmp_path):
 
 def test_must_fill_barcode_conflicts_with_keeping_items_without_one(tmp_path):
     path = make(tmp_path, checks={"must_be_filled": ["barcode"]})
-    with pytest.raises(ConfigError, match="every run would be blocked"):
+    with pytest.raises(ConfigError, match="every run would be blocked") as added:
         load_feed(path, lib())
+    assert "set filters.include_items_without_barcode: false or remove barcode from checks.must_be_filled" in str(
+        added.value)
+    # a recipe that requires barcode: the feed file cannot remove it, only stop keeping items without one
+    data = chq()
+    data["version"] = "1.0.1"
+    data["changelog"].append({"version": "1.0.1", "date": "2026-10-28", "changes": "Barcode required."})
+    data["selection"]["include_items_without_barcode"] = False
+    data["checks"]["must_be_filled"].append("barcode")
+    write_recipe(tmp_path / "recipes", data)
+    path = make(tmp_path, filters={"include_items_without_barcode": True})
+    with pytest.raises(ConfigError, match="every run would be blocked") as required:
+        load_feed(path, RecipeLibrary([tmp_path / "recipes", BUNDLED_RECIPES]))
+    msg = str(required.value)
+    assert "the recipe chq-academic@1.0.1 requires it" in msg and "remove barcode" not in msg
+    assert "filters.include_items_without_barcode: false" in msg
 
 
 def test_sftp_feed_needs_a_pinned_key(tmp_path):

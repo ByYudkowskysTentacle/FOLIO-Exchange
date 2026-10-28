@@ -205,3 +205,22 @@ def test_an_unfilled_recipe_field_is_not_offered_for_removal_from_the_feed_file(
     msg = str(both.value)
     assert "remove item_hrid from checks.must_be_filled" in msg
     assert "remove material_type" not in msg and "material_type, item_hrid" not in msg
+    with pytest.raises(SafetyCheckFailed) as preview:
+        required_fields(feed, BuildReport(unfilled=Counter({"material_type": 3})), preview=True)
+    assert "release" not in str(preview.value)                       # a preview cannot be released
+
+
+def test_a_block_for_unfilled_fields_does_not_talk_about_a_drop(site, folio):
+    make_feed(site, checks={"must_be_filled": ["volume"]})
+    assert main(["-s", str(site), "run", "chq"]) == 2                 # blocked
+    with History(site / "data" / "history.sqlite") as h:
+        error = h.last_run("chq")["error"]
+    assert "remove volume from checks.must_be_filled" in error and "the drop" not in error.lower()
+    # the page leaves out sentences that name a command, so the release must not share one with the fix
+    sentences = error.split(". ")
+    assert any("checks.must_be_filled in the feed file" in x and "folio-exchange" not in x for x in sentences)
+    assert any("folio-exchange release chq" in x for x in sentences)
+    assert main(["-s", str(site), "preview", "chq", "-n", "2"]) == 0
+    prev = sorted((site / "out" / "chq").glob("preview-*"))[-1]
+    warnings = json.loads((prev / "run-report.json").read_text(encoding="utf-8"))["warnings"]
+    assert any("A full run would be blocked" in w and "release" not in w for w in warnings)

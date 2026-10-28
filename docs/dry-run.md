@@ -197,7 +197,7 @@ The run builds the files as in the dry run, then stops before sending: the first
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary release chq
 ```
 
-It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Leaving the question open does not hold up scheduled runs; if a run happens meanwhile, `release` sends nothing and asks you to run it again, so you see what it would send now. Later runs to the same destination are sent without waiting, unless the item count drops sharply (that run is blocked for you to look at), the recipe moves to a new major version, or the files' layout changes.
+It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Leaving the question open does not hold up scheduled runs; if a run happens meanwhile, `release` sends nothing and asks you to run it again, so you see what it would send now. Later runs to the same destination are sent without waiting, unless the item count drops sharply or rows are missing values the vendor needs (that run is blocked for you to look at; the message says what to fix, or you send it as it is with `release`), the recipe moves to a new major version, or the files' layout changes.
 
 **After changing columns or formats.** If you edit the `outputs` in `feeds\chq.yaml` (columns, headers, delimiter, date format, empty value, file names), the next delivery is held, and the hold message says what changed, for example `items file: columns changed: 'Item record ID' renamed to 'Item ID'`. Check the vendor expects the change, then send it with `release chq` as above.
 

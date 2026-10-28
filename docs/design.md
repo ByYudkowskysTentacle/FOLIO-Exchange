@@ -489,7 +489,7 @@ One SQL pass, as in FOLIOHQ. Selection filters apply once, before any output see
 
 **checks.py**
 ```python
-def required_fields(feed: Feed, report: BuildReport) -> None           # SafetyCheckFailed listing field: count
+def required_fields(feed: Feed, report: BuildReport, *, preview=False) -> None          # SafetyCheckFailed listing field: count
     # and whether the recipe or the feed file asks for each; offers to remove only the feed's own, else release
 def item_ratio(feed: Feed, items_written: int, last_delivered: int | None) -> None   # SafetyCheckFailed
 def check_marc_file(path: Path) -> list[str]   # binary MARC parses; spots text-converted MARC (no 0x1D/0x1E)
@@ -498,7 +498,7 @@ def conformance(feed, run_dir, samples: dict[str, Path], files: dict[str, list[s
     # delimited = same header row, column count and delimiter; marc21 = both files parse as binary MARC
 def sample_files(feed: Feed) -> dict[str, Path]   # <recipe folder>/samples/<output name>.<ext>
 ```
-Blocked messages give the last delivered and current counts, the run folder, the command to release the run, and what to do if the drop is not expected (fix FOLIO and run again; the blocked run is then superseded and never sent). Feed problems name settings as the feed file writes them (`filters.…`, `checks.must_be_filled`), and a misspelled required column is reported as a misspelling.
+Blocked messages give what tripped the check, the run folder, what to do if the files are wrong (fix FOLIO and run again; a later run replaces the blocked one, which is then never sent) and the command to release the run if they are right, in a sentence of its own so the page can leave it out. The item-ratio message gives the last delivered and current counts. The required-fields message says which fields the recipe requires (the feed file cannot remove them) and which the feed file's `checks.must_be_filled` added (only those are offered for removal); in a preview it is a warning and does not offer `release`. Feed problems name settings as the feed file writes them (`filters.…`, `checks.must_be_filled`), and a misspelled required column is reported as a misspelling.
 
 **delivery.py**
 ```python
