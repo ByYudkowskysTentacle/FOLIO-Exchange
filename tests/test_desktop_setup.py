@@ -117,6 +117,10 @@ def click(qtbot, b) -> None:
     """Click ``b`` once it is shown and enabled: the window enables its actions on a half-second look after one
     ends, and Qt shows a widget added to a page on screen with the next turn of the event loop."""
     qtbot.waitUntil(lambda: b.isVisibleTo(b.window()) and b.isEnabled(), timeout=5000)
+    # A button just shown (a box made visible a moment ago) is laid out on the next turn of the event loop: until
+    # then a click can miss it. Regression (CI): the key file's "Choose" click was lost that way, now and then.
+    QApplication.processEvents()
+    qtbot.waitUntil(lambda: not b.rect().isEmpty(), timeout=5000)
     qtbot.mouseClick(b, Qt.MouseButton.LeftButton)
 
 
@@ -770,6 +774,7 @@ def test_a_key_file_too_large_is_refused_before_it_is_read(qtbot, site, keyring,
     login.use_key.setChecked(True)
     login.ask_key_file = lambda: str(big)
     click(qtbot, [b for b in login.findChildren(QAbstractButton) if b.text() == "C&hoose the key file…"][0])
+    assert login.key_file.text() == str(big)                           # chosen, before it is saved
     click(qtbot, login.key_button)
     qtbot.waitUntil(lambda: login.problem.isVisibleTo(login), timeout=LONG)
     assert login.problem.text() == "That file is too large to be a private key. Choose the file again to retry."
@@ -844,6 +849,7 @@ def test_a_private_key_file_is_read_kept_owner_only_and_its_passphrase_stored(qt
     assert "Choose the private key file." in " ".join(login.key_rows.shown_problems())
     login.ask_key_file = lambda: str(pub)                              # the public half: refused, and why
     click(qtbot, [b for b in login.findChildren(QAbstractButton) if b.text() == "C&hoose the key file…"][0])
+    assert login.key_file.text() == str(pub)
     login.passphrase.setText(PASSPHRASE)
     click(qtbot, login.key_button)
     assert login.key_file.text() == "" and login.passphrase.text() == ""
@@ -853,6 +859,7 @@ def test_a_private_key_file_is_read_kept_owner_only_and_its_passphrase_stored(qt
     assert not (site / "keys" / "chq.key").exists()
     login.ask_key_file = lambda: str(chosen)
     click(qtbot, [b for b in login.findChildren(QAbstractButton) if b.text() == "C&hoose the key file…"][0])
+    assert login.key_file.text() == str(chosen)
     login.passphrase.setText(PASSPHRASE)
     click(qtbot, login.key_button)
     settled(qtbot, w)
