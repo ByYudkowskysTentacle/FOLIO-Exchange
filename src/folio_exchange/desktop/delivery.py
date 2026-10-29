@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model
+from . import model, theme
 from .forms import Rows, announce, edit, note, problem_label, secret_box, take, tell
 from .pages import actions_row, button, heading, text
 
@@ -110,7 +110,7 @@ class DeliveryDialog(QDialog):
                                    "Save my choices on the feed file as it is now")
         self.again_button.clicked.connect(self.refresh_version.emit)
         self.again_button.hide()
-        self.save_button = button("&Save delivery", "Save the delivery")
+        self.save_button = theme.primary(button("&Save delivery", "Save the delivery"))
         self.save_button.setDefault(True)
         self.save_button.clicked.connect(self._save)
         cancel = button("Cancel", "Close without saving")
@@ -270,7 +270,7 @@ class LoginBox(QWidget):
         self.password_rows.add("SFTP pass&word:", self.password, "Kept in Windows Credential Manager on this "
                                "computer. It is never shown again or written to a file.")
         self.password.returnPressed.connect(self._save_password)
-        self.password_button = button("Save in Cre&dential Manager", "Save the SFTP password in Credential Manager")
+        self.password_button = theme.primary(button("Save in Cre&dential Manager", "Save the SFTP password in Credential Manager"))
         self.password_button.clicked.connect(self._save_password)
         pform.addRow(actions_row(self.password_button))
         box.addWidget(self.password_box)
@@ -293,7 +293,7 @@ class LoginBox(QWidget):
         self.key_rows.problems[self.key_file] = self.key_rows.problems.pop(choose)
         self.passphrase = secret_box("Key passphrase")
         self.key_rows.add("Passphrase (if the key has one):", self.passphrase, "Kept in Windows Credential Manager.")
-        self.key_button = button("Save &key", "Save the private key")
+        self.key_button = theme.primary(button("Save &key", "Save the private key"))
         self.key_button.clicked.connect(self._save_key)
         kform.addRow(actions_row(self.key_button))
         box.addWidget(self.key_box)

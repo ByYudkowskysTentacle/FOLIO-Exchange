@@ -12,6 +12,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QFormLayout, QVBoxLayout, QWidget
 
 from .. import setupops
+from . import theme
 from .forms import Rows, edit, note, problem_label, secret_box, take, tell
 from .pages import Page, actions_row, button, heading, text
 
@@ -62,7 +63,7 @@ class ConnectForm(QWidget):
         self.status = note(about="Connection status")
         self.status.hide()
         box.addWidget(self.status)
-        self.save_button = button("&Test and save", "Test the connection with FOLIO, then save it")
+        self.save_button = theme.primary(button("&Test and save", "Test the connection with FOLIO, then save it"))
         self.save_button.clicked.connect(self._submit)
         self.cancel_button = button("Cancel", "Cancel changing the connection")
         self.cancel_button.clicked.connect(self.cancelled.emit)

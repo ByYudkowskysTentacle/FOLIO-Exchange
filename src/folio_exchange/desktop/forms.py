@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model
+from . import model, theme
 
 SCHEDULE_HELP = ("For example daily 06:00, Mon,Thu 06:00 or monthly 15 01:00 (days 1 to 28). Times are in the site's "
                  "own time zone.")
@@ -71,7 +71,7 @@ def note(text: str = "", about: str | None = None) -> QLabel:
 
 
 def problem_label() -> QLabel:
-    label = note(about="Problem")
+    label = theme.role(note(about="Problem"), "problem")
     label.hide()
     return label
 
@@ -116,7 +116,8 @@ class Rows:
         box.addWidget(widget)
         target = focus or widget
         if help_text:
-            self.help_labels[target] = note(help_text, f"About {caption.replace('&', '').rstrip(':')}")
+            self.help_labels[target] = theme.role(note(help_text, f"About {caption.replace('&', '').rstrip(':')}"),
+                                                  "help")
             box.addWidget(self.help_labels[target])
             target.setAccessibleDescription(help_text)
             self.helps[target] = help_text

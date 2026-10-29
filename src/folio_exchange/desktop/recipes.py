@@ -12,7 +12,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from . import model
+from . import model, theme
 from .feed import clear
 from .forms import announce
 from .pages import Facts, Page, actions_row, button, heading, lines_label, set_lines, text
@@ -178,8 +178,8 @@ class RecipesPage(Page):
         n = len(r.get("new") or [])
         if C.get("installed") is None:
             if n:
-                install = button(f"Install {n} new {'version' if n == 1 else 'versions'}",
-                                 f"Install {n} new {'version' if n == 1 else 'versions'} from {s.get('title') or sid}")
+                install = theme.primary(button(f"Install {n} new {'version' if n == 1 else 'versions'}",
+                                 f"Install {n} new {'version' if n == 1 else 'versions'} from {s.get('title') or sid}"))
                 install.clicked.connect(lambda _c=False, sid=sid, commit=r["commit"]: self._install(sid, commit))
                 install.setEnabled(self.idle and not C.get("installing"))
                 self.buttons[sid]["install"] = install

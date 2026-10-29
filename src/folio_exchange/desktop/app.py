@@ -11,7 +11,7 @@ from .. import siteops
 from ..config import find_site, load_site
 from ..errors import FxError
 from ..logsetup import setup_logging
-from . import places, single
+from . import places, single, theme
 from .pages import alert
 from .picker import SitePicker
 from .window import MainWindow
@@ -81,6 +81,7 @@ def logs_dir(root: Path) -> Path:
 def run(named: str | None, *, verbose: bool = False, console: bool = True) -> int:
     qapp = QApplication.instance() or QApplication(["folio-exchange-app"])
     qapp.setApplicationName("FOLIO-Exchange")
+    theme.apply(qapp)                                   # the page's look, with FOLIO's (see theme)
     collector = MainThreadCollector(qapp).start()       # garbage cycles freed on this thread only (see worker)
     try:
         return _run(qapp, named, verbose, console)

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model
+from . import model, theme
 
 
 def _esc(text: object) -> str:
@@ -228,7 +228,7 @@ class HomePage(Page):
         self.no_feeds = text("No feeds yet. A feed sends one vendor a regular file of your library's records. Add one "
                              "to start: it begins as a dry run that sends nothing.", "No feeds")
         self.box.addWidget(self.no_feeds)
-        self.add_button = button("&Add a vendor feed", "Add a vendor feed")
+        self.add_button = theme.primary(button("&Add a vendor feed", "Add a vendor feed"))
         self.add_button.clicked.connect(self.add_feed.emit)
         self.box.addLayout(actions_row(self.add_button))
         self.problems_title = heading("Files that do not load", 1.15)
@@ -291,7 +291,7 @@ class ConnectionPage(Page):
         form = QFormLayout()
         self.folio = folio_rows(form)
         self.box.addLayout(form)
-        self.check_button = button("&Check the connection", "Check the connection")
+        self.check_button = theme.primary(button("&Check the connection", "Check the connection"))
         self.check_button.clicked.connect(self.check.emit)
         self.change_button = button("Change connection or pass&word…", "Change the FOLIO connection or password")
         self.change_button.clicked.connect(self.change.emit)

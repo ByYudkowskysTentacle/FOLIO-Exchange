@@ -56,6 +56,7 @@ class RunView(QWidget):
         # Named for any run: a preview or a build shows its rows too, and those sent nothing.
         self.rows = table([], "Rows of the run's file", "The first rows of the run's file, as the vendor would "
                           "receive them.")
+        self.rows.setObjectName("rows")                 # set in the page's monospace, as its rows are
         self.rows.setMinimumHeight(160)
         rbox.addWidget(self.rows)
         summary = QWidget()
@@ -72,6 +73,7 @@ class RunView(QWidget):
             sbox.addWidget(w)
         sbox.addStretch(1)
         self.log = QPlainTextEdit()
+        self.log.setObjectName("log")
         self.log.setReadOnly(True)
         self.log.setAccessibleName("Log of the action")
         self.log.setMinimumHeight(140)

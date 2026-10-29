@@ -1,4 +1,5 @@
-"""The app's own per-user things, outside any site: the recent sites list and the one-window-per-site name.
+"""The app's own per-user things, outside any site: the recent sites list, light or dark, and the one-window-per-site
+name.
 
 No Qt here, so it is quick to import and to test. Nothing kept here is secret: the recent list holds folder
 paths only.
@@ -23,6 +24,7 @@ log = logging.getLogger(__name__)
 
 RECENT_FILE = "recent-sites.json"
 RECENT_MOST = 10
+LOOK_FILE = "look.json"
 UNFINISHED = {"logs", "data"}     # what the app and its page write into a new site before site.yaml exists
 
 
@@ -76,6 +78,28 @@ def remember_site(root: Path, replaces: Path | None = None) -> list[Path]:
     except OSError as exc:
         log.warning("Could not save the list of recent sites in %s: %s", folder, exc)
     return sites
+
+
+def dark_mode() -> bool:
+    """Whether the app is dark: it is unless the person turned it off (Site, Dark mode)."""
+    try:
+        raw = json.loads((config_dir() / LOOK_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(raw, dict) and raw.get("dark") is False)
+
+
+def set_dark_mode(on: bool) -> None:
+    """Remember light or dark for the next start. Only a convenience: a failure is logged, not raised."""
+    folder = config_dir()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".look.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"dark": bool(on)}, fh)
+        os.replace(tmp, folder / LOOK_FILE)
+    except OSError as exc:
+        log.warning("Could not save light or dark in %s: %s", folder, exc)
 
 
 def unfinished_site(folder: Path) -> bool:

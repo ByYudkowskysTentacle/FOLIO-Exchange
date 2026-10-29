@@ -21,11 +21,13 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
     QSplitter,
     QStackedWidget,
@@ -36,7 +38,7 @@ from PySide6.QtWidgets import (
 from .. import views
 from ..errors import FxError
 from ..jobs import Job, Jobs
-from . import model, places
+from . import model, places, theme
 from .actions import SETUP_DONE, SetupActions
 from .activity import ActivityPage
 from .feed import FeedPage
@@ -135,7 +137,9 @@ class MainWindow(QMainWindow, SetupActions):
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
-        menu = self.menuBar().addMenu("&Site")
+        self.menu_bar = QMenuBar()
+        self.menu_bar.setAccessibleName("Menu")
+        menu = self.menu_bar.addMenu("&Site")
         self.open_action = self._action(menu, "&Open a site…", QKeySequence.StandardKey.Open, self.open_site)
         self.new_action = self._action(menu, "&New site…", QKeySequence.StandardKey.New, self.new_site)
         menu.addSeparator()
@@ -148,9 +152,18 @@ class MainWindow(QMainWindow, SetupActions):
         self.preview_action.triggered.connect(self._preview_shown)
         self.addAction(self.preview_action)
         menu.addSeparator()
+        app = QApplication.instance()
+        self.dark_action = QAction("&Dark mode", self)
+        self.dark_action.setCheckable(True)
+        self.dark_action.setChecked(theme.is_dark(app) if app.property("fx_dark") is not None
+                                    else places.dark_mode())
+        self.dark_action.toggled.connect(lambda on: theme.set_dark(QApplication.instance(), on))
+        menu.addAction(self.dark_action)
+        menu.addSeparator()
         self._action(menu, "&Quit", QKeySequence.StandardKey.Quit, self.close)
 
         self.banner = QLabel()
+        self.banner.setObjectName("banner")
         self.banner.setWordWrap(True)
         self.banner.setTextFormat(Qt.TextFormat.PlainText)
         self.banner.setAccessibleDescription("Notice")
@@ -159,6 +172,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.banner.hide()
 
         self.sidebar = QListWidget()
+        self.sidebar.setObjectName("sidebar")
         self.sidebar.setAccessibleName("Views and feeds")
         self.sidebar.currentItemChanged.connect(lambda item, _old: self._show(item))
         self.stack = QStackedWidget()
@@ -223,11 +237,14 @@ class MainWindow(QMainWindow, SetupActions):
         split.setSizes([240, 760])
         body = QWidget()
         layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)               # the sidebar runs to the window's edges, as the page's
+        layout.setSpacing(0)
         layout.addWidget(self.banner)
         row = QHBoxLayout()
         row.addWidget(split)
         layout.addLayout(row, 1)
         self.setCentralWidget(body)
+        self.setMenuWidget(self._topbar())
         self.setTabOrder(self.sidebar, self.stack)
 
     def _action(self, menu, caption: str, keys, slot) -> QAction:
@@ -238,8 +255,36 @@ class MainWindow(QMainWindow, SetupActions):
         self.addAction(action)
         return action
 
+    def _topbar(self) -> QWidget:
+        """The bar along the top, as FOLIO's main navigation and the page's: the symbol, the name, the menu, and
+        the site's folder name at the right."""
+        bar = QWidget()
+        bar.setObjectName("topbar")
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(12, 6, 12, 6)
+        row.setSpacing(10)
+        row.addWidget(theme.mark(22))
+        brand = QLabel("FOLIO-Exchange")
+        brand.setObjectName("brand")
+        row.addWidget(brand)
+        row.addWidget(self.menu_bar)
+        row.addStretch(1)
+        self.site_chip = QLabel()
+        self.site_chip.setObjectName("sitechip")
+        self.site_chip.setTextFormat(Qt.TextFormat.PlainText)        # a folder name, shown as written
+        self.site_chip.setAccessibleDescription("Site")
+        row.addWidget(self.site_chip)
+        return bar
+
+    def menuBar(self) -> QMenuBar:  # noqa: N802 - Qt's naming
+        """The menu, which lives in the top bar: QMainWindow's own would make a new, empty one in its place."""
+        return self.menu_bar
+
     def _set_title(self, name: str) -> None:
         self.setWindowTitle(f"FOLIO-Exchange – {name}")
+        self.site_chip.setText(name)
+        self.site_chip.setToolTip(str(self.site_root))
 
     def say(self, message: str | None) -> None:
         """A notice above the pages (an error reading the site, an action running, closing after it)."""

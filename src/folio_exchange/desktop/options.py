@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QFormLayout
 
 from .. import schedule, siteops
 from ..launcher import program_path
-from . import model
+from . import model, theme
 from .forms import Rows, edit
 from .pages import Facts, Page, actions_row, button, heading, lines_label, set_lines, text
 
@@ -99,7 +99,7 @@ class OptionsPage(Page):
         self.box.addWidget(self.becomes)
         self.name.textChanged.connect(self._preview)
         self.name.returnPressed.connect(self._rename)
-        self.rename_button = button("&Rename folder", "Rename the site folder")
+        self.rename_button = theme.primary(button("&Rename folder", "Rename the site folder"))
         self.rename_button.clicked.connect(self._rename)
         self.box.addLayout(actions_row(self.rename_button))
 

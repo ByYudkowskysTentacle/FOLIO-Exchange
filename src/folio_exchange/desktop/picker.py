@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from .. import setupops, siteops
 from ..errors import ConfigError
-from . import places
+from . import places, theme
 from .pages import heading
 
 
@@ -30,6 +30,7 @@ def _error_label() -> QLabel:
     label.setWordWrap(True)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     label.setAccessibleDescription("Problem")
+    label.setProperty("role", "problem")
     label.hide()
     return label
 
@@ -188,13 +189,18 @@ class SitePicker(QDialog):
         row.addWidget(folder_button)
         row.addWidget(new_button)
         row.addWidget(cancel)
+        self.first_focus: QWidget = self.recent
         if not self.recent.count():                     # a first start: setting up is what Enter does
             for b in (self.open_button, folder_button, cancel):
                 b.setAutoDefault(False)
             new_button.setDefault(True)
-            new_button.setFocus(Qt.FocusReason.OtherFocusReason)
+            theme.primary(new_button)
+            self.first_focus = new_button
         layout = QVBoxLayout(self)
-        layout.addWidget(title)
+        brand = QHBoxLayout()
+        brand.addWidget(theme.mark(32))
+        brand.addWidget(title, 1)
+        layout.addLayout(brand)
         layout.addWidget(about)
         layout.addWidget(intro)
         layout.addWidget(recent_label)
@@ -204,6 +210,10 @@ class SitePicker(QDialog):
             layout.addStretch(1)
         layout.addLayout(row)
         self.resize(640, 360)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt's naming
+        super().showEvent(event)
+        self.first_focus.setFocus(Qt.FocusReason.OtherFocusReason)      # where Enter goes, the focus is too
 
     def ask_folder(self) -> str:
         """The folder dialog (tests replace this)."""
