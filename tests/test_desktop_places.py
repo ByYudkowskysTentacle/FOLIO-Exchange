@@ -22,7 +22,7 @@ def test_recent_sites_newest_first_at_most_ten(tmp_path):
     assert got == [f.resolve() for f in reversed(folders)][:places.RECENT_MOST]
     folders[11].rmdir()                                    # a folder that has gone stays listed: opening it says so
     assert places.recent_sites()[0] == folders[11].resolve()
-    assert "not a folder that exists" in places.folder_problem(places.recent_sites()[0])
+    assert "isn't a folder that exists" in places.folder_problem(places.recent_sites()[0])
     places.remember_site(folders[5])                       # opened again: back to the top, once
     got = places.recent_sites()
     assert got[0] == folders[5].resolve() and got.count(folders[5].resolve()) == 1
@@ -82,14 +82,14 @@ def test_a_new_site_left_unfinished_can_be_opened_again(tmp_path):
     assert places.folder_problem(root) is None             # from the recent list or "Open a site folder"
     assert places.new_site_problem(tmp_path, "Main") is None
     (root / "notes.txt").write_text("mine", encoding="utf-8")        # anything else: not the app's own leftovers
-    assert not places.unfinished_site(root) and "There is no site.yaml" in places.folder_problem(root)
-    assert "already holds other files" in places.new_site_problem(tmp_path, "Main")
+    assert not places.unfinished_site(root) and "There's no site.yaml" in places.folder_problem(root)
+    assert "isn't empty" in places.new_site_problem(tmp_path, "Main")
     (tmp_path / "plain").mkdir()                           # an empty folder never opened is still not a site
-    assert "There is no site.yaml" in places.folder_problem(tmp_path / "plain")
+    assert "There's no site.yaml" in places.folder_problem(tmp_path / "plain")
     (tmp_path / "half" / "feeds").mkdir(parents=True)      # a site whose site.yaml went missing stays an error
     (tmp_path / "half" / "logs").mkdir()
     (tmp_path / "half" / "logs" / "folio-exchange.log").write_text("x", encoding="utf-8")
-    assert "There is no site.yaml" in places.folder_problem(tmp_path / "half")
+    assert "There's no site.yaml" in places.folder_problem(tmp_path / "half")
 
 
 def test_the_settings_folder_is_redirected_in_tests():
@@ -97,8 +97,8 @@ def test_the_settings_folder_is_redirected_in_tests():
 
 
 def test_a_folder_without_site_yaml_is_not_a_site(tmp_path):
-    assert "There is no site.yaml" in places.folder_problem(tmp_path)
-    assert "not a folder that exists" in places.folder_problem(tmp_path / "missing")
+    assert "There's no site.yaml" in places.folder_problem(tmp_path)
+    assert "isn't a folder that exists" in places.folder_problem(tmp_path / "missing")
     (tmp_path / "site.yaml").write_text("folio: {}\n", encoding="utf-8")
     assert places.folder_problem(tmp_path) is None
 
@@ -107,14 +107,14 @@ def test_a_new_site_needs_a_good_name_in_a_folder_that_exists(tmp_path):
     assert places.new_site_problem(tmp_path, "Main Library") is None
     assert places.new_site_problem(tmp_path, "a/b") == siteops.name_problem("a/b")
     assert "keeps" in places.new_site_problem(tmp_path, "con")
-    assert "not a folder that exists" in places.new_site_problem(tmp_path / "missing", "x")
+    assert "isn't a folder that exists" in places.new_site_problem(tmp_path / "missing", "x")
     assert places.new_site_problem("", "x") == "Choose the folder to put the new site in."
     (tmp_path / "taken").mkdir()
     (tmp_path / "taken" / "site.yaml").write_text("x: 1\n", encoding="utf-8")
     assert "already a site" in places.new_site_problem(tmp_path, "taken")
     (tmp_path / "busy").mkdir()
     (tmp_path / "busy" / "notes.txt").write_text("x", encoding="utf-8")
-    assert "already holds other files" in places.new_site_problem(tmp_path, "busy")
+    assert "isn't empty" in places.new_site_problem(tmp_path, "busy")
     (tmp_path / "empty").mkdir()
     assert places.new_site_problem(tmp_path, "empty") is None
 
@@ -158,7 +158,7 @@ def test_the_page_s_words_for_feeds_and_runs():
     assert model.job_words("release", "chq") == "send of chq" and model.job_words("check", None) == "connection check"
     assert model.job_words("rename", None) == "rename"
     assert model.next_step("held", True).startswith("Look at the files (Open folder)")
-    assert model.next_step("built", False) == "This feed has nowhere to send files yet, so they stay on this computer."
+    assert model.next_step("built", False) == "The files stay on this computer. This feed has no delivery yet."
     assert model.next_step("success", True) is None
     assert model.size(512) == "512 B" and model.size(2048) == "2.0 KB" and model.num(None) == "–"
     assert model.num(12345) == "12,345"
@@ -188,7 +188,7 @@ def test_a_runs_summary_says_what_to_do_next():
                         "bibs_generated": 1}}
     rows = dict(model.run_summary(run, report, True))
     assert rows["Problem"] == "Item count fell to 10% of the last delivery."
-    assert rows["Next step"].startswith("Look at the files (Open folder). If they are right, use Review and send")
+    assert rows["Next step"].startswith("Look at the files (Open folder). Send them with Review and send… if they're right.")
     assert rows["Items left out"] == "no barcode: 2" and rows["Bibs"] == "4 (3 from MARC, 1 generated)"
 
 
@@ -198,14 +198,14 @@ def test_a_delivery_is_described_without_its_secret():
          "password": "system keyring (folio-exchange-sftp)"}
     rows = dict(model.delivery_rows(d))
     assert rows["Server"] == "h.example:22" and rows["Folder on the server"] == "."
-    assert rows["Server key"].endswith("Confirmed: it matches the fingerprint the vendor gave.")
+    assert rows["Server key"].endswith("Confirmed. It matches the vendor's fingerprint.")
     assert rows["Login"] == "With a password. Stored in Windows Credential Manager (folio-exchange-sftp)."
     assert model.delivery_rows({"transport": "none"})[0][1].startswith("Nowhere yet")
     # Regression (parity-4): it sent people to a Change delivery button the app did not have (D3 brings it).
     unconfirmed = dict(model.delivery_rows({**d, "host_key_confirmed": False}))["Server key"]
-    assert unconfirmed.endswith("enter the vendor's fingerprint under Change delivery… on this tab.")
+    assert unconfirmed.endswith("Enter the vendor's fingerprint under Change delivery… before the feed can connect.")
     ok = {"status": "done", "result": {"where": "folder D:\\drop", "entries": None}}
-    assert "usual for upload-only accounts" in model.delivery_check_words(ok)
+    assert "normal for upload-only accounts" in model.delivery_check_words(ok)
     assert model.delivery_check_words({"status": "error", "error": "No answer"}) == "The test failed. No answer"
 
 
@@ -217,10 +217,10 @@ def test_feeds_that_need_a_person():
         "d": {"waiting": None, "last_run": {"status": "success"}}}}
     got = model.attention(snap)
     assert [f for f, _ in got] == ["a", "b", "c"]
-    assert got[0][1] == "a: Held for review. The run of never is waiting for you: first delivery to folder X"
-    assert got[1][1] == "b: the last run failed (never). FOLIO did not answer."
-    assert got[2][1] == ("c: No scheduled run for 3 days. Check that the task that starts scheduled runs on this "
-                         "computer is still set up and running.")
+    assert got[0][1] == "a: Held for review. The run of never is waiting for you (first delivery to folder X)."
+    assert got[1][1] == "b: The last run failed (never). FOLIO did not answer."
+    assert got[2][1] == ("c: No scheduled run for 3 days. Check that the scheduled task on this computer is still "
+                         "set up and running.")
 
 
 def test_an_overdue_feed_in_needs_you_names_no_command():
@@ -228,8 +228,8 @@ def test_an_overdue_feed_in_needs_you_names_no_command():
     snap = {"feeds": {"chq": {"waiting": None, "last_run": None, "overdue": (
         "overdue: last success 2026-10-20 03:30 UTC; check that the hourly `run --due` task is still running")}}}
     (_feed, line), = model.attention(snap)
-    assert line == ("chq: Overdue: last success 2026-10-20 03:30 UTC. Check that the task that starts scheduled "
-                    "runs on this computer is still set up and running.")
+    assert line == ("chq: Overdue: last success 2026-10-20 03:30 UTC. Check that the scheduled task on this "
+                    "computer is still set up and running.")
 
 
 def test_main_without_qt_says_how_to_add_it(monkeypatch, capsys):

@@ -61,8 +61,8 @@ class NewSiteDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Set up a new site")
         self.chosen: Path | None = None
-        intro = QLabel("A site is a folder that holds a library's FOLIO connection, its feeds and their runs. "
-                       "Choose where to put it and name it, for example after the library.")
+        intro = QLabel("A site is a folder that holds a library's FOLIO connection, feeds and runs. Choose where "
+                       "to put it and name it, for example after the library.")
         intro.setWordWrap(True)
         self.parent_edit = QLineEdit()
         self.parent_edit.setAccessibleName("Folder to put the new site in")
@@ -150,8 +150,8 @@ class SitePicker(QDialog):
         self.chosen: Path | None = None
         self.is_new = False
         title = heading("FOLIO-Exchange")
-        about = QLabel("Scheduled exports from FOLIO to your vendors, such as collectionHQ: you choose what each "
-                       "vendor gets, preview it, and nothing is sent until you say so.")
+        about = QLabel("Scheduled exports from FOLIO to vendors such as collectionHQ. You choose what each vendor "
+                       "gets and preview it, and nothing is sent until you say so.")
         about.setWordWrap(True)
         intro = QLabel("Each library's FOLIO-Exchange lives in a site folder. Open one, or set up a new site.")
         intro.setWordWrap(True)

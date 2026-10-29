@@ -47,12 +47,12 @@ def _read_key(path: str) -> str:
             raise ConfigError("That file is too large to be a private key.")
         data = p.read_bytes()
     except OSError as exc:
-        raise ConfigError(f"The key file could not be read ({exc.strerror or exc}).") from None
+        raise ConfigError(f"Couldn't read the key file ({exc.strerror or exc}).") from None
     try:
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raise ConfigError("That file is not a private key. (The public key, ending .pub, is the one the vendor "
-                          "gets.)") from None
+        raise ConfigError("That file isn't a private key. The public key (ending .pub) is the one the vendor "
+                          "gets.") from None
 
 
 class SetupActions:
@@ -137,7 +137,7 @@ class SetupActions:
         if problem:
             form.failed(problem)
             if about == "change" and form.isHidden():       # the person left the view while FOLIO answered
-                self.connection.say(f"The connection was not changed. {problem}")
+                self.connection.say(f"The connection wasn't changed. {problem}")
             return
         self._forget_choices()
         res = state.get("result") or {}
@@ -332,8 +332,8 @@ class SetupActions:
         dialog = self.settings_dialog
         problem = self._failed(state)
         if dialog is None or dialog.name != name:
-            self.feed.say(f"The settings of {name} were not saved: {problem}" if problem else
-                          f"The settings of {name} are saved.")
+            self.feed.say(f"Settings for {name} weren't saved: {problem}" if problem else
+                          f"Settings for {name} saved.")
             return
         if problem:
             (dialog.conflict if any(c in problem for c in CONFLICT) else dialog.failed)(problem)
@@ -368,14 +368,14 @@ class SetupActions:
             if dialog is not None and dialog.name == name:
                 (dialog.conflict if any(c in problem for c in CONFLICT) else dialog.failed)(problem)
             else:
-                self.feed.say(f"The delivery of {name} was not saved: {problem}")
+                self.feed.say(f"Delivery for {name} wasn't saved: {problem}")
             return
         res = dict(state.get("result") or {})
         server_key = res.pop("server_key", None)
         sd = res.get("delivery") or {}
-        words = ("Delivery saved. The server key is not confirmed yet, so the feed stays paused and nothing logs in."
+        words = ("Delivery saved. The server key isn't confirmed yet, so the feed is paused and nothing logs in."
                  if sd.get("transport") == "sftp" and not sd.get("host_key_confirmed") else
-                 "Saved: the feed stays a dry run." if sd.get("transport") == "none" else
+                 "Saved. The feed is a dry run." if sd.get("transport") == "none" else
                  "Delivery saved. Use Test delivery to try it.")
         if dialog is not None and dialog.name == name:
             dialog.working(False)
@@ -403,7 +403,7 @@ class SetupActions:
         if problem and name == self.feed.name:
             self.feed.login.failed(problem)
         elif problem:
-            self.feed.say(f"The SFTP password of {name} was not saved: {problem}")
+            self.feed.say(f"SFTP password for {name} wasn't saved: {problem}")
         else:
             self.feed.say(f"Password saved in Credential Manager. {name} logs in with it from now on.")
 
@@ -430,7 +430,7 @@ class SetupActions:
             if here:
                 self.feed.login.failed(problem, key=True)
             else:
-                self.feed.say(f"The SFTP key of {name} was not saved: {problem}")
+                self.feed.say(f"SFTP key for {name} wasn't saved: {problem}")
             return
         public = (state.get("result") or {}).get("key") or ""
         if here:
@@ -487,9 +487,9 @@ class SetupActions:
         if self.toggling or self.reviewing:
             # Not jobs, but each uses the folder: a pause or resume rewrites a feed file and then the activity log,
             # a release question reads what would be sent. Neither may be cut off by the move.
-            self.options.rename_failed("Wait for the pause or resume to be written, then rename the folder."
+            self.options.rename_failed("Wait for the pause or resume to be saved, then rename the folder."
                                        if self.toggling else
-                                       "Answer the question about sending the held run first, then rename the folder.")
+                                       "Finish with Review and send… first, then rename the folder.")
             return
         if self.renaming:
             return
@@ -569,20 +569,20 @@ class SetupActions:
         exe, args, folder = task_command(self.site_root)
         start = self.start_console
         self.registering = True
-        self.options.registering(True, "A console window is open: type your Windows password there when it asks. "
-                                       "This page shows what happened once that window closes.")
+        self.options.registering(True, "A console window is open. Type your Windows password there when it asks. "
+                                       "The result shows here when that window closes.")
         log.info("Registering the scheduled task for %s in a console window", self.site_root)
         self.errands.run(("register", self._ask(("register",))), lambda: start(exe, args, folder))
 
     def _registered(self, code: int | None, message: str | None) -> None:
         self.registering = False
         if message:
-            words = f"The console window could not be started: {message}"
+            words = f"Couldn't start the console window: {message}"
         elif code == 0:
             words = "Registered. Task Scheduler starts the runs every hour from now on."
         else:
-            words = (f"The task was not registered (the command ended with exit code {code}). If the Windows "
-                     "password was mistyped, try again.")
+            words = (f"The task wasn't registered (exit code {code}). If you mistyped the Windows password, try "
+                     "again.")
         self.options.registering(False, words)
         self.look_for_task()
 
@@ -639,7 +639,7 @@ class SetupActions:
             if dialog is not None:
                 dialog.failed(problem)
             else:
-                self.options.alert_said(f"The alert settings were not saved: {problem}")
+                self.options.alert_said(f"Alert settings weren't saved: {problem}")
             return
         res = dict(state.get("result") or {})
         if dialog is not None:
@@ -664,8 +664,8 @@ class SetupActions:
     def _alert_tested(self, state: dict, _about: None) -> None:
         problem = self._failed(state)
         sent = (state.get("result") or []) if not problem else []
-        words = (f"The test alert could not be sent: {problem}" if problem else
+        words = (f"Couldn't send the test alert: {problem}" if problem else
                  f"Sent by {' and '.join(sent)}. Check that it arrived." if sent else
-                 "The test alert was not sent: no alert channel is set up, or none took it. "
+                 "The test alert wasn't sent. No alert channel is set up, or none accepted it. "
                  f"{os.path.join('logs', 'folio-exchange.log')} says why.")
         self.options.testing(False, words)

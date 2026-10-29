@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QLineEdit,
     QListWidget,
     QPlainTextEdit,
+    QPushButton,
     QSpinBox,
     QTableWidget,
 )
@@ -42,7 +43,7 @@ from folio_exchange.config import load_site, read_yaml  # noqa: E402
 from folio_exchange.desktop import forms, places  # noqa: E402
 from folio_exchange.desktop import options as options_module  # noqa: E402
 from folio_exchange.desktop.alerts import AlertsDialog  # noqa: E402
-from folio_exchange.desktop.delivery import DeliveryDialog  # noqa: E402
+from folio_exchange.desktop.delivery import DeliveryDialog, LoginBox  # noqa: E402
 from folio_exchange.desktop.settings import SettingsDialog  # noqa: E402
 from folio_exchange.desktop.window import MainWindow  # noqa: E402
 from folio_exchange.errors import FxError  # noqa: E402
@@ -116,6 +117,10 @@ def click(qtbot, b) -> None:
     """Click ``b`` once it is shown and enabled: the window enables its actions on a half-second look after one
     ends, and Qt shows a widget added to a page on screen with the next turn of the event loop."""
     qtbot.waitUntil(lambda: b.isVisibleTo(b.window()) and b.isEnabled(), timeout=5000)
+    # A button just shown (a box made visible a moment ago) is laid out on the next turn of the event loop: until
+    # then a click can miss it. Regression (CI): the key file's "Choose" click was lost that way, now and then.
+    QApplication.processEvents()
+    qtbot.waitUntil(lambda: not b.rect().isEmpty(), timeout=5000)
     qtbot.mouseClick(b, Qt.MouseButton.LeftButton)
 
 
@@ -245,7 +250,7 @@ def test_a_new_library_sets_up_its_site_and_first_feed_in_the_app_alone(qtbot, t
     assert raw["filters"] == {"exclude_location_codes": ["ONLINE"], "exclude_item_statuses": ["Withdrawn"]}
     assert raw["legacy"] == {"circ_count_note_type": "Legacy circ count"}
     page = w.feed
-    assert page.tabs.currentIndex() == 3 and page.added.text().startswith(f"{title} is added, as a paused dry run.")
+    assert page.tabs.currentIndex() == 3 and page.added.text().startswith(f"Added {title} as a paused dry run.")
     assert focused(page.added) and heard[-1] == page.added.text()       # the move is said, and focus follows
     assert "chq – Paused, no runs yet" in sidebar(w)
 
@@ -338,7 +343,7 @@ def test_setup_actions_are_refused_at_once_while_another_runs(qtbot, site, keyri
     assert site.is_dir() and not (site.parent / "Elsewhere").exists()
     w.wizard.W.update(step=4, name="x", recipe={"default_uses": "chq-academic@^1.0"})
     w.add_feed()
-    assert "The feed was not added. Another action is still running" in w.wizard.problem.text()
+    assert "The feed wasn't added. Another action is still running" in w.wizard.problem.text()
     assert w.wizard.problem.text() in heard
     w.feed.login.password.setText(SFTP_PASSWORD)
     w.save_password("chq")
@@ -365,7 +370,7 @@ def test_the_wizard_checks_each_step_and_back_keeps_what_was_entered(qtbot, site
     assert wz.name_edit.text() == "chq-2"                              # chq is taken
     wz.name_edit.setText("chq")
     click(qtbot, wz.next_button)
-    assert "There is already a feed called chq" in " ".join(wz.name_rows.shown_problems()) and wz.step() == 1
+    assert "There's already a feed called chq" in " ".join(wz.name_rows.shown_problems()) and wz.step() == 1
     wz.name_edit.setText("Bad Name")
     click(qtbot, wz.next_button)
     assert "lowercase" in " ".join(wz.name_rows.shown_problems())
@@ -468,7 +473,7 @@ def test_without_folios_lists_the_wizard_takes_typed_codes(qtbot, site, monkeypa
     wz.name_edit.setText("typed")
     click(qtbot, wz.next_button)
     qtbot.waitUntil(lambda: wz.choices is not None, timeout=LONG)
-    assert "could not be read from FOLIO (FOLIO did not answer)" in wz.choices_state.text()
+    assert "Couldn't read the lists from FOLIO (FOLIO did not answer)" in wz.choices_state.text()
     assert wz.loc.typed and wz.loc.codes.isVisibleTo(wz) and wz.choices_button.isVisibleTo(wz)
     # how to separate the codes is said, as the page's "Separate them with commas." (regression)
     assert wz.loc.codes.accessibleDescription().endswith("Separate them with commas.")
@@ -566,12 +571,12 @@ def test_a_file_changed_underneath_the_form_keeps_what_was_entered_and_offers_to
     path.write_text(path.read_text(encoding="utf-8").replace("Sun 02:15", "Sun 04:45"), encoding="utf-8")  # by hand
     click(qtbot, d.review_button)
     click(qtbot, d.save_button)
-    qtbot.waitUntil(lambda: d.review_title.text() == "Not saved: the file changed", timeout=LONG)
-    assert "Nothing was saved, and what you entered is still here." in d.review_text.text()
+    qtbot.waitUntil(lambda: d.review_title.text() == "Not saved because the file changed", timeout=LONG)
+    assert "What you entered is still here." in d.review_text.text()
     assert d.apply_button.hasFocus() and read_yaml(path).get("title") is None
     click(qtbot, d.apply_button)
     qtbot.waitUntil(lambda: d.review_title.text() == "Review changes", timeout=LONG)
-    assert not d.notice.isHidden() and d.notice.text().startswith("The form now shows the file as it is now")
+    assert not d.notice.isHidden() and d.notice.text().startswith("The form now shows the updated file")
     assert d.title_edit.text() == "Mine" and d.schedule.value() == "Sun 04:45"
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: w.settings_dialog is None, timeout=LONG)
@@ -596,6 +601,55 @@ def sftp(d: DeliveryDialog, fingerprint: str = "", later: bool = False) -> None:
     d.later.setChecked(later)
 
 
+def test_without_a_keyring_the_login_help_says_where_each_secret_is_read(qtbot):
+    """Regression: with no Credential Manager the SFTP password, key and passphrase help still said each was
+    stored there."""
+    login = LoginBox()
+    qtbot.addWidget(login)
+    fields = ((login.password_rows, login.password), (login.key_rows, login.choose_button),
+              (login.key_rows, login.passphrase))
+
+    def helps() -> list[str]:
+        return [rows.help_labels[w].text() for rows, w in fields] + [w.accessibleDescription() for _rows, w in fields]
+
+    login.show_login("chq", {"auth": "password"}, keyring=False)
+    assert not login.no_keyring.isHidden()
+    assert not [h for h in helps() if "Stored in Windows Credential Manager" in h or "kept in this site" in h]
+    assert "secret: env:NAME" in helps()[0] and "private_key" in helps()[1] and "secret: env:NAME" in helps()[2]
+    login.show_login("chq", {"auth": "password"}, keyring=True)          # a keyring again: its own help is back
+    assert helps()[0].startswith("Stored in Windows Credential Manager") and "keys folder" in helps()[1]
+
+
+def test_without_a_keyring_the_alert_help_says_where_each_secret_is_read(qtbot):
+    """Regression: with no Credential Manager the mail password and webhook help said they were stored there."""
+    email = {"to": ["a@x.org"], "from": "f@x.org", "smtp_host": "smtp.x.org", "smtp_port": 587, "username": "u",
+             "password": "NOT FOUND (environment variable FX_SMTP_PASSWORD is not set)"}
+    hook = {"format": "slack", "url": "NOT FOUND (environment variable FX_WEBHOOK_URL is not set)"}
+    off = AlertsDialog({"on": "failure", "keyring": False, "email": email, "webhook": hook})
+    qtbot.addWidget(off)
+    said = [off.email_rows.helps[off.password], off.hook_rows.helps[off.url]]
+    assert not [h for h in said if "Stored in Windows Credential Manager" in h or "It's stored in" in h], said
+    assert "secret: env:NAME" in said[0] and "webhook: env:NAME" in said[1]
+    on = AlertsDialog({"on": "failure", "keyring": True, "email": email, "webhook": hook})
+    qtbot.addWidget(on)
+    assert on.email_rows.helps[on.password].startswith("Stored in Windows Credential Manager")
+    assert "stored in Windows Credential Manager" in on.hook_rows.helps[on.url]
+
+
+def test_a_refused_delivery_says_nothing_was_saved_once(qtbot, site):
+    """Regression: a refusal whose own words say nothing was saved read "Not saved. … nothing was saved"."""
+    st = {"version": "v", "delivery": {"transport": "none"}}
+    d = DeliveryDialog("chq", st)
+    qtbot.addWidget(d)
+    core = "A different key can mean the wrong server, so nothing was saved. Check the value with the vendor."
+    d.failed(core)
+    assert d.problem.text() == core
+    d.failed("Nothing was saved, because site.yaml would not load.")
+    assert d.problem.text() == "Nothing was saved, because site.yaml would not load."
+    d.failed("Another action is still running (check).")             # it doesn't say so: the prefix does
+    assert d.problem.text() == "Not saved. Another action is still running (check)."
+
+
 def test_sftp_delivery_is_saved_only_with_the_vendors_fingerprint(qtbot, site, server_keys, heard):
     w = window(qtbot, site)
     path = site / "feeds" / "chq.yaml"
@@ -604,15 +658,16 @@ def test_sftp_delivery_is_saved_only_with_the_vendors_fingerprint(qtbot, site, s
     assert d.radios["local"].isChecked() and d.local_box.isVisibleTo(d) and not d.sftp_box.isVisibleTo(d)
     sftp(d)
     click(qtbot, d.save_button)
-    assert "Enter the fingerprint the vendor gave you, or tick the box" in " ".join(d.rows.shown_problems())
+    assert "Enter the fingerprint the vendor gave you, or check the box" in " ".join(d.rows.shown_problems())
     assert server_keys == []                                           # nothing was asked of the server
     d.fingerprint.setText("not a fingerprint")
     click(qtbot, d.save_button)
-    assert "does not look like a server key fingerprint" in " ".join(d.rows.shown_problems())
+    assert "doesn't look like a server key fingerprint" in " ".join(d.rows.shown_problems())
     d.fingerprint.setText("SHA256:" + "Z" * 43)                        # a key, but not this server's
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: d.problem.isVisible(), timeout=LONG)
     assert "which is not the fingerprint you entered" in d.problem.text() and "nothing was saved" in d.problem.text()
+    assert not d.problem.text().startswith("Not saved.")              # said once, in the core's words
     assert heard[-1] == d.problem.text() and focused(d.problem)       # read out, not only the button's name
     assert path.read_bytes() == before and server_keys == [("sftp.vendor.example", 22)]
     d.fingerprint.setText(KEYS["sha256"])
@@ -639,7 +694,7 @@ def test_without_the_fingerprint_yet_the_feed_is_paused_and_nothing_logs_in(qtbo
     raw = read_yaml(site / "feeds" / "chq.yaml")
     assert raw["enabled"] is False and raw["delivery"]["host_key_confirmed"] is False
     page = w.feed
-    assert page.notice.text() == ("Delivery saved. The server key is not confirmed yet, so the feed stays paused and "
+    assert page.notice.text() == ("Delivery saved. The server key isn't confirmed yet, so the feed is paused and "
                                   "nothing logs in.")
     assert not page.test_button.isEnabled() and page.test_why.isVisibleTo(page)
     assert page.resume_row.isVisibleTo(page) and "Not confirmed yet" in page.where.values["Server key"].text()
@@ -719,6 +774,7 @@ def test_a_key_file_too_large_is_refused_before_it_is_read(qtbot, site, keyring,
     login.use_key.setChecked(True)
     login.ask_key_file = lambda: str(big)
     click(qtbot, [b for b in login.findChildren(QAbstractButton) if b.text() == "C&hoose the key file…"][0])
+    assert login.key_file.text() == str(big)                           # chosen, before it is saved
     click(qtbot, login.key_button)
     qtbot.waitUntil(lambda: login.problem.isVisibleTo(login), timeout=LONG)
     assert login.problem.text() == "That file is too large to be a private key. Choose the file again to retry."
@@ -734,7 +790,7 @@ def test_a_delivery_saved_on_a_changed_file_keeps_the_choices_and_saves_them_aga
     path.write_text(path.read_text(encoding="utf-8").replace("Sun 02:15", "Sun 05:00"), encoding="utf-8")
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: d.again_button.isVisibleTo(d), timeout=LONG)
-    assert "Nothing was saved, and what you entered is still here." in d.problem.text()
+    assert d.problem.text().startswith("Not saved.") and "What you entered is still here." in d.problem.text()
     assert heard[-1] == d.problem.text() and focused(d.again_button)
     assert d.again_button.accessibleDescription() == d.problem.text()
     assert d.host.text() == "sftp.vendor.example" and d.fingerprint.text() == KEYS["sha256"]
@@ -754,7 +810,7 @@ def test_a_server_offering_several_keys_lists_them_all(qtbot, site, monkeypatch)
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: w.delivery_dialog is None, timeout=LONG)
     text_ = w.feed.server_key.text()
-    assert "The server offers several keys" in text_ and "The ssh-rsa key is the one kept for this feed." in text_
+    assert "The server offered several keys" in text_ and "The ssh-rsa key is the one kept for this feed." in text_
     assert rsa["sha256"] in text_ and KEYS["sha256"] in text_
     assert read_yaml(site / "feeds" / "chq.yaml")["delivery"]["host_key_type"] == "ssh-rsa"
 
@@ -793,6 +849,7 @@ def test_a_private_key_file_is_read_kept_owner_only_and_its_passphrase_stored(qt
     assert "Choose the private key file." in " ".join(login.key_rows.shown_problems())
     login.ask_key_file = lambda: str(pub)                              # the public half: refused, and why
     click(qtbot, [b for b in login.findChildren(QAbstractButton) if b.text() == "C&hoose the key file…"][0])
+    assert login.key_file.text() == str(pub)
     login.passphrase.setText(PASSPHRASE)
     click(qtbot, login.key_button)
     assert login.key_file.text() == "" and login.passphrase.text() == ""
@@ -802,6 +859,7 @@ def test_a_private_key_file_is_read_kept_owner_only_and_its_passphrase_stored(qt
     assert not (site / "keys" / "chq.key").exists()
     login.ask_key_file = lambda: str(chosen)
     click(qtbot, [b for b in login.findChildren(QAbstractButton) if b.text() == "C&hoose the key file…"][0])
+    assert login.key_file.text() == str(chosen)
     login.passphrase.setText(PASSPHRASE)
     click(qtbot, login.key_button)
     settled(qtbot, w)
@@ -937,7 +995,7 @@ def test_registering_the_task_runs_the_command_line_in_a_console_of_its_own(qtbo
     w.start_console = lambda exe, args, folder: started.append((exe, args, folder)) or 0
     w.select("options")
     qtbot.waitUntil(lambda: looked and not w.errands.pending, timeout=LONG)
-    assert w.options.registered.text().startswith("Task Scheduler does not have this site's task yet")
+    assert w.options.registered.text().startswith("Task Scheduler doesn't have this site's task yet")
     click(qtbot, w.options.register_button)
     qtbot.waitUntil(lambda: started and not w.errands.pending and not w.registering, timeout=LONG)
     (exe, args, folder), = started
@@ -981,6 +1039,18 @@ def test_elsewhere_the_task_is_a_crontab_line_to_add(qtbot, site, monkeypatch):
     assert not w.registering
 
 
+def test_a_task_that_never_ran_is_worded_by_the_app_on_home_and_options(qtbot, site):
+    """Regression: Home and Options showed the core's words for a task that never ran ("Scheduled runs have not
+    started yet: no feed runs on its own …"), a clause joined by a colon."""
+    w = window(qtbot, site)
+    assert (w.snap["summary"].get("task") or {}).get("state") in ("never", "unneeded")
+    w.select("options")
+    for label in (w.home.task, w.options.task):
+        assert label.text().startswith("Scheduled runs haven't started yet. No feed runs on its own"), label.text()
+        assert "have not" not in label.text() and ": no feed" not in label.text()
+    assert "have not started" not in w.home.warnings.text()             # the site's task-never warning too
+
+
 # ------------------------------------------------------------ options: alerts
 def test_alerts_are_set_up_with_their_secrets_in_credential_manager(qtbot, site, keyring, caplog, monkeypatch):  # noqa: F811
     caplog.set_level(logging.DEBUG, logger="folio_exchange")
@@ -1006,7 +1076,7 @@ def test_alerts_are_set_up_with_their_secrets_in_credential_manager(qtbot, site,
     d.kind.setCurrentIndex(d.kind.findData("teams"))
     d.url.setText("http://hooks.example.org/plain")
     click(qtbot, d.save_button)
-    assert "refused" in " ".join(d.hook_rows.shown_problems()) and d.url.text() == "" and d.password.text() == ""
+    assert "isn't allowed" in " ".join(d.hook_rows.shown_problems()) and d.url.text() == "" and d.password.text() == ""
     d.password.setText(MAIL_SECRET)
     d.url.setText(HOOK)
     click(qtbot, d.save_button)
@@ -1063,6 +1133,36 @@ def test_the_setup_views_and_dialogs_are_named_and_their_keys_never_clash(qtbot,
         for label in widget.findChildren(QLabel):
             if label.textFormat() != Qt.TextFormat.RichText:
                 assert label.textFormat() == Qt.TextFormat.PlainText, label.text()   # nothing read as markup
+    for d in dialogs:
+        d.close()
+
+
+def test_every_buttons_accessible_name_holds_its_label(qtbot, site, server_keys):
+    """Label in name (WCAG 2.5.3). Regression: names such as "Change where this feed's files go" for "Change
+    delivery…" did not hold the words on the button, so voice control could not find it by what it shows."""
+    from folio_exchange.desktop.picker import NewSiteDialog, SitePicker
+    from folio_exchange.desktop.release import ReleaseDialog
+
+    w = window(qtbot, site)
+    w.select("recipes")
+    qtbot.waitUntil(lambda: bool(w.recipes.buttons), timeout=LONG)        # each source's check button is drawn
+    st = {"version": "v", "delivery": {"transport": "none"}, "filters": {}, "checks": {}, "legacy": {}}
+    dialogs = [SettingsDialog("chq", st, None, w), DeliveryDialog("chq", st, w),
+               AlertsDialog({"on": "failure", "keyring": True}, w),
+               ReleaseDialog({"feed": "chq", "files": [["a.txt", 1]], "items": 1, "bibs": 1}, w),
+               SitePicker(w), NewSiteDialog(w)]
+    for d in dialogs:
+        qtbot.addWidget(d)
+    checked = 0
+    for widget in [w, *dialogs]:
+        for b in widget.findChildren(QPushButton):
+            if b.objectName().startswith("qt_") or not b.text():
+                continue
+            label = b.text().replace("&&", "\0").replace("&", "").replace("\0", "&").rstrip("…").strip()
+            name = QAccessible.queryAccessibleInterface(b).text(QAccessible.Text.Name)
+            assert label.lower() in name.lower(), (type(widget).__name__, b.text(), name)
+            checked += 1
+    assert checked > 40
     for d in dialogs:
         d.close()
 
@@ -1212,7 +1312,7 @@ def test_a_refused_change_of_connection_is_said_after_leaving_the_view(qtbot, si
     assert (site / "site.yaml").read_bytes() == before and keyring == {}    # the stored password stays as it was
     w.select("connection")
     assert page.notice.isVisibleTo(page)
-    assert page.notice.text().startswith("The connection was not changed. Could not log in")
+    assert page.notice.text().startswith("The connection wasn't changed. Could not log in")
     click(qtbot, page.change_button)
     assert page.notice.isHidden() and form.status.isHidden() and form.problem.isHidden()
 
@@ -1249,7 +1349,7 @@ def test_a_check_keeps_the_focus_and_cannot_undo_an_install_under_way(qtbot, sit
 
 
 def test_the_settings_form_cannot_be_changed_while_the_file_is_read_again(qtbot, site, hold):
-    """Regression: while "Apply my changes to the file as it is now" read the file, the form could be edited, and
+    """Regression: while "Apply my changes to the updated file" read the file, the form could be edited, and
     the answer then laid the earlier changes over the file, throwing the newer edits away."""
     from folio_exchange.desktop import actions
 
@@ -1260,11 +1360,11 @@ def test_the_settings_form_cannot_be_changed_while_the_file_is_read_again(qtbot,
     path.write_text(path.read_text(encoding="utf-8").replace("Sun 02:15", "Sun 04:45"), encoding="utf-8")
     click(qtbot, d.review_button)
     click(qtbot, d.save_button)
-    qtbot.waitUntil(lambda: d.review_title.text() == "Not saved: the file changed", timeout=LONG)
+    qtbot.waitUntil(lambda: d.review_title.text() == "Not saved because the file changed", timeout=LONG)
     go = hold(actions, "_load")
     click(qtbot, d.apply_button)
     assert not d.back_button.isEnabled() and not d.apply_button.isEnabled()
-    assert d.review_note.text() == "Reading the file as it is now…"
+    assert d.review_note.text() == "Reading the updated file…"
     d.reject()                                                         # Escape waits for it too
     assert w.settings_dialog is d and d.isVisible()
     go.set()
@@ -1307,7 +1407,7 @@ def test_a_rename_waits_for_a_pause_being_written(qtbot, site, monkeypatch, hold
     w.set_enabled("chq", False)
     assert w.toggling and not w.options.rename_button.isEnabled()
     w.rename_site("Elsewhere")
-    assert "Wait for the pause or resume to be written" in " ".join(w.options.rows.shown_problems())
+    assert "Wait for the pause or resume to be saved" in " ".join(w.options.rows.shown_problems())
     assert w.renaming is None and site.is_dir() and not (site.parent / "Elsewhere").exists()
     go.set()
     qtbot.waitUntil(lambda: not w.toggling and w.options.rename_button.isEnabled(), timeout=LONG)
@@ -1333,8 +1433,8 @@ def test_a_rename_that_fails_after_the_move_still_follows_the_folder(qtbot, site
     assert new.is_dir() and not site.exists()
     assert w.site_root == new.resolve() and w.page.site_root == new.resolve()
     assert places.recent_sites()[0] == new.resolve() and w.windowTitle() == "FOLIO-Exchange – Moved"
-    assert w.options.done.text() == ("Renamed to Moved, but not everything after that worked: RuntimeError: the "
-                                     "keyring backend stopped answering")
+    assert w.options.done.text() == ("Renamed to Moved, but a later step failed: RuntimeError: the keyring backend "
+                                     "stopped answering")
     assert w.snap["summary"]["name"] == "Moved"                        # the site is read from its new folder
 
 
@@ -1380,7 +1480,7 @@ def test_after_a_rename_task_scheduler_is_asked_again(qtbot, site, monkeypatch):
     w.select("options")
     qtbot.waitUntil(lambda: w.options.registered.text().startswith("Task Scheduler has the task"), timeout=LONG)
     w.rename_site("Renamed")
-    qtbot.waitUntil(lambda: w.options.registered.text().startswith("Task Scheduler does not have this site's task"),
+    qtbot.waitUntil(lambda: w.options.registered.text().startswith("Task Scheduler doesn't have this site's task"),
                     timeout=LONG)
 
 
@@ -1405,7 +1505,7 @@ def test_without_folios_lists_the_settings_form_says_how_to_type_codes(qtbot, si
     d = open_settings(qtbot, w)
     assert d.lists_note.isVisibleTo(d) and d.lists_note.text().endswith("Separate them with commas.")
     assert "FOLIO did not answer" in d.lists_note.text() and d.loc.typed and d.loc.commas.isVisibleTo(d)
-    assert d.loc.codes.accessibleDescription() == "Items in these locations are not sent. Separate them with commas."
+    assert d.loc.codes.accessibleDescription() == "Items in these locations aren't sent. Separate them with commas."
 
 
 # ------------------------------------------------------------ failures and refusals, each said and changing nothing
@@ -1434,7 +1534,7 @@ def test_a_console_that_cannot_start_is_said(qtbot, site, monkeypatch):
     w.select("options")
     click(qtbot, w.options.register_button)
     qtbot.waitUntil(lambda: not w.registering and bool(w.options.register_result.text()), timeout=LONG)
-    assert w.options.register_result.text() == "The console window could not be started: OSError: no console here"
+    assert w.options.register_result.text() == "Couldn't start the console window: OSError: no console here"
 
 
 def test_a_test_alert_that_is_not_sent_says_why(qtbot, site, monkeypatch):
@@ -1443,7 +1543,7 @@ def test_a_test_alert_that_is_not_sent_says_why(qtbot, site, monkeypatch):
     monkeypatch.setattr(runner, "alert", lambda *a, **k: [])
     click(qtbot, w.options.test_button)
     settled(qtbot, w)
-    assert w.options.test_result.text().startswith("The test alert was not sent: no alert channel is set up")
+    assert w.options.test_result.text().startswith("The test alert wasn't sent. No alert channel is set up")
 
     def broken(*_a, **_k):
         raise FxError("the mail server refused the login")
@@ -1451,7 +1551,7 @@ def test_a_test_alert_that_is_not_sent_says_why(qtbot, site, monkeypatch):
     monkeypatch.setattr(runner, "alert", broken)
     click(qtbot, w.options.test_button)
     settled(qtbot, w)
-    assert w.options.test_result.text() == "The test alert could not be sent: the mail server refused the login"
+    assert w.options.test_result.text() == "Couldn't send the test alert: the mail server refused the login"
 
 
 def test_an_install_that_fails_installs_nothing_and_says_why(qtbot, site, monkeypatch):
@@ -1501,7 +1601,7 @@ def test_a_delivery_set_back_to_not_yet_keeps_the_feed_a_dry_run(qtbot, site):
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: w.delivery_dialog is None, timeout=LONG)
     settled(qtbot, w)
-    assert w.feed.notice.text() == "Saved: the feed stays a dry run."
+    assert w.feed.notice.text() == "Saved. The feed is a dry run."
     assert read_yaml(site / "feeds" / "chq.yaml")["delivery"]["transport"] == "none"
 
 
@@ -1512,8 +1612,8 @@ def test_a_permission_check_that_cannot_run_says_why(qtbot, site, monkeypatch):
     wz = w.wizard
     qtbot.waitUntil(lambda: wz.recipe_list.count() > 0, timeout=LONG)
     click(qtbot, wz.next_button)
-    qtbot.waitUntil(lambda: wz.perm_state.text().startswith("The check could not run"), timeout=LONG)
-    assert wz.perm_state.text() == "The check could not run: FOLIO did not answer" and wz.perm_button.isEnabled()
+    qtbot.waitUntil(lambda: wz.perm_state.text().startswith("The check couldn't run"), timeout=LONG)
+    assert wz.perm_state.text() == "The check couldn't run: FOLIO did not answer" and wz.perm_button.isEnabled()
 
 
 def test_saving_the_delivery_again_says_when_the_file_cannot_be_read(qtbot, site, server_keys, monkeypatch, heard):

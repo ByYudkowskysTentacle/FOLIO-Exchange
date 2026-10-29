@@ -17,7 +17,7 @@ from .pages import Facts, actions_row, button, heading, lines_label, set_lines, 
 class ReleaseDialog(QDialog):
     def __init__(self, summary: dict, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"FOLIO-Exchange – send the files of {summary.get('feed')}?")
+        self.setWindowTitle(f"FOLIO-Exchange – send files for {summary.get('feed')}?")
         self.setModal(True)
         box = QVBoxLayout(self)
         box.addWidget(heading("Send these files?", 1.25))
@@ -30,7 +30,7 @@ class ReleaseDialog(QDialog):
         self.newer = text("A newer run was delivered since this one was built.", "Warning")
         self.newer.setVisible(bool(summary.get("newer_runs")))
         box.addWidget(self.newer)
-        self.cancel_button = button("&Cancel", "Cancel: send nothing")
+        self.cancel_button = button("&Cancel", "Cancel and send nothing")
         self.send_button = theme.primary(button("&Send files", "Send files"))
         self.cancel_button.setDefault(True)
         for b in (self.cancel_button, self.send_button):

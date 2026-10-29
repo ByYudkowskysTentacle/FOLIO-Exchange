@@ -25,7 +25,7 @@ RUNS_SHOWN = 50                                  # a feed's History tab, as on t
 ACTIVITY_SHOWN = 100                             # the Activity view's runs and changes (the page shows 100 changes)
 KIND_WORDS = {"preview": "preview", "run": "run", "build": "build", "release": "send",
               "test-delivery": "delivery test", "check": "connection check",
-              "connect": "connection to FOLIO", "add-feed": "new feed", "settings": "save of a feed's settings",
+              "connect": "save of the FOLIO connection", "add-feed": "feed setup", "settings": "save of a feed's settings",
               "delivery": "save of a feed's delivery", "password": "save of an SFTP password",
               "private-key": "save of an SFTP key", "alerts": "save of the alert settings",
               "test-alert": "test alert", "recipe-install": "recipe install"}
@@ -45,17 +45,17 @@ FILTER_FLAGS = ("include_suppressed_instances", "include_suppressed_items", "inc
                 "include_items_without_barcode", "bibs_without_items")
 LEGACY_KEYS = ("circ_count_note_type", "created_date_note_type", "last_circ_date_note_type")
 LEGACY_HELP = {
-    "circ_count_note_type": "The item note type holding each item's loan count from the old system. It is added to "
+    "circ_count_note_type": "The item note type holding each item's loan count from the old system. It's added to "
                             "FOLIO's own count.",
     "created_date_note_type": "The item note type holding the date each item was added in the old system.",
     "last_circ_date_note_type": "The item note type holding each item's last loan date in the old system.",
 }
 MISSING_LOCATION = "not a location in this FOLIO"
 MISSING_STATUS = "not a FOLIO item status"
-ALERT_ON = (("failure", "When a run needs you: it failed, was blocked or is held for review"),
-            ("always", "After every run, as well"), ("never", "Never: alerts are switched off"))
-DONE_WORDS = {"success": "Delivered.", "held": "Held for your review.", "blocked": "Blocked: see the summary.",
-              "failed": "The run failed: see the summary.", "built": "Built. Nothing was sent.",
+ALERT_ON = (("failure", "When a run fails, is blocked or is held for review"),
+            ("always", "After every run"), ("never", "Never"))
+DONE_WORDS = {"success": "Delivered.", "held": "Held for your review.", "blocked": "Blocked. See the Summary tab.",
+              "failed": "The run failed. See the Summary tab.", "built": "Built. Nothing was sent.",
               "preview": "Preview ready."}
 SETTING_NAMES = {
     "title": "Title", "schedule": "Schedule", "file_prefix": "File name prefix",
@@ -145,10 +145,10 @@ def warnings(summary: dict) -> list[str]:
     for w in summary.get("warnings") or []:
         if w.get("code") in FILE_CODES:
             continue
-        who = f"{w['feed']}: " if w.get("feed") else ""
+        who = f" for {w['feed']}" if w.get("feed") else ""
         newer = next((f.get("newer_recipe") for f in summary.get("feeds") or [] if f.get("name") == w.get("feed")),
                      None)
-        out.append(f"{LEVEL_WORDS.get(w.get('level'), 'Note')}: {who}{warning_text(w, False, newer)}")
+        out.append(f"{LEVEL_WORDS.get(w.get('level'), 'Note')}{who}: {warning_text(w, False, newer)}")
     return out
 
 
@@ -188,12 +188,12 @@ def size(n: int | None) -> str:
 def next_step(status: str | None, delivers: bool) -> str | None:
     """What to do about a run with this status."""
     if status == "blocked":
-        return ("Look at the files (Open folder). If they are right, use Review and send…; if not, fix the records "
-                "in FOLIO and Run again.")
+        return ("Look at the files (Open folder). Send them with Review and send… if they're right. If not, fix the "
+                "records in FOLIO and Run again.")
     if status == "held" or (status == "built" and delivers):
-        return "Look at the files (Open folder), then use Review and send… if they are right."
+        return "Look at the files (Open folder). Send them with Review and send… if they're right."
     if status == "built":
-        return "This feed has nowhere to send files yet, so they stay on this computer."
+        return "The files stay on this computer. This feed has no delivery yet."
     if status == "failed":
         return "Fix the problem above, then Run again."
     return None
@@ -203,26 +203,24 @@ def warning_text(w: dict, on_feed_page: bool = False, newer: str | None = None) 
     """A site warning in the page's words."""
     code = w.get("code")
     if code == "no-alerts":
-        return ("No alerts are set up, so nobody would hear about a failed scheduled run. Add an email address or a "
-                "chat webhook under Options, Change alerts….")
+        return ("No alerts are set up, so nobody hears about a failed scheduled run. Add an email address or chat "
+                "webhook with Change alerts… under Options.")
     if code == "paused":
-        return ("This feed is paused: scheduled runs skip it. You can still preview and run it here; Resume starts "
-                "the schedule again." if on_feed_page else
-                "Paused: scheduled runs skip it. You can still preview and run it on its page, and resume it there.")
+        return ("This feed is paused. Resume it to run on its schedule." if on_feed_page else
+                "This feed is paused. Scheduled runs skip it until you resume it on the feed's page.")
     if code == "recipe-update":
         return (f"A newer version of its recipe{f' ({newer})' if newer else ''} is available. It changes what the "
-                "vendor receives, so the feed stays on its current version until someone reviews the change.")
+                "vendor gets, so the feed keeps its current version until someone reviews the change.")
     if code == "overdue":
         first = str(w.get("text") or "").split(";")[0].rstrip(".")
-        return f"{first}. Check that the task that starts scheduled runs on this computer is still set up and running."
+        return f"{first}. Check that the scheduled task on this computer is still set up and running."
     if code == "alerts-never":
-        return ("Alerts are switched off (alerts.on is never in site.yaml), so a failed run sends no alert. Switch them "
-                "on under Options, Change alerts….")
+        return "Alerts are turned off. Turn them on with Change alerts… under Options."
     if code == "ratio-off":
-        return "The item count check is off, so a sudden drop in items would be sent without a hold for review."
+        return "The item count check is off. A sudden drop in items would be sent without being blocked for review."
     if code == "host-key-unconfirmed":
-        return ("The vendor's SFTP server key is not confirmed yet, so nothing is sent there. Once the vendor gives "
-                "you the fingerprint, enter it under Change delivery… on the feed's Delivery tab.")
+        return ("The vendor's SFTP server key isn't confirmed yet, so nothing is sent. Enter the vendor's fingerprint "
+                "under Change delivery… on the feed's Delivery tab.")
     if code == "task-never":
         return task_words({"state": "never", "text": w.get("text")})
     return page_words(w.get("text"))
@@ -333,12 +331,12 @@ def delivery_rows(d: dict) -> list[tuple[str, str]]:
         where = password_words(d.get("password"))
         if d.get("host_key_fingerprint"):
             key = f"{d['host_key_fingerprint']}. " + (
-                "Confirmed: it matches the fingerprint the vendor gave." if d.get("host_key_confirmed") else
-                "Not confirmed yet: nothing logs in or sends until you enter the vendor's fingerprint under Change "
-                "delivery… on this tab.")
+                "Confirmed. It matches the vendor's fingerprint." if d.get("host_key_confirmed") else
+                "Not confirmed yet. Enter the vendor's fingerprint under Change delivery… before the feed can "
+                "connect.")
         else:
             key = "not read yet"
-        login = ("With a private key, kept in this site's keys folder (only this Windows user can read it)"
+        login = ("With a private key in this site's keys folder. Only this Windows user can read it."
                  if d.get("auth") == "key" else
                  "No password or key is stored yet, so nothing can be sent." if where == "Not stored yet" else
                  f"With a password. {where}.")
@@ -347,7 +345,7 @@ def delivery_rows(d: dict) -> list[tuple[str, str]]:
                 ("Server key", key), ("Login", login)]
     if d.get("transport") == "local":
         return [("Sends to", "A folder on this computer or the network"), ("Folder", d.get("directory") or "")]
-    return [("Sends to", "Nowhere yet. This feed is a dry run: Preview and Run build its files on this computer "
+    return [("Sends to", "Nowhere yet. This feed is a dry run. Preview and Run build its files on this computer "
                          "and send nothing.")]
 
 
@@ -357,7 +355,7 @@ def delivery_check_words(state: dict) -> str:
         return f"The test failed. {page_words(state.get('error')) or 'No reason was given.'}"
     r = state.get("result") or {}
     n = r.get("entries")
-    listing = ("The server does not let this account list the folder, which is usual for upload-only accounts."
+    listing = ("The server doesn't let this account list the folder. That's normal for upload-only accounts."
                if n is None else f"The folder holds {num(n)} {'entry' if n == 1 else 'entries'}.")
     return f"It works. Reached {r.get('where')}. {listing}"
 
@@ -383,10 +381,10 @@ def attention(snap: dict) -> list[tuple[str, str]]:
             why = page_words(waiting.get("held") or waiting.get("error")) or (
                 "built without sending" if waiting.get("status") == "built" else "")
             out.append((name, f"{name}: {status_words(waiting['status'])}. The run of "
-                              f"{when(waiting.get('started'))} is waiting for you{f': {why}' if why else '.'}"))
+                              f"{when(waiting.get('started'))} is waiting for you{f' ({why}).' if why else '.'}"))
         elif last and last.get("status") in ("failed", "blocked"):
             what = "failed" if last["status"] == "failed" else "was blocked"
-            out.append((name, f"{name}: the last run {what} ({when(last.get('started'))}). "
+            out.append((name, f"{name}: The last run {what} ({when(last.get('started'))}). "
                               f"{page_words(last.get('error'))}".rstrip()))
         if d.get("overdue"):                       # as the site's warning words it, without the command it names
             late = str(d["overdue"])
@@ -398,18 +396,22 @@ def attention(snap: dict) -> list[tuple[str, str]]:
 def task_words(task: dict | None, windows: bool | None = None) -> str:
     """The scheduled task's state (feedops.task_status) in the app's words: the command it names is the Options
     page's "Register the scheduled task…" button on Windows, and elsewhere (where there is no such button) the
-    crontab line Options shows. ``windows``: this computer's, unless given."""
+    crontab line Options shows. ``windows``: this computer's, unless given. A task that has never run ("never",
+    or "unneeded" while no feed has a schedule) is worded here rather than in the core's words."""
     text = str((task or {}).get("text") or "")
     if not text:
         return "No feed runs on a schedule yet."
+    if windows is None:
+        windows = platform.system() == "Windows"
+    how = ("Use Register the scheduled task… under Options." if windows else
+           "Add the line shown under Options to this computer's scheduler, with crontab -e.")
+    if (task or {}).get("state") in ("never", "unneeded"):
+        return f"Scheduled runs haven't started yet. No feed runs on its own until the hourly task is registered. {how}"
     parts = re.split(r"(?<=\.)\s+", text)
     kept = [x for x in parts if "schedule --register" not in x]
     if len(kept) == len(parts):
         return text
-    if windows is None:
-        windows = platform.system() == "Windows"
-    return " ".join(kept + ["Register it under Options, with Register the scheduled task…." if windows else
-                            "Add the line shown under Options to this computer's scheduler, with crontab -e."])
+    return " ".join([*kept, how])
 
 
 def free_name(base: str | None, taken: list[str]) -> str:
@@ -427,7 +429,7 @@ def feed_name_problem(name: str, taken: list[str]) -> str | None:
     if not name:
         return "Enter a name for the feed."
     if name in taken:
-        return f"There is already a feed called {name}; choose another name."
+        return f"There's already a feed called {name}. Choose another name."
     return setupops.feed_name_problem(name)
 
 
@@ -450,8 +452,8 @@ def fingerprint_problem(text: str) -> str | None:
         return None
     if re.fullmatch(r"(?i)(?:SHA256:)?[A-Za-z0-9+/]{20,}={0,2}", t):
         return None
-    return ("That does not look like a server key fingerprint. It starts with SHA256: (or is 16 pairs such as "
-            "3f:a2:…); copy it exactly as the vendor gave it.")
+    return ("That doesn't look like a server key fingerprint. It starts with SHA256: or looks like 3f:a2:…:9c. Copy it "
+            "exactly as the vendor gave it.")
 
 
 def schedule_words(text: str) -> str:
@@ -547,12 +549,12 @@ def first_sentence(text: str | None) -> str:
 def permission_words(result: dict) -> tuple[str, list[str]]:
     """A recipe permission check (setupops.recipe_permissions): what it found, and the lines to list."""
     if result.get("ok"):
-        return "Yes: the account can read everything this recipe uses.", []
+        return "Yes. The account can read everything this recipe uses.", []
     lines = [f"Permission missing: {p}" for p in result.get("denied") or []]
-    lines += [f"Could not be read: {x['name']} ({x['path']}): {x['error']}" for x in result.get("failed") or []]
-    words = "Not yet. You can carry on: the feed is saved paused, but its runs fail until this is put right."
+    lines += [f"Couldn't read {x['name']} ({x['path']}): {x['error']}" for x in result.get("failed") or []]
+    words = "Not yet. You can continue, but the feed's runs will fail until this is fixed."
     if result.get("denied"):
-        words += " Ask your FOLIO administrator to give the account the permissions listed."
+        words += " Ask your FOLIO administrator to add the permissions listed."
     return words, lines
 
 
@@ -617,7 +619,7 @@ def check_words(result: dict) -> str:
     """The line above a recipe source's review: the commit, when, and what was downloaded before."""
     commit, was = str(result.get("commit") or ""), result.get("installed_commit")
     before = ("This is the commit last downloaded." if was == commit else
-              f"Last downloaded: commit {str(was)[:7]}." if was else "Nothing has been downloaded from here yet.")
+              f"Last downloaded: commit {str(was)[:7]}." if was else "Nothing has been downloaded from this source yet.")
     return f"Commit {commit[:7]}, checked {when(result.get('checked'))}. {before}"
 
 
@@ -637,6 +639,6 @@ def alert_rows(a: dict) -> list[tuple[str, str]]:
     else:
         mail = "not set up"
     hook = a.get("webhook")
-    chat = (f"{'Microsoft Teams workflow' if hook.get('format') == 'teams' else 'Slack-style'}; the address: "
+    chat = (f"{'Microsoft Teams workflow' if hook.get('format') == 'teams' else 'Slack-style'}, address "
             f"{_lower_first(password_words(hook.get('url')))}" if hook else "not set up")
     return [("When", on), ("Email", mail), ("Chat webhook", chat)]

@@ -127,9 +127,9 @@ def test_a_site_that_cannot_be_read_says_so_and_keeps_the_last_view(qtbot, site,
     w = window(qtbot, site)
     monkeypatch.setattr(model, "snapshot", lambda root: (_ for _ in ()).throw(OSError("the drive is gone")))
     w.refresh()
-    qtbot.waitUntil(lambda: "Could not read" in w.banner.text(), timeout=15000)
+    qtbot.waitUntil(lambda: "Couldn't load" in w.banner.text(), timeout=15000)
     assert w.banner.isVisible()
-    assert "Could not read the site: the drive is gone" in w.banner.text()
+    assert "Couldn't load the site: the drive is gone" in w.banner.text()
     assert "chq – On, no runs yet" in sidebar(w)
 
 
@@ -151,7 +151,7 @@ def test_site_yaml_that_does_not_load_is_shown(qtbot, tmp_path):
     (tmp_path / "site.yaml").write_text("folio: [not, a, mapping]\n", encoding="utf-8")
     w = window(qtbot, tmp_path)                    # regression: site_state failed on a folio: that is a list
     assert w.stack.currentWidget() is w.setup
-    assert w.setup.title.text() == "This site's settings do not load" and w.setup.what.isVisible()
+    assert w.setup.title.text() == "This site's settings don't load" and w.setup.what.isVisible()
 
 
 def test_a_first_reading_that_fails_is_shown_in_place(qtbot, site, monkeypatch):
@@ -286,7 +286,10 @@ def test_a_check_right_after_a_rename_on_the_page_uses_the_new_folder(qtbot, sit
     res = siteops.rename_site(site, "renamed", via="ui")
     w.page.app.site_root = type(site)(res["root"])                    # as the page's rename does
     w.check_connection()                                               # no refresh in between
-    qtbot.waitUntil(lambda: w.connection.check_button.isEnabled(), timeout=30000)
+    # Wait for the check itself to end: just after it starts, the button can still be enabled for a moment
+    # (the window marks itself busy on its next look), which once let this read the "Logging in…" line.
+    qtbot.waitUntil(lambda: w.jobs.running() is None and w.watcher is None
+                    and w.connection.check_button.isEnabled(), timeout=30000)
     assert w.connection.state.text().startswith("Logged in"), w.connection.state.text()
     assert w.site_root.name == "renamed"
 
@@ -392,7 +395,7 @@ def test_the_picker_refuses_a_folder_without_site_yaml(qtbot, tmp_path, site):
     picker.ask_folder = lambda: str(tmp_path / "empty")
     (tmp_path / "empty").mkdir()
     picker.open_folder()
-    assert picker.chosen is None and "There is no site.yaml" in picker.error.text()
+    assert picker.chosen is None and "There's no site.yaml" in picker.error.text()
     picker.ask_folder = lambda: str(site)
     picker.open_folder()
     assert picker.chosen == site.resolve() and not picker.is_new
@@ -439,7 +442,7 @@ def test_a_new_site_needs_a_good_name(qtbot, tmp_path):
     dialog.parent_edit.setText(str(tmp_path / "missing"))
     dialog.name_edit.setText("Main Library")
     dialog.accept()
-    assert "not a folder that exists" in dialog.error.text() and not (tmp_path / "missing").exists()
+    assert "isn't a folder that exists" in dialog.error.text() and not (tmp_path / "missing").exists()
     dialog.parent_edit.setText(str(tmp_path))
     assert str(tmp_path / "Main Library") in dialog.full.text()
     dialog.accept()
@@ -486,7 +489,7 @@ def test_a_failure_before_the_window_opens_is_shown_and_logged(qtbot, tmp_path, 
         monkeypatch.setattr(desktop_app.siteops, "make_site_folder", make_site_folder)
     with caplog.at_level(logging.ERROR):
         assert desktop_app.run(str(tmp_path / "fresh"), console=False) == 1
-    assert len(shown) == 1 and shown[0].startswith("FOLIO-Exchange could not start:")
+    assert len(shown) == 1 and shown[0].startswith("FOLIO-Exchange couldn't start:")
     assert ("FileNotFoundError" if where == "the site's log folder" else "PermissionError") in shown[0]
     assert "could not start" in caplog.text and "Traceback" in caplog.text
 
@@ -596,7 +599,7 @@ def test_the_picker_lists_recent_sites_without_looking_at_them(qtbot, tmp_path, 
         qtbot.addWidget(picker)
     assert picker.recent.count() == 1
     picker.open_recent()                                   # only opening it looks, and says it has gone
-    assert picker.chosen is None and "not a folder that exists" in picker.error.text()
+    assert picker.chosen is None and "isn't a folder that exists" in picker.error.text()
 
 
 def test_a_check_during_a_rename_on_the_page_is_refused_at_once(qtbot, site, monkeypatch):
@@ -619,7 +622,7 @@ def test_a_window_open_in_another_windows_session_is_reported(qtbot, site, monke
     monkeypatch.setattr(desktop_app, "setup_logging", lambda *a, **kw: None)     # leave the test's logging be
     monkeypatch.setattr(desktop_app.single, "claim", lambda name: ("elsewhere", None))
     assert desktop_app.run(str(site), console=False) == 1
-    assert shown == [desktop_app.ELSEWHERE] and "another Windows session" in shown[0]
+    assert shown == [desktop_app.ELSEWHERE] and "another of your Windows sessions" in shown[0]
 
 
 # ------------------------------------------------------------ garbage collection off the window's thread

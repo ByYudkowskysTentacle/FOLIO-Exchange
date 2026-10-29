@@ -50,7 +50,7 @@ class SettingsDialog(QDialog):
         self.name = name
         self.saving = False
         self.send: dict = {}
-        self.setWindowTitle(f"FOLIO-Exchange – settings of {name}")
+        self.setWindowTitle(f"FOLIO-Exchange – settings for {name}")
         self.resize(720, 640)
         outer = QVBoxLayout(self)
         self.pages = QStackedWidget()
@@ -71,8 +71,8 @@ class SettingsDialog(QDialog):
         self.lists_note = note(about="FOLIO's lists")
         self.lists_note.hide()
         box.addWidget(self.lists_note)
-        box.addWidget(note("The layout (which columns and fields the vendor gets) comes from the recipe: see the "
-                           "feed's Layout tab.", "About the settings"))
+        box.addWidget(note("The recipe sets which columns and fields the vendor gets. See the feed's Layout tab.",
+                           "About the settings"))
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -95,10 +95,10 @@ class SettingsDialog(QDialog):
         self.status = PickList("Item statuses to leave out")
         self.only = PickList("Only these locations")
         for caption, picker, help_text in (
-                ("&Locations to leave out:", self.loc, "Items in these locations are not sent."),
-                ("Item stat&uses to leave out:", self.status, "Items with these statuses are not sent, for example "
-                 "withdrawn or lost items."),
-                ("&Only these locations:", self.only, "When any are chosen, only items in those locations are sent. "
+                ("&Locations to leave out:", self.loc, "Items in these locations aren't sent."),
+                ("Item stat&uses to leave out:", self.status, "Items with these statuses aren't sent, such as withdrawn "
+                 "or lost items."),
+                ("&Only these locations:", self.only, "If you choose any, only items in those locations are sent. "
                  "Choose none to send every location.")):
             self.rows.add(caption, picker, help_text)
             picker.set_help(help_text)
@@ -122,8 +122,8 @@ class SettingsDialog(QDialog):
         row.addWidget(unit)
         row.addStretch(1)
         self.rows.add("&Block a delivery if the item count falls below:", ratio_row,
-                      "For example 90: a run with fewer than 90% of the items last delivered is held for review "
-                      "instead of being sent. Leave it empty or 0 to switch the check off.", focus=self.ratio)
+                      "At 90, a run with fewer than 90% of the items last delivered is blocked until you review "
+                      "it. Leave it empty or 0 to turn the check off.", focus=self.ratio)
         form.addRow(heading("Items migrated from an older system", 1.0))
         self.legacy = LegacyFields("Settings")
         form.addRow(self.legacy)
@@ -131,10 +131,10 @@ class SettingsDialog(QDialog):
         box.addWidget(scroll, 1)
         self.problem = problem_label()
         box.addWidget(self.problem)
-        self.review_button = theme.primary(button("Re&view changes", "Review the changes before saving them"))
+        self.review_button = theme.primary(button("Re&view changes", "Review changes before saving"))
         self.review_button.setDefault(True)
         self.review_button.clicked.connect(self.show_review)
-        cancel = button("Cancel", "Close without saving")
+        cancel = button("Cancel", "Cancel without saving")
         cancel.clicked.connect(self.reject)
         box.addLayout(actions_row(self.review_button, cancel))
         return w
@@ -156,8 +156,8 @@ class SettingsDialog(QDialog):
         box.addStretch(1)
         self.save_button = theme.primary(button("&Save", "Save the settings"))
         self.save_button.clicked.connect(self._save)
-        self.apply_button = button("&Apply my changes to the file as it is now",
-                                   "Apply my changes to the file as it is now, and review them again")
+        self.apply_button = button("&Apply my changes to the updated file",
+                                   "Apply my changes to the updated file and review them again")
         self.apply_button.clicked.connect(self._reapply)
         self.back_button = button("Back to &editing", "Back to editing")
         self.back_button.clicked.connect(self.back_to_editing)
@@ -171,8 +171,8 @@ class SettingsDialog(QDialog):
         form says so, as the page's does)."""
         self.choices = (choices or {}).get("data")
         error = (choices or {}).get("error")
-        self.lists_note.setText(f"FOLIO's lists could not be read ({error}), so locations and statuses are typed as "
-                                f"codes. {COMMAS}" if error else "")
+        self.lists_note.setText(f"Couldn't read FOLIO's lists ({error}). Type locations and statuses as codes. "
+                                f"{COMMAS}" if error else "")
         self.lists_note.setVisible(bool(error))
 
     def rebase(self, st: dict, overlay: dict | None = None) -> None:
@@ -200,8 +200,8 @@ class SettingsDialog(QDialog):
         self.ratio_start = ratio or 0
         self.ratio.setText(self.ratio_text)
         self.legacy.set_values(start["legacy"], c.get("note_types") if c else None)
-        self.notice.setText("The form now shows the file as it is now, with your changes laid over it. Check them, "
-                            "then save." if overlay else "")
+        self.notice.setText("The form now shows the updated file with your changes on top. Check them, then save."
+                            if overlay else "")
         self.notice.setVisible(bool(overlay))
         self.back_to_editing()
 
@@ -226,7 +226,7 @@ class SettingsDialog(QDialog):
         except ValueError:
             n = -1.0
         if not 0 <= n <= 100:
-            self.rows.fail(self.ratio, "Enter a percentage from 0 to 100, or leave it empty to switch the check off.")
+            self.rows.fail(self.ratio, "Enter a percentage from 0 to 100, or leave it empty to turn the check off.")
             return
         values = self.read()
         bad = ("Enter a schedule, or choose one above." if not values["schedule"]
@@ -238,7 +238,7 @@ class SettingsDialog(QDialog):
         self.review_title.setText("Review changes" if changes else "Nothing has changed")
         self.review_text.setText("<ul>" + "".join(f"<li><b>{_esc(what)}:</b> {_esc(before)} → {_esc(after)}</li>"
                                                   for what, before, after in changes) + "</ul>" if changes else
-                                 "The form is the same as the saved settings.")
+                                 "The form matches the saved settings.")
         self.review_note.setText("Use Preview after saving to see the effect before the next delivery." if changes
                                  else "")
         self.save_button.setVisible(bool(changes))
@@ -261,7 +261,7 @@ class SettingsDialog(QDialog):
         nothing done while the file is read is lost when the answer redraws it."""
         if self.saving:
             return
-        self.working(True, "Reading the file as it is now…")
+        self.working(True, "Reading the updated file…")
         self.reapply.emit(self.send)
 
     def working(self, busy: bool, words: str = "Saving…") -> None:
@@ -281,9 +281,8 @@ class SettingsDialog(QDialog):
     def conflict(self, message: str) -> None:
         """The file changed underneath the form: nothing was saved, and what was entered is still here."""
         self.working(False)
-        self.review_title.setText("Not saved: the file changed")
-        self.review_text.setText(_esc(f"{model.first_sentence(message)} Nothing was saved, and what you entered is "
-                                      "still here."))
+        self.review_title.setText("Not saved because the file changed")
+        self.review_text.setText(_esc(f"{model.first_sentence(message)} What you entered is still here."))
         self.review_note.setText("")
         self.save_button.hide()
         self.close_button.hide()

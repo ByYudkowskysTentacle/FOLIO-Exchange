@@ -43,8 +43,8 @@ from .pages import (
 from .runview import RunView
 
 TABS = ("Overview", "Layout", "Settings", "Delivery", "History")
-NO_RESULT = ("No result yet. Preview builds a sample from live data. Run updates from FOLIO, builds the files and "
-             "sends them, or holds them for you to review.")
+NO_RESULT = ("No results yet. Preview builds sample files from FOLIO. Run builds the files and sends them, or holds "
+             "them for your review.")
 
 
 class Split(QSplitter):
@@ -65,7 +65,7 @@ def scrolled(inner: QWidget) -> QScrollArea:
 
 
 def state_words(enabled: bool) -> str:
-    return "On: scheduled runs include it" if enabled else "Paused: scheduled runs skip it"
+    return "On. Scheduled runs include it." if enabled else "Paused. Scheduled runs skip it."
 
 
 def clear(box: QVBoxLayout) -> None:
@@ -109,14 +109,14 @@ class FeedPage(Page):
         self.box.addWidget(self.title)
         self.sub = text(about="Feed")
         self.box.addWidget(self.sub)
-        self.preview_button = button("Pre&view", "Preview: build sample files and send nothing")
-        self.preview_button.setToolTip("Preview (Ctrl+Enter): builds sample files from live data and sends nothing")
+        self.preview_button = button("Pre&view", "Preview sample files without sending")
+        self.preview_button.setToolTip("Builds sample files from FOLIO and sends nothing (Ctrl+Enter)")
         self.preview_button.clicked.connect(self._preview)
-        self.run_button = theme.primary(button("&Run", "Run: update from FOLIO, build, check, then send or hold for review"))
-        self.run_button.setToolTip("Update from FOLIO, build, check, then send (or hold for review)")
+        self.run_button = theme.primary(button("&Run", "Run and send the files, or hold them for review"))
+        self.run_button.setToolTip("Builds the files from FOLIO and sends them, or holds them for review")
         self.run_button.clicked.connect(self._run)
-        self.build_button = button("&Build only", "Build only: update and build the files, and send nothing")
-        self.build_button.setToolTip("Update and build the files; send nothing")
+        self.build_button = button("&Build only", "Build only, without sending")
+        self.build_button.setToolTip("Builds the files and sends nothing")
         self.build_button.clicked.connect(self._build)
         self.pause_button = button("Pa&use", "Pause this feed")
         self.pause_button.clicked.connect(self._toggle)
@@ -134,7 +134,7 @@ class FeedPage(Page):
         wbox = QVBoxLayout(self.waiting)
         self.waiting_text = text(about="A run waits for you")
         wbox.addWidget(self.waiting_text)
-        self.waiting_folder = button("Open its &folder", "Open the waiting run's folder")
+        self.waiting_folder = button("Open its &folder", "Open its folder (the waiting run)")
         self.waiting_folder.clicked.connect(self._open_waiting_folder)
         self.review_button = theme.primary(button("Review and s&end…", "Review and send the waiting run"))
         self.review_button.clicked.connect(self._review)
@@ -175,7 +175,7 @@ class FeedPage(Page):
             form.addRow(caption(f"{words}:"), self.fields[key])
         self.form = form
         box.addLayout(form)
-        self.setup_delivery = button("Set u&p delivery", "Set up where this feed's files go")
+        self.setup_delivery = button("Set u&p delivery", "Set up delivery")
         self.setup_delivery.clicked.connect(lambda: self.show_tab(3))
         box.addLayout(actions_row(self.setup_delivery))
         box.addStretch(1)
@@ -197,11 +197,11 @@ class FeedPage(Page):
     def _settings(self) -> QWidget:
         w = QWidget()
         box = QVBoxLayout(w)
-        self.edit_button = button("Edit setti&ngs…", "Edit this feed's settings")
+        self.edit_button = button("Edit setti&ngs…", "Edit settings")
         self.edit_button.clicked.connect(lambda: self.edit_settings.emit(self.name))
         box.addLayout(actions_row(self.edit_button))
-        box.addWidget(text("The layout (which columns and fields the vendor gets) comes from the recipe: see the "
-                           "Layout tab.", "About the settings"))
+        box.addWidget(text("The recipe sets which columns and fields the vendor gets. See the Layout tab.",
+                           "About the settings"))
         self.basics = Facts()
         box.addWidget(self.basics)
         box.addWidget(heading("Filters", 1.0))
@@ -234,12 +234,12 @@ class FeedPage(Page):
         self.server_key = lines_label("The server's key, as read when the delivery was saved")
         self.server_key.hide()
         box.addWidget(self.server_key)
-        self.change_button = button("&Change delivery…", "Change where this feed's files go")
+        self.change_button = button("&Change delivery…", "Change delivery")
         self.change_button.clicked.connect(lambda: self.change_delivery.emit(self.name))
-        self.test_button = button("&Test delivery", "Test delivery: log in and look at the folder, send nothing")
-        self.test_button.setToolTip("Logs in and looks at the folder; it sends nothing.")
+        self.test_button = button("&Test delivery", "Test delivery without sending")
+        self.test_button.setToolTip("Logs in and checks the folder. Sends nothing.")
         self.test_button.clicked.connect(self._test)
-        self.test_why = text("The test waits until the server key is confirmed.", "Why the test waits")
+        self.test_why = text("You can test the delivery once the server key is confirmed.", "Why the test waits")
         box.addLayout(actions_row(self.change_button, self.test_button, self.test_why))
         self.test_result = text(about="Delivery test")
         box.addWidget(self.test_result)
@@ -251,7 +251,7 @@ class FeedPage(Page):
         self.paused_text = text(about="This feed is paused")
         box.addWidget(self.paused_title)
         box.addWidget(self.paused_text)
-        self.resume_button = theme.primary(button("Resume feed", "Resume this feed"))
+        self.resume_button = theme.primary(button("Resume feed", "Resume feed"))
         self.resume_button.clicked.connect(lambda: self.set_enabled.emit(self.name, True))
         self.resume_row = QWidget()
         self.resume_row.setLayout(actions_row(self.resume_button))
@@ -330,7 +330,7 @@ class FeedPage(Page):
         why = model.page_words(w.get("held") or w.get("error")) or (
             "built without sending" if w.get("status") == "built" else "")
         self.waiting_text.setText(f"{model.status_words(w['status'])}. The run of {model.when(w.get('started'))} "
-                                  f"is waiting for you{f': {why}' if why else '.'}")         # as Home words it
+                                  f"is waiting for you{f' ({why}).' if why else '.'}")       # as Home words it
         self.waiting_folder.setVisible(bool(w.get("folder")))
 
     def _show_overview(self, d: dict, warnings: list[dict]) -> None:
@@ -341,8 +341,8 @@ class FeedPage(Page):
         transport = (d.get("delivery") or {}).get("transport")
         self.setup_delivery.setVisible(not transport or transport == "none")
         if not transport or transport == "none":
-            notes.append("This feed has nowhere to send files yet: it is a dry run. Preview and Run build its files "
-                         "on this computer only.")
+            notes.append("This feed is a dry run with no delivery yet. Preview and Run build its files on this "
+                         "computer only.")
         for w in warnings:
             if w.get("feed") == d["name"] and w.get("code") != "feed-file":
                 level = model.LEVEL_WORDS.get(w.get("level"), "Note")
@@ -439,14 +439,13 @@ class FeedPage(Page):
         self.paused_text.setVisible(paused)
         self.resume_row.setVisible(paused)
         if paused:
-            parts = ["Its schedule does not run it, but you can still Preview and Run it by hand."]
-            parts.append("It has no delivery yet: resumed, its scheduled runs only build files on this computer."
-                         if transport == "none" else
-                         "Resuming lets the schedule run it. The first delivery to a new destination is held for "
-                         "your review anyway: nothing reaches the vendor until you have looked at the files and "
-                         "chosen Review and send…")
+            parts = ["Scheduled runs skip it. You can still Preview and Run it by hand."]
+            parts.append("It has no delivery yet. If you resume it, its scheduled runs only build files on this "
+                         "computer." if transport == "none" else
+                         "Resuming lets the schedule run it. The first delivery to a new destination is still held "
+                         "until you look at the files and choose Review and send…")
             if self.unconfirmed:
-                parts.append("The server key is not confirmed yet, so nothing is sent even when it runs. Enter the "
+                parts.append("The server key isn't confirmed yet, so nothing is sent even when it runs. Enter the "
                              "vendor's fingerprint under Change delivery… first.")
             self.paused_text.setText(" ".join(parts))
 
@@ -496,7 +495,7 @@ class FeedPage(Page):
         lines = list((self.results.get(name) or {}).get("lines") or [])     # the watcher sent them all already
         if state.get("status") != "done":
             self.results[name] = {"state": "error", "error": state.get("error"), "lines": lines}
-            words = f"Did not run: {model.page_words(state.get('error'))}"
+            words = f"Didn't run: {model.page_words(state.get('error'))}"
         else:
             res = state.get("result") or {}
             self.results[name] = {"state": "done", "status": res.get("status"), "run": res.get("run") or {},
@@ -546,11 +545,11 @@ class FeedPage(Page):
         if not key:
             set_lines(self.server_key, [], "")
         elif offered and len(offered) > 1:
-            set_lines(self.server_key, [f"The server offers several keys, as read when you saved. The "
+            set_lines(self.server_key, [f"The server offered several keys when you saved. The "
                                         f"{key.get('type') or 'first'} key is the one kept for this feed."]
                       + [f"{k.get('type') or 'key'}: {k['sha256']} (older form: {k['md5']})" for k in offered], "")
         else:
-            set_lines(self.server_key, [f"The server's key, as read when you saved: {key['sha256']} (older form: "
+            set_lines(self.server_key, [f"Server key read when you saved: {key['sha256']} (older form: "
                                         f"{key['md5']})"], "")
         self.server_key.setVisible(bool(key))
 
@@ -569,8 +568,8 @@ class FeedPage(Page):
     def feed_added(self, name: str, title: str) -> None:
         """A feed added in the wizard: its Delivery tab says what it is, as the page's does."""
         self.tabs.setCurrentIndex(3)
-        self.added.setText(f"{title} is added, as a paused dry run. You can Preview and Run it now: its files stay on "
-                           "this computer. Nothing is sent to the vendor until a delivery is set up here.")
+        self.added.setText(f"Added {title} as a paused dry run. Nothing is sent to the vendor until you set up a "
+                           "delivery with Change delivery… on this tab. You can Preview and Run it now.")
         self.added.show()
         self.added.setFocus(Qt.FocusReason.OtherFocusReason)     # the window moved here itself: say where, and why
         announce(self.added)
@@ -579,7 +578,7 @@ class FeedPage(Page):
         return (self.results.get(self.name) or {}).get("state") == "running"
 
     def delivery_check_started(self, name: str) -> None:
-        self.checks[name] = "Testing the delivery. It logs in and looks at the folder; it sends nothing."
+        self.checks[name] = "Testing the delivery. It logs in and checks the folder. It sends nothing."
         if name == self.name:
             self.test_result.setText(self.checks[name])
             self.test_result.show()

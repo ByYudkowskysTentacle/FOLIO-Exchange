@@ -45,7 +45,7 @@ def _with_default(words: str, default: list[str], what: str) -> str:
     if not default:
         return words
     return (f"{words} The recipe {what} {', '.join(default)} by default, so "
-            f"{'it starts' if len(default) == 1 else 'they start'} ticked.")
+            f"{'it starts' if len(default) == 1 else 'they start'} checked.")
 
 
 class OneStep(QWidget):
@@ -110,11 +110,11 @@ class FeedWizard(Page):
         self.box.addWidget(self.steps)
         self.problem = problem_label()
         self.box.addWidget(self.problem)
-        self.back_button = button("&Back", "Back to the step before")
+        self.back_button = button("&Back", "Back to the previous step")
         self.back_button.clicked.connect(self.back)
         self.next_button = theme.primary(button("&Next", "Next step"))
         self.next_button.clicked.connect(self.next)
-        self.add_button = theme.primary(button("&Add feed", "Add the feed, paused and as a dry run"))
+        self.add_button = theme.primary(button("&Add feed", "Add feed, paused and as a dry run"))
         self.add_button.clicked.connect(self._add)
         self.cancel_button = button("Cancel", "Cancel adding a feed")
         self.cancel_button.clicked.connect(self.cancelled.emit)
@@ -140,7 +140,7 @@ class FeedWizard(Page):
         box.addWidget(self.recipe_state)
         self.recipe_list = QListWidget()
         self.recipe_list.setAccessibleName("Installed recipes")
-        self.recipe_list.setAccessibleDescription("Press Enter to choose a recipe and go on.")
+        self.recipe_list.setAccessibleDescription("Press Enter to choose a recipe and continue.")
         self.recipe_list.setWordWrap(True)
         self.recipe_list.itemActivated.connect(lambda _item: self.next())
         box.addWidget(self.recipe_list)
@@ -161,8 +161,8 @@ class FeedWizard(Page):
         self.name_edit.setMaxLength(60)
         self.title_edit = edit("Title")
         self.title_edit.setMaxLength(200)
-        self.name_rows.add("Feed na&me:", self.name_edit, "Lowercase letters, digits and hyphens. It names the feed's "
-                           "settings file and its folder of runs.")
+        self.name_rows.add("Feed na&me:", self.name_edit, "Lowercase letters, digits and hyphens. It's used for the "
+                           "feed's settings file and its run folder.")
         self.name_rows.add("T&itle:", self.title_edit, "How the feed is shown in this app and in alerts.")
         for e in (self.name_edit, self.title_edit):
             e.returnPressed.connect(self.next)
@@ -170,19 +170,19 @@ class FeedWizard(Page):
         box.addWidget(heading("Can the FOLIO account read what this recipe needs?", 1.0))
         self.perm_state = note(about="Permission check")
         box.addWidget(self.perm_state)
-        self.perm_lines = lines_label("What the account cannot read")
+        self.perm_lines = lines_label("What the account can't read")
         box.addWidget(self.perm_lines)
-        self.perm_button = button("Check &permissions again", "Check the account's permissions again")
+        self.perm_button = button("Check &permissions again", "Check permissions again")
         self.perm_button.clicked.connect(self._check_permissions)
         box.addLayout(actions_row(self.perm_button))
         return w
 
     def _records_step(self) -> QWidget:
-        w, box = self._step("3. Choose which records to send", "Leave out what the vendor should not get. All of "
-                                                                "this can be changed later on the feed's Settings tab.")
+        w, box = self._step("3. Choose which records to send", "Choose what the vendor shouldn't get. You can change "
+                                                                "this later on the feed's Settings tab.")
         self.choices_state = note(about="FOLIO's lists")
         box.addWidget(self.choices_state)
-        self.choices_button = button("&Read the lists again", "Read the locations and note types from FOLIO again")
+        self.choices_button = button("&Read the lists again", "Read the lists again")
         self.choices_button.clicked.connect(self._read_again)
         box.addLayout(actions_row(self.choices_button))
         form = QFormLayout()
@@ -200,8 +200,8 @@ class FeedWizard(Page):
         return w
 
     def _schedule_step(self) -> QWidget:
-        w, box = self._step("4. Choose when it runs", "The feed is saved paused, so it does not run on this schedule "
-                                                      "until you resume it.")
+        w, box = self._step("4. Choose when it runs", "The feed starts paused. It runs on this schedule once you "
+                                                      "resume it.")
         self.schedule = SchedulePicker("New feed")
         box.addWidget(self.schedule)
         self.schedule_problem = problem_label()
@@ -213,8 +213,8 @@ class FeedWizard(Page):
         w, box = self._step("5. Check and add", None)
         self.summary = Facts()
         box.addWidget(self.summary)
-        box.addWidget(note("The feed is saved paused and with nowhere to send files: a dry run. You can preview and "
-                           "run it straight away, and nothing is sent to the vendor until you set up its delivery.",
+        box.addWidget(note("The feed starts paused, as a dry run with no delivery. You can preview and run it right "
+                           "away. Nothing is sent to the vendor until you set up its delivery.",
                            "What adding does"))
         return w
 
@@ -363,7 +363,7 @@ class FeedWizard(Page):
         """views.recipes_overview, or why it could not be read."""
         if error:
             self.recipes = None
-            self.recipe_state.setText(f"The recipes could not be read: {error}")
+            self.recipe_state.setText(f"Couldn't load the recipes: {error}")
             return
         self.recipes = list((data or {}).get("recipes") or [])
         self.recipe_list.clear()
@@ -422,7 +422,7 @@ class FeedWizard(Page):
             self.perm_state.setText("Checking with FOLIO…")
             set_lines(self.perm_lines, [], "")
         elif p.get("error"):
-            self.perm_state.setText(f"The check could not run: {p['error']}")
+            self.perm_state.setText(f"The check couldn't run: {p['error']}")
             set_lines(self.perm_lines, [], "")
         else:
             words, lines = model.permission_words(p.get("result") or {})
@@ -484,17 +484,17 @@ class FeedWizard(Page):
         c = (self.choices or {}).get("data")
         error = (self.choices or {}).get("error")
         self.choices_state.setText("Reading locations and note types from FOLIO…" if self.reading or self.choices is None
-                                   else f"The lists could not be read from FOLIO ({error}). You can type codes "
-                                   "instead, separated by commas, or carry on and set this later." if error else "")
+                                   else f"Couldn't read the lists from FOLIO ({error}). You can type codes "
+                                   "instead, separated by commas, or continue and set this later." if error else "")
         self.choices_state.setVisible(bool(self.choices_state.text()))
         self.choices_button.setVisible(bool(error) and not self.reading)
         default = model.recipe_lists((self.W.get("recipe") or {}).get("selection"))
         for picker, caption, key, words, what, missing in (
-                (self.loc, self.loc_caption, "exclude_location_codes", "Items in these locations are not sent.",
+                (self.loc, self.loc_caption, "exclude_location_codes", "Items in these locations aren't sent.",
                  "leaves out", model.MISSING_LOCATION),
-                (self.status, self.status_caption, "exclude_item_statuses", "Items with these statuses are not "
-                 "sent, for example withdrawn or lost items.", "leaves out", model.MISSING_STATUS),
-                (self.only, self.only_caption, "include_location_codes", "When any are chosen, only items in those "
+                (self.status, self.status_caption, "exclude_item_statuses", "Items with these statuses aren't "
+                 "sent, such as withdrawn or lost items.", "leaves out", model.MISSING_STATUS),
+                (self.only, self.only_caption, "include_location_codes", "If you choose any, only items in those "
                  "locations are sent. Choose none to send every location.", "sends only", model.MISSING_LOCATION)):
             options = (status_options(c) if key == "exclude_item_statuses" else location_options(c)) if c else None
             picker.set_options(options, self.W[key], missing)
@@ -521,7 +521,7 @@ class FeedWizard(Page):
             ("Migrated values", "; ".join(legacy) or "none"),
             ("Schedule", model.schedule_words(W["schedule"])),
             ("Permissions", "not checked" if not result else "the account can read everything it needs"
-             if result.get("ok") else "missing some: runs fail until the FOLIO administrator adds them"),
+             if result.get("ok") else "missing some, so runs will fail until your FOLIO administrator adds them"),
         ])
 
     def request(self) -> dict:
@@ -551,4 +551,4 @@ class FeedWizard(Page):
     def failed(self, message: str) -> None:
         self.busy = False
         self._enable()
-        self._fail(f"The feed was not added. {message}")
+        self._fail(f"The feed wasn't added. {message}")

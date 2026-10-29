@@ -19,11 +19,10 @@ from .worker import MainThreadCollector
 
 log = logging.getLogger(__name__)
 
-BUSY = ("FOLIO-Exchange already seems to be open for this site, but its window does not answer. Close it (or end "
-        "it in Task Manager) and start it again.")
-ELSEWHERE = ("FOLIO-Exchange is already open for this site in another Windows session of yours (another sign-in "
-             "to this computer, through Remote Desktop for example). Use it there, or close it there and start it "
-             "again here.")
+BUSY = ("FOLIO-Exchange seems to be open for this site already, but its window isn't responding. Close it, or end "
+        "it in Task Manager, and start it again.")
+ELSEWHERE = ("FOLIO-Exchange is already open for this site in another of your Windows sessions, such as a Remote "
+             "Desktop sign-in. Use it there, or close it there and start it again here.")
 _reporting = False
 
 
@@ -48,7 +47,7 @@ def report_unexpected(exc_type, exc, tb) -> None:
     _reporting = True
     try:
         alert(None, f"Something went wrong: {exc_type.__name__}: {exc}\n\nThe details are in the site's "
-              "logs/folio-exchange.log. If the window misbehaves now, close it and start it again.",
+              "logs/folio-exchange.log. If the window stops working properly, close it and start it again.",
               QMessageBox.Icon.Critical)
     finally:
         _reporting = False
@@ -87,7 +86,7 @@ def run(named: str | None, *, verbose: bool = False, console: bool = True) -> in
         return _run(qapp, named, verbose, console)
     except Exception as exc:  # noqa: BLE001 - before the window there is no excepthook, and pythonw no console
         log.exception("FOLIO-Exchange could not start")
-        fail(f"FOLIO-Exchange could not start: {type(exc).__name__}: {exc}", console)
+        fail(f"FOLIO-Exchange couldn't start: {type(exc).__name__}: {exc}", console)
         return 1
     finally:
         collector.stop()

@@ -118,10 +118,10 @@ def folder_problem(folder: Path) -> str | None:
     setup was not finished (it opens on "Set up this site", as with --site)."""
     folder = Path(folder)
     if not folder.is_dir():
-        return f"{folder} is not a folder that exists. Choose the site folder again."
+        return f"{folder} isn't a folder that exists. Choose the site folder again."
     if not (folder / SITE_FILE).is_file() and not unfinished_site(folder):
-        return (f"There is no {SITE_FILE} in {folder}, so it is not a FOLIO-Exchange site. Choose the folder "
-                f"that holds {SITE_FILE}, or use \"Set up a new site\" to start one.")
+        return (f"There's no {SITE_FILE} in {folder}, so it isn't a FOLIO-Exchange site. Choose the folder "
+                f"that holds {SITE_FILE}, or use \"Set up a new site…\" to start one.")
     return None
 
 
@@ -131,17 +131,17 @@ def new_site_problem(parent: Path | str, name: str) -> str | None:
         return "Choose the folder to put the new site in."
     parent = Path(parent).expanduser()
     if not parent.is_dir():
-        return f"{parent} is not a folder that exists. Choose a folder that does."
+        return f"{parent} isn't a folder that exists. Choose another folder."
     problem = name_problem(name)
     if problem:
         return problem
     target = parent / name
     if (target / SITE_FILE).is_file():
-        return f"{target} is already a site. Open it with \"Open a site folder\" instead."
+        return f"{target} is already a site. Open it instead."
     if target.exists() and not target.is_dir():
         return f"{target} is a file. Choose another name."
     if target.is_dir() and any(target.iterdir()) and not unfinished_site(target):
-        return f"{target} already holds other files. Choose another name, or an empty folder."
+        return f"{target} isn't empty. Choose an empty folder or another name."
     return None
 
 
