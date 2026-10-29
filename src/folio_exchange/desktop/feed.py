@@ -10,8 +10,18 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QApplication, QFormLayout, QFrame, QLabel, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QFormLayout,
+    QFrame,
+    QLabel,
+    QScrollArea,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import model
 from .delivery import LoginBox
@@ -35,6 +45,23 @@ from .runview import RunView
 TABS = ("Overview", "Layout", "Settings", "Delivery", "History")
 NO_RESULT = ("No result yet. Preview builds a sample from live data. Run updates from FOLIO, builds the files and "
              "sends them, or holds them for you to review.")
+
+
+class Split(QSplitter):
+    """The sections and the result, filling the page's height rather than setting it: asked how tall it would
+    like to be, it says no taller than it must be, so the page fits the window and the two share it."""
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt's naming
+        return QSize(super().sizeHint().width(), self.minimumSizeHint().height())
+
+
+def scrolled(inner: QWidget) -> QScrollArea:
+    """A section that scrolls on its own, so the sections and the result below share the window's height."""
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QScrollArea.Shape.NoFrame)
+    area.setWidget(inner)
+    return area
 
 
 def state_words(enabled: bool) -> str:
@@ -116,17 +143,21 @@ class FeedPage(Page):
 
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("Feed sections")
-        self.tabs.addTab(self._overview(), TABS[0])
-        self.tabs.addTab(self._layout(), TABS[1])
-        self.tabs.addTab(self._settings(), TABS[2])
-        self.tabs.addTab(self._delivery(), TABS[3])
-        self.tabs.addTab(self._history(), TABS[4])
+        for build, title in zip((self._overview, self._layout, self._settings, self._delivery, self._history), TABS, strict=True):
+            self.tabs.addTab(scrolled(build()), title)
         self.tabs.currentChanged.connect(self._tab_changed)
-        self.box.addWidget(self.tabs)
         self.result = RunView(NO_RESULT)
         self.result.open_folder.connect(self.open_folder)
         self.result.rows_wanted.connect(self._rows_wanted)
-        self.box.addWidget(self.result)
+        # The sections above, the result below, with a handle between: an action's result (a preview's rows) takes
+        # most of the height when it starts, rather than waiting below the window for the person to scroll to it.
+        self.split = Split(Qt.Orientation.Vertical)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(self.tabs)
+        self.split.addWidget(self.result)
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 0)
+        self.box.addWidget(self.split, 1)
 
     # ------------------------------------------------------------ the tabs
     def _overview(self) -> QWidget:
@@ -270,6 +301,7 @@ class FeedPage(Page):
         self.tabs.setTabText(4, f"History ({len(runs)})")
         if another:                                     # a result changes through job_*, show_run and show_rows
             self.result.show_result(self.results.get(self.name), self.delivers())
+            self.room_for_result(bool(self.results.get(self.name)))
         self.set_idle(self.idle, reviewing=self.reviewing, toggling=self.toggling)
 
     def delivers(self) -> bool:
@@ -448,6 +480,7 @@ class FeedPage(Page):
         if name == self.name:
             self.say(None)
             self.result.show_result(self.results[name], self.delivers())
+            self.room_for_result(True)
 
     def job_lines(self, name: str, lines: list[str]) -> None:
         res = self.results.get(name)
@@ -484,7 +517,18 @@ class FeedPage(Page):
         if name == self.name:
             self.say(f"Showing the run of {model.when(detail.get('started'))} below.")
             self.result.show_result(self.results[name], self.delivers())
+            self.room_for_result(True)
         return True
+
+    def room_for_result(self, wanted: bool) -> None:
+        """Give the result most of the height (an action started, or a run was opened), or only what it needs (no
+        result yet). The person can still move the handle between them."""
+        total = sum(self.split.sizes())
+        if total <= 0:
+            return                                      # not laid out yet: the stretch factors decide
+        need = self.result.sizeHint().height()
+        below = max(total * 3 // 5, need) if wanted else min(need, total // 2)
+        self.split.setSizes([total - below, below])
 
     def show_rows(self, name: str, run_id: int, rows: dict | None, error: str | None = None) -> None:
         res = self.results.get(name) or {}

@@ -10,7 +10,14 @@ Everything works from the keyboard: Enter in a field or on a recipe moves on, an
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFormLayout, QLabel, QListWidget, QListWidgetItem, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFormLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .. import setupops
 from . import model
@@ -41,6 +48,35 @@ def _with_default(words: str, default: list[str], what: str) -> str:
             f"{'it starts' if len(default) == 1 else 'they start'} ticked.")
 
 
+class OneStep(QWidget):
+    """The wizard's steps, one shown at a time. Not a QStackedWidget: a stack is as tall as its tallest page, so the
+    long lists of Records would push a short step's fields (the schedule) below the window. Hidden steps here take
+    no room."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(0, 0, 0, 0)
+        self.pages: list[QWidget] = []
+        self.current = 0
+
+    def addWidget(self, page: QWidget) -> None:  # noqa: N802 - as QStackedWidget's
+        page.setVisible(not self.pages)
+        self.pages.append(page)
+        self.box.addWidget(page)
+
+    def setCurrentIndex(self, n: int) -> None:  # noqa: N802
+        self.current = n
+        for i, page in enumerate(self.pages):
+            page.setVisible(i == n)
+
+    def currentIndex(self) -> int:  # noqa: N802
+        return self.current
+
+    def currentWidget(self) -> QWidget:  # noqa: N802
+        return self.pages[self.current]
+
+
 class FeedWizard(Page):
     want_recipes = Signal()
     want_permissions = Signal(str)          # the recipe's uses, e.g. chq-academic@^1.0
@@ -65,10 +101,12 @@ class FeedWizard(Page):
         self.where.setTextFormat(Qt.TextFormat.PlainText)
         self.where.setAccessibleDescription("Step")
         self.box.addWidget(self.where)
-        self.steps = QStackedWidget()
+        self.steps = OneStep()
         self.steps.setAccessibleName("Steps of adding a feed")
         for build in (self._recipe_step, self._name_step, self._records_step, self._schedule_step, self._add_step):
-            self.steps.addWidget(build())
+            step = build()
+            step.layout().addStretch(1)             # a short step keeps its rows together at the top
+            self.steps.addWidget(step)
         self.box.addWidget(self.steps)
         self.problem = problem_label()
         self.box.addWidget(self.problem)
@@ -210,6 +248,7 @@ class FeedWizard(Page):
     def _show_step(self) -> None:
         n = self.W["step"]
         self.steps.setCurrentIndex(n)
+        self.verticalScrollBar().setValue(0)            # each step starts at its top
         after = f" Next: {STEPS[n + 1]}." if n + 1 < len(STEPS) else ""
         self.where.setText(f"Step {n + 1} of {len(STEPS)}: {STEPS[n]}.{after}")
         self.back_button.setVisible(n > 0)

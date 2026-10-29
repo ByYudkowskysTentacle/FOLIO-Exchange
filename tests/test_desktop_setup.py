@@ -18,7 +18,7 @@ from conftest import QT_LOADS
 if not QT_LOADS:
     pytest.skip("needs the desktop extra (PySide6) and pytest-qt, and a Qt that loads", allow_module_level=True)
 
-from PySide6.QtCore import QEvent, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, Qt  # noqa: E402
 from PySide6.QtGui import QAccessible, QTextDocument  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
@@ -418,6 +418,39 @@ def test_the_wizard_works_from_the_keyboard(qtbot, site):
     qtbot.keyClick(wz.add_button, Qt.Key.Key_Space)
     qtbot.waitUntil(lambda: w.stack.currentWidget() is w.feed and w.feed.name == "kb", timeout=LONG)
     assert read_yaml(site / "feeds" / "kb.yaml")["file_prefix"] == "kb"   # never chq's files at the same vendor
+
+
+def test_each_wizard_step_fits_the_window_and_starts_at_its_top(qtbot, site):
+    """Regression: every step was as tall as Records (a stack is as tall as its tallest page), so the schedule's
+    choices sat below the window, and Check and add opened scrolled down to its buttons, past its own heading."""
+    w = window(qtbot, site)
+    w.resize(1100, 760)
+    w.select("add")
+    wz = w.wizard
+
+    def in_view(widget) -> bool:
+        top = widget.mapTo(wz.viewport(), QPoint(0, 0)).y()
+        return 0 <= top and top + widget.height() <= wz.viewport().height()
+
+    qtbot.waitUntil(lambda: wz.recipe_list.count() > 0, timeout=LONG)
+    click(qtbot, wz.next_button)
+    wz.name_edit.setText("fits")
+    click(qtbot, wz.next_button)
+    qtbot.waitUntil(lambda: wz.next_button.isEnabled(), timeout=LONG)
+    bar = wz.verticalScrollBar()
+    qtbot.waitUntil(lambda: bar.maximum() > 0, timeout=5000)           # Records' long lists do scroll…
+    bar.setValue(bar.maximum())                                        # …and the person went down to Next
+    click(qtbot, wz.next_button)
+    assert wz.step() == 3
+    qtbot.waitUntil(lambda: bar.maximum() == 0, timeout=5000)          # the schedule fits: nothing to scroll to
+    assert all(in_view(r) for r in wz.schedule.radios.values()) and in_view(wz.schedule.other)
+    click(qtbot, wz.next_button)
+    assert wz.step() == 4
+    qtbot.waitUntil(lambda: bar.maximum() == 0, timeout=5000)
+    assert bar.value() == 0 and in_view(wz.steps.currentWidget().heading) and in_view(wz.add_button)
+    click(qtbot, wz.back_button)
+    click(qtbot, wz.back_button)
+    assert wz.step() == 2 and bar.value() == 0                          # back at the top of Records too
 
 
 def test_without_folios_lists_the_wizard_takes_typed_codes(qtbot, site, monkeypatch):

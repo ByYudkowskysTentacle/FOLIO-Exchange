@@ -28,6 +28,7 @@ class RunView(QWidget):
         self.run_id: int | None = None
         self.kind = ""
         self.started = 0.0
+        self.running = False                  # the action under way is shown, with its log
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         self.title = heading("Result", 1.15)
@@ -91,6 +92,7 @@ class RunView(QWidget):
 
     def show_empty(self, words: str | None = None) -> None:
         self.tick.stop()
+        self.running = False
         self.run_id = None
         self.head.setText(words or self.empty_words)
         self.folder_button.hide()
@@ -105,6 +107,7 @@ class RunView(QWidget):
         state = result.get("state")
         lines = result.get("lines")
         if state == "running":
+            self.running = True
             self.run_id = None
             self.started = result.get("since") or time.monotonic()
             self.kind = result.get("kind")
@@ -116,6 +119,7 @@ class RunView(QWidget):
             self.tabs.setCurrentWidget(self.log)
             return
         self.tick.stop()
+        was_running, self.running = self.running, False
         if state == "error":
             self.run_id = None
             self.head.setText(f"Did not run: {model.page_words(result.get('error')) or 'no reason was given'}")
@@ -123,7 +127,10 @@ class RunView(QWidget):
             self.log.setPlainText("\n".join(lines or []))
             self._tabs(False, False, bool(lines))
             return
+        before = self.run_id
         self._show_run(result, delivers)
+        if was_running or self.run_id != before:        # an action just ended, or another run: its rows first
+            self.tabs.setCurrentIndex(0)
 
     def _show_time(self) -> None:
         doing = model.DOING_WORDS.get(self.kind, "Working")

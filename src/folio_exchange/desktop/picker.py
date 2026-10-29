@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QStandardPaths, Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -19,9 +19,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import siteops
+from .. import setupops, siteops
 from ..errors import ConfigError
 from . import places
+from .pages import heading
 
 
 def _error_label() -> QLabel:
@@ -40,6 +41,16 @@ def _show_error(label: QLabel, text: str | None) -> None:
 
 def _html(text: str | None) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def default_parent() -> Path | None:
+    """Where a new site goes unless the person chooses: Documents, or the home folder when Documents is synced
+    (OneDrive moves it there on many computers, and a site must not live in a synced folder)."""
+    for where in (QStandardPaths.StandardLocation.DocumentsLocation, QStandardPaths.StandardLocation.HomeLocation):
+        folder = QStandardPaths.writableLocation(where)
+        if folder and Path(folder).is_dir() and not setupops.synced_folder(folder):
+            return Path(folder)
+    return None
 
 
 class NewSiteDialog(QDialog):
@@ -88,7 +99,12 @@ class NewSiteDialog(QDialog):
         self.name_edit.textChanged.connect(self._preview)
         self.setTabOrder(self.parent_edit, browse)
         self.setTabOrder(browse, self.name_edit)
+        start = default_parent()
+        if start is not None:                           # a place to start; the name is what most people type
+            self.parent_edit.setText(str(start))
+            self.name_edit.setFocus(Qt.FocusReason.OtherFocusReason)
         self._preview()
+        self.resize(560, self.sizeHint().height())
 
     def ask_folder(self) -> str:
         """The folder dialog (tests replace this)."""
@@ -132,6 +148,10 @@ class SitePicker(QDialog):
         self.setWindowTitle("FOLIO-Exchange – choose a site")
         self.chosen: Path | None = None
         self.is_new = False
+        title = heading("FOLIO-Exchange")
+        about = QLabel("Scheduled exports from FOLIO to your vendors, such as collectionHQ: you choose what each "
+                       "vendor gets, preview it, and nothing is sent until you say so.")
+        about.setWordWrap(True)
         intro = QLabel("Each library's FOLIO-Exchange lives in a site folder. Open one, or set up a new site.")
         intro.setWordWrap(True)
         recent_label = QLabel("&Recent sites:")
@@ -168,11 +188,20 @@ class SitePicker(QDialog):
         row.addWidget(folder_button)
         row.addWidget(new_button)
         row.addWidget(cancel)
+        if not self.recent.count():                     # a first start: setting up is what Enter does
+            for b in (self.open_button, folder_button, cancel):
+                b.setAutoDefault(False)
+            new_button.setDefault(True)
+            new_button.setFocus(Qt.FocusReason.OtherFocusReason)
         layout = QVBoxLayout(self)
+        layout.addWidget(title)
+        layout.addWidget(about)
         layout.addWidget(intro)
         layout.addWidget(recent_label)
         layout.addWidget(self.recent)
         layout.addWidget(self.error)
+        if not self.recent.count():
+            layout.addStretch(1)
         layout.addLayout(row)
         self.resize(640, 360)
 
