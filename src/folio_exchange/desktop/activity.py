@@ -21,8 +21,7 @@ class ActivityPage(Page):
         self.listed: dict | None = None
         self.delivers: dict[str, bool] = {}
         self.box.addWidget(heading("Activity"))
-        self.box.addWidget(text("Runs of every feed, and changes to the site's settings, releases, overrides and "
-                                "secrets stored, newest first.", "About Activity"))
+        self.box.addWidget(text("Every feed's runs and every change to the site, newest first.", "About Activity"))
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("Activity")
         runs = QWidget()
@@ -79,7 +78,7 @@ class ActivityPage(Page):
     def show_run(self, detail: dict, rows: dict | None, rows_error: str | None = None) -> None:
         self.shown = {"state": "done", "run": detail, "report": detail.get("report") or {}, "rows": rows,
                       "rows_error": rows_error}
-        self.say(f"Showing the run of {detail.get('feed')} of {model.when(detail.get('started'))} below.")
+        self.say(f"Showing the run of {detail.get('feed')} from {model.when(detail.get('started'))} below.")
         self.result.show_result(self.shown, self.delivers.get(detail.get("feed"), True))
 
     def show_rows(self, run_id: int, rows: dict | None, error: str | None = None) -> None:

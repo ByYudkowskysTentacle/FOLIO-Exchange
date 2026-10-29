@@ -206,18 +206,17 @@ class HomePage(Page):
         self.box.addWidget(heading("Needs you", 1.15))
         self.attention = QListWidget()
         self.attention.setAccessibleName("Feeds that need you")
-        self.attention.setAccessibleDescription("Runs waiting for you to review and send them, runs that failed "
-                                                "or were blocked, and feeds the schedule has not run. Press Enter "
-                                                "to open the feed.")
+        self.attention.setAccessibleDescription("Runs waiting for review, runs that failed or were blocked, and "
+                                                "feeds the schedule hasn't run. Press Enter to open the feed.")
         self.attention.itemActivated.connect(self._open_attention)
         self.attention_shown: list[tuple[str, str]] | None = None
         self.box.addWidget(self.attention)
-        self.calm = text("Nothing waits for you: no run is held, blocked or failed.", "Feeds that need you")
+        self.calm = text("Nothing needs you right now.", "Feeds that need you")
         self.box.addWidget(self.calm)
         self.box.addWidget(heading("Scheduled runs", 1.15))
         self.task = text(about="Scheduled task")
         self.box.addWidget(self.task)
-        self.box.addWidget(heading("Before you leave it to run on its own", 1.15))
+        self.box.addWidget(heading("Before scheduled runs", 1.15))
         self.warnings = lines_label("Warnings")
         self.box.addWidget(self.warnings)
         self.box.addWidget(heading("Feeds", 1.15))
@@ -225,14 +224,14 @@ class HomePage(Page):
                            "Press Enter to open the feed.")
         self.table.cellActivated.connect(lambda row, _col: self._open(row))
         self.box.addWidget(self.table)
-        self.no_feeds = text("No feeds yet. A feed sends one vendor a regular file of your library's records. Add one "
-                             "to start: it begins as a dry run that sends nothing.", "No feeds")
+        self.no_feeds = text("No feeds yet. A feed sends one vendor a regular file of your library's records. A new "
+                             "feed starts as a dry run that sends nothing.", "No feeds")
         self.box.addWidget(self.no_feeds)
         self.add_button = theme.primary(button("&Add a vendor feed", "Add a vendor feed"))
         self.add_button.clicked.connect(self.add_feed.emit)
         self.box.addLayout(actions_row(self.add_button))
-        self.problems_title = heading("Files that do not load", 1.15)
-        self.problems = lines_label("Files that do not load")
+        self.problems_title = heading("Files that don't load", 1.15)
+        self.problems = lines_label("Files that don't load")
         self.box.addWidget(self.problems_title)
         self.box.addWidget(self.problems)
 
@@ -264,7 +263,7 @@ class HomePage(Page):
         self.calm.setVisible(not attention)
         fill_folio(self.folio, summary.get("folio") or {})
         self.task.setText(model.task_words(summary.get("task")))
-        set_lines(self.warnings, model.warnings(summary), "Nothing to look at: every feed is set up to run on its own.")
+        set_lines(self.warnings, model.warnings(summary), "No warnings. Every feed is set up to run on its own.")
         feeds = summary.get("feeds") or []
         fill_table(self.table, [[f["name"], f.get("title") or "", f.get("recipe") or "",
                                  "On" if f.get("enabled") else "Paused", model.status_words(f.get("last_status")),
@@ -293,7 +292,7 @@ class ConnectionPage(Page):
         self.box.addLayout(form)
         self.check_button = theme.primary(button("&Check the connection", "Check the connection"))
         self.check_button.clicked.connect(self.check.emit)
-        self.change_button = button("Change connection or pass&word…", "Change the FOLIO connection or password")
+        self.change_button = button("Change connection or pass&word…", "Change connection or password")
         self.change_button.clicked.connect(self.change.emit)
         self.box.addLayout(actions_row(self.check_button, self.change_button))
         self.form_slot = QVBoxLayout()
@@ -343,7 +342,7 @@ class ConnectionPage(Page):
         self.log.clear()
         self.log.show()
         self.result.clear()
-        self.state.setText("Checking: logging in to FOLIO and reading one page of each kind of record…")
+        self.state.setText("Logging in to FOLIO and reading a page of each kind of record…")
 
     def add_lines(self, lines: list[str]) -> None:
         for line in lines:
@@ -360,8 +359,8 @@ class ConnectionPage(Page):
         res = job.get("result") or {}
         rows = res.get("endpoints") or []
         good = [r for r in rows if r.get("status") == "ok"]
-        self.state.setText(("Logged in. Every kind of record the feeds need can be read." if res.get("ok") else
-                            f"Logged in, but {len(rows) - len(good)} of {len(rows)} kinds of record could not be "
+        self.state.setText(("Logged in. The account can read every kind of record the feeds need." if res.get("ok") else
+                            f"Logged in, but {len(rows) - len(good)} of {len(rows)} kinds of record couldn't be "
                             "read.") + f" ({job['seconds']} s)")
         parts = []
         if res.get("note"):
@@ -380,6 +379,6 @@ class ConnectionPage(Page):
                          + "".join(f"<li>{_esc(p)}</li>" for p in res["denied"]) + "</ul>")
         problems = res.get("problems") or {}
         if problems:
-            parts.append("<p><b>Feed files that do not load</b> (their needs were not checked)</p><ul>"
+            parts.append("<p><b>Feed files that don't load</b> (their permissions weren't checked)</p><ul>"
                          + "".join(f"<li>{_esc(k)}: {_esc(v)}</li>" for k, v in problems.items()) + "</ul>")
         self.result.setText("".join(parts))

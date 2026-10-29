@@ -185,9 +185,9 @@ def test_the_alerts_are_described_without_their_secrets():
                                                              "smtp_host": "smtp.x.org", "smtp_port": 587,
                                                              "username": "u", "password": "NOT FOUND (nothing)"},
                                   "webhook": {"format": "teams", "url": "environment (HOOK)"}}))
-    assert rows["When"].startswith("When a run needs you")
+    assert rows["When"].startswith("When a run fails")
     assert rows["Email"] == "To a@x.org, from f@x.org, through smtp.x.org:587; logs in as u (not stored yet)"
-    assert rows["Chat webhook"] == "Microsoft Teams workflow; the address: from the environment variable HOOK"
+    assert rows["Chat webhook"] == "Microsoft Teams workflow, address from the environment variable HOOK"
     assert dict(model.alert_rows({"on": "never"}))["Email"] == "not set up"
 
 
@@ -211,12 +211,20 @@ def test_whether_the_task_is_registered_is_asked_of_schtasks_on_windows_only(tmp
 def test_the_tasks_state_names_the_apps_button_not_a_command():
     never = {"state": "never", "text": "Scheduled runs have not started yet: no feed runs on its own until the hourly "
                                        "task is registered. Register it with `folio-exchange schedule --register`."}
-    assert model.task_words(never, windows=True) == ("Scheduled runs have not started yet: no feed runs on its own "
-                                                     "until the hourly task is registered. Register it under Options, "
-                                                     "with Register the scheduled task….")
+    assert model.task_words(never, windows=True) == ("Scheduled runs haven't started yet. No feed runs on its own "
+                                                     "until the hourly task is registered. Use Register the scheduled "
+                                                     "task… under Options.")
     # regression: off Windows there is no such button; Options shows the crontab line instead
     assert model.task_words(never, windows=False).endswith("Add the line shown under Options to this computer's "
                                                            "scheduler, with crontab -e.")
+    # regression: a task that never ran showed the core's words ("have not started yet: no feed runs …"); both
+    # states that carry them are worded by the app, on Windows and off it
+    for state in ("never", "unneeded"):
+        for windows in (True, False):
+            words = model.task_words({**never, "state": state}, windows=windows)
+            assert words.startswith("Scheduled runs haven't started yet. No feed runs on its own until the hourly "
+                                    "task is registered. ")
+            assert "have not" not in words and ": no feed" not in words and "schedule --register" not in words
     assert model.task_words({"text": "The scheduled task last ran 5 minutes ago."}) == \
         "The scheduled task last ran 5 minutes ago."
     assert model.task_words(None) == "No feed runs on a schedule yet."
@@ -235,7 +243,7 @@ def test_the_setup_forms_check_what_the_page_checks():
     assert model.folder_problem("/srv/drop") is None and "full path" in model.folder_problem("drop")
     assert model.fingerprint_problem("SHA256:" + "A" * 43) is None and model.fingerprint_problem("") is None
     assert model.fingerprint_problem("MD5:" + ":".join(["0f"] * 16)) is None
-    assert "does not look like" in model.fingerprint_problem("abc")
+    assert "doesn't look like" in model.fingerprint_problem("abc")
     assert model.schedule_preset("  Sun  03:30 ") == "Sun 03:30" and model.schedule_preset("Mon 01:00") is None
     assert model.schedule_words("manual") == "Only when run by hand"
 
@@ -286,7 +294,7 @@ def test_a_permission_check_names_what_is_missing():
                                            "failed": [{"name": "Holdings", "path": "/holdings", "error": "500"}]})
     assert "Ask your FOLIO administrator" in words
     assert lines == ["Permission missing: inventory-storage.items.collection.get",
-                     "Could not be read: Holdings (/holdings): 500"]
+                     "Couldn't read Holdings (/holdings): 500"]
 
 
 def test_secrets_typed_in_setup_never_reach_the_audit(site, keyring):  # noqa: F811

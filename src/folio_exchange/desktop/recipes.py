@@ -42,8 +42,8 @@ class RecipesPage(Page):
         self.box.addWidget(self.problems)
         self.box.addWidget(heading("Get recipes from vendors", 1.15))
         self.get_about = text("Vendors publish their recipes on GitHub. FOLIO-Exchange downloads only from the "
-                                "sources listed here, shows you what would change, and installs only what you "
-                                "approve. An installed version never changes: a vendor publishes a new version "
+                                "sources listed here, shows you what would change and installs only what you "
+                                "approve. An installed version never changes. Vendors publish a new version "
                                 "instead.", "About getting recipes")
         self.box.addWidget(self.get_about)
         self.sources = QWidget()
@@ -60,7 +60,7 @@ class RecipesPage(Page):
     def show_overview(self, data: dict | None, error: str | None = None) -> None:
         """views.recipes_overview, or why it could not be read."""
         if error:
-            self.state.setText(f"The recipes could not be read: {error}")
+            self.state.setText(f"Couldn't load the recipes: {error}")
             self.state.show()
             return
         self.state.hide()
@@ -126,8 +126,8 @@ class RecipesPage(Page):
         if s.get("description"):
             parts.append(text(s["description"], f"About {s.get('title') or sid}"))
         parts.append(facts)
-        check = button("Check again" if C.get("result") or C.get("error") else "Check for updates",
-                       f"Check {s.get('title') or sid} for new versions")
+        words = "Check again" if C.get("result") or C.get("error") else "Check for updates"
+        check = button(words, f"{words} ({s.get('title') or sid})")           # the label, then which source
         check.clicked.connect(lambda _c=False, sid=sid: self._check(sid))
         check.setEnabled(not C.get("running") and not C.get("installing"))     # a check would undo the install's
         self.buttons[sid] = {"check": check}

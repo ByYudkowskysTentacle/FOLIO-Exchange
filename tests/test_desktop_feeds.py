@@ -114,14 +114,15 @@ def test_a_feeds_page_shows_its_sections(qtbot, site):
     assert page.where.values["Sends to"].text() == "A folder on this computer or the network"
     assert not shown(page.test_why) and shown(page.test_button)
     assert shown(page.no_runs) and not shown(page.waiting)
-    assert "No result yet" in page.result.head.text()
+    assert "No results yet" in page.result.head.text()
 
 
 def test_a_feed_with_nowhere_to_send_is_a_dry_run(qtbot, site):
     make_feed(site, "dry", file_prefix="dry", delivery={"transport": "none"})
     w = window(qtbot, site)
     page = on_feed(qtbot, w, "dry")
-    assert "it is a dry run" in page.notices.text()
+    assert ("This feed is a dry run with no delivery yet. Preview and Run build its files on this computer only."
+            in page.notices.text())
     assert page.where.values["Sends to"].text().startswith("Nowhere yet")
     assert not shown(page.test_button)
 
@@ -146,7 +147,7 @@ def test_an_sftp_delivery_shows_where_the_password_comes_from_never_the_password
               for c in range(t.columnCount()) if t.item(r, c) is not None]
     assert not [t for t in texts if secret in t]                          # named by where it is, never shown
     # Regression (D2): both texts sent people to a Change delivery button the app did not have; D3 brings it.
-    assert page.where.values["Server key"].text().endswith("under Change delivery… on this tab.")
+    assert page.where.values["Server key"].text().endswith("under Change delivery… before the feed can connect.")
     assert shown(page.change_button)
     assert shown(page.paused_text) and page.paused_text.text().endswith(
         "Enter the vendor's fingerprint under Change delivery… first.")
@@ -230,7 +231,7 @@ def test_a_first_run_is_held_then_reviewed_and_sent(qtbot, site):
     assert not (site / "vendor-drop").exists()                              # the first delivery is held
     assert shown(page.waiting) and "is waiting for you" in page.waiting_text.text()
     # Regression: the reason followed a full stop in lower case ("… is waiting for you. first delivery …").
-    assert re.fullmatch(r"Held for review\. The run of .+ is waiting for you: first delivery to .+",
+    assert re.fullmatch(r"Held for review\. The run of .+ is waiting for you \(first delivery to .+\)\.",
                         page.waiting_text.text()), page.waiting_text.text()
     assert "chq – On, held for review" in sidebar(w)
 
@@ -299,7 +300,7 @@ def test_a_release_is_not_started_when_another_action_began_meanwhile(qtbot, sit
 
     w.ask_release = ask
     w.review("chq")
-    qtbot.waitUntil(lambda: page.notice.text() == "Another action is running; nothing was sent.", timeout=15000)
+    qtbot.waitUntil(lambda: page.notice.text() == "Another action is still running. Nothing was sent.", timeout=15000)
     assert not (site / "vendor-drop").exists()
 
 
@@ -317,7 +318,7 @@ def test_feed_actions_are_refused_while_another_runs(qtbot, site, blocking_job):
     w.run_feed("chq", True)
     assert w.jobs.current is job and "chq" not in page.results
     w.review("chq")
-    assert page.notice.text() == "Another action is running; wait for it to finish." and not w.reviewing
+    assert page.notice.text() == "Another action is still running. Wait for it to finish." and not w.reviewing
     w.set_enabled("chq", False)
     assert not w.toggling and not w.errands.pending
     # Regression: this only checked that Jobs refused a preview, which it does with or without the window's guard.
@@ -363,9 +364,9 @@ def test_pause_and_resume(qtbot, site):
     qtbot.waitUntil(lambda: page.notice.text() == "chq paused.", timeout=15000)
     qtbot.waitUntil(lambda: "chq – Paused, no runs yet" in sidebar(w), timeout=15000)
     assert page.pause_button.text() == "Res&ume" and page.pause_button.accessibleName() == "Resume this feed"
-    assert page.fields["state"].text() == "Paused: scheduled runs skip it"
+    assert page.fields["state"].text() == "Paused. Scheduled runs skip it."
     assert shown(page.paused_title) and "Preview and Run it by hand" in page.paused_text.text()
-    assert "This feed is paused: scheduled runs skip it" in page.notices.text()
+    assert "This feed is paused. Resume it to run on its schedule." in page.notices.text()
     with History(load_site(site).history_path) as hist:
         paused = [a for a in hist.audit_log(10) if a["action"] == "feed paused"]
     assert len(paused) == 1 and paused[0]["detail"]["from"] == "app"
@@ -402,7 +403,7 @@ def test_an_action_that_fails_is_shown_as_written(qtbot, site, monkeypatch):
     settled(qtbot, w)
     assert result(w)["state"] == "error"
     head = page.result.head.text()
-    assert head == 'Did not run: FOLIO refused <img src="file://example.invalid/x.png">.'   # no command the app has
+    assert head == 'Didn\'t run: FOLIO refused <img src="file://example.invalid/x.png">.'   # no command the app has
     assert page.result.head.textFormat() == Qt.TextFormat.PlainText
     assert page.notice.text() == head and page.notice.textFormat() == Qt.TextFormat.PlainText
 
@@ -668,7 +669,7 @@ def test_closing_while_a_pause_is_written_waits_for_it(qtbot, site, monkeypatch)
     qtbot.waitUntil(entered.is_set, timeout=5000)
     w.close()
     assert w.isVisible() and not w.quitting
-    assert "closes once the pause or resume is written" in w.banner.text()
+    assert "closes when the pause or resume is saved" in w.banner.text()
     gate.set()
     qtbot.waitUntil(lambda: w.quitting and not w.isVisible(), timeout=15000)
     assert not views.feed_view(site, "chq")["enabled"]                     # the pause was written in full
@@ -753,7 +754,7 @@ def test_actions_wait_while_a_release_question_is_on_the_way(qtbot, site, monkey
     blocking_job(w.jobs, "check", None)                                     # started on the page meanwhile
     gate.set()
     qtbot.waitUntil(lambda: not w.reviewing, timeout=10000)
-    assert not asked and page.notice.text() == "Another action is running; nothing was sent."
+    assert not asked and page.notice.text() == "Another action is still running. Nothing was sent."
 
 
 def test_a_release_is_not_sent_when_the_site_folder_was_renamed_during_the_question(qtbot, site, tmp_path):
@@ -788,7 +789,7 @@ def test_pause_shows_its_new_state_at_once(qtbot, site, monkeypatch):
     qtbot.waitUntil(lambda: page.notice.text() == "chq paused.", timeout=10000)
     assert page.pause_button.isEnabled() and page.pause_button.text() == "Res&ume"
     assert page.pause_button.accessibleName() == "Resume this feed"
-    assert page.fields["state"].text() == "Paused: scheduled runs skip it"
+    assert page.fields["state"].text() == "Paused. Scheduled runs skip it."
     qtbot.mouseClick(page.pause_button, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: page.notice.text().startswith("chq resumed."), timeout=10000)
     assert calls == [("chq", False), ("chq", True)]

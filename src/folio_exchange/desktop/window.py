@@ -222,7 +222,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.options.register.connect(self.register_task)
         self.options.change_alerts.connect(self.change_alerts)
         self.options.test_alert.connect(self.test_alert)
-        self.reading = QLabel("Reading the site…")
+        self.reading = QLabel("Loading the site…")
         self.reading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reading.setWordWrap(True)
         self.reading.setTextFormat(Qt.TextFormat.PlainText)        # it may show an error's text
@@ -417,9 +417,9 @@ class MainWindow(QMainWindow, SetupActions):
     def _read_done(self, snap: dict | None, error: Exception | None) -> None:
         if error is not None:
             log.warning("Could not read the site %s: %s", self.site_root, error)
-            self.say(f"Could not read the site: {error}")
+            self.say(f"Couldn't load the site: {error}")
             if self.snap is None:
-                self.reading.setText(f"Could not read the site: {error}\n\nPress F5 to try again.")
+                self.reading.setText(f"Couldn't load the site: {error}\n\nPress F5 to try again.")
         else:
             self.snap = snap
             if not self.closing_after_job and not self.jobs.running():
@@ -581,7 +581,7 @@ class MainWindow(QMainWindow, SetupActions):
         if self.reviewing:
             return                                           # one question at a time
         if self.jobs.running() is not None:
-            self.feed.say("Another action is running; wait for it to finish.")
+            self.feed.say("Another action is still running. Wait for it to finish.")
             return
         self._follow_page()
         root = self.review_root = self.site_root
@@ -608,12 +608,12 @@ class MainWindow(QMainWindow, SetupActions):
         if self.stack.currentWidget() is not self.feed or self.feed.name != name:
             # The person moved on while the look ran: a question now would open over another page.
             self._reviewed()
-            self.say(f"Nothing was sent: the page of {name} was left before its files could be shown. Open it "
-                     "and choose Review and send… again.")
+            self.say(f"Nothing was sent. You left the page for {name} before its files could be shown. Open it and "
+                     "choose Review and send… again.")
             return
         if self.jobs.running() is not None:                 # started (on the page) while the look ran
             self._reviewed()
-            self.feed.say("Another action is running; nothing was sent.")
+            self.feed.say("Another action is still running. Nothing was sent.")
             return
         try:
             send = self.ask_release(summary)
@@ -625,10 +625,10 @@ class MainWindow(QMainWindow, SetupActions):
         if not send:
             self.feed.say("Nothing was sent.")
         elif os.path.normcase(str(self.site_root)) != os.path.normcase(str(self.review_root)):
-            self.feed.say("The site folder was renamed while you decided, so nothing was sent. Choose Review and "
+            self.feed.say("The site folder was renamed while you were deciding. Nothing was sent. Choose Review and "
                           "send… again.")
         elif self.jobs.running() is not None:
-            self.feed.say("Another action is running; nothing was sent.")
+            self.feed.say("Another action is still running. Nothing was sent.")
         else:
             # Exactly what was shown: the core looks again and sends nothing if any of it changed meanwhile.
             root, run_dir = self.site_root, summary["run_dir"]
@@ -640,10 +640,10 @@ class MainWindow(QMainWindow, SetupActions):
         if self.toggling:
             return                                           # a second press does nothing
         if self.renaming:
-            self.feed.say("The site folder is being renamed; pause or resume the feed once it is done.")
+            self.feed.say("The site folder is being renamed. Pause or resume the feed when it's done.")
             return
         if self.jobs.running() is not None:
-            self.feed.say("Another action is running; wait for it to finish.")
+            self.feed.say("Another action is still running. Wait for it to finish.")
             self.sync_busy()
             return
         self._follow_page()
@@ -710,7 +710,7 @@ class MainWindow(QMainWindow, SetupActions):
                 return
             if not message:
                 self.feed.show_enabled(name, result["enabled"])
-            self.feed.say(message or (f"{name} resumed. Its schedule runs it from now on." if enabled else
+            self.feed.say(message or (f"{name} resumed. It runs on its schedule from now on." if enabled else
                                       f"{name} paused."))
             self.sync_busy()
             self.refresh()
@@ -792,7 +792,7 @@ class MainWindow(QMainWindow, SetupActions):
         try:
             self.page.open(view, feed)
         except OSError as exc:
-            alert(self, f"The browser page could not be started: {exc}")
+            alert(self, f"Couldn't start the browser page: {exc}")
 
     def open_site(self) -> None:
         picker = SitePicker(self)
@@ -812,7 +812,7 @@ class MainWindow(QMainWindow, SetupActions):
         exe, args, folder = app_command(root)
         started = QProcess.startDetached(exe, args, folder)
         if not (started[0] if isinstance(started, tuple) else started):
-            alert(self, f"Could not open {root}: starting {exe} failed.")
+            alert(self, f"Couldn't open {root}. Starting {exe} failed.")
 
     def bring_to_front(self) -> None:
         if self.isMinimized():
@@ -830,8 +830,7 @@ class MainWindow(QMainWindow, SetupActions):
         box.setWindowTitle("FOLIO-Exchange")
         box.setTextFormat(Qt.TextFormat.PlainText)
         box.setText(f"A {_what(job)} is still running.")
-        box.setInformativeText("Closing now would cut it off half way, so the window can close once it "
-                               "finishes instead.")
+        box.setInformativeText("Closing now would interrupt it. The window can close when it finishes instead.")
         later = box.addButton("&Close when it finishes", QMessageBox.ButtonRole.AcceptRole)
         keep = box.addButton("&Keep the window open", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(keep)
@@ -852,8 +851,8 @@ class MainWindow(QMainWindow, SetupActions):
             # feed file and recording it in the activity log; or a rename is starting or ending, and the window
             # must follow the folder before it closes. Both are short: close as soon as they are done.
             self.closing_after_job = True
-            self.say("This window closes once the pause or resume is written." if self.toggling else
-                     "This window closes once the site folder is renamed.")
+            self.say("This window closes when the pause or resume is saved." if self.toggling else
+                     "This window closes when the site folder is renamed.")
             self.sync_busy()
             return
         if self.ask_close_while_running(job) == "later":

@@ -34,8 +34,8 @@ class AlertsDialog(QDialog):
         box = QVBoxLayout(self)
         box.addWidget(heading("Change alerts", 1.3))
         if not settings.get("keyring"):
-            box.addWidget(note("This computer has no Windows Credential Manager that FOLIO-Exchange can use, so a "
-                               "mail password or webhook address cannot be stored from this app.",
+            box.addWidget(note("Windows Credential Manager isn't available on this computer, so FOLIO-Exchange can't "
+                               "store a mail password or webhook address.",
                                "No Credential Manager"))
         form = QFormLayout()
         self.rows = Rows(form)
@@ -69,17 +69,22 @@ class AlertsDialog(QDialog):
         self.password = secret_box("Mail server password")
         stored = model.password_words(email.get("password")) if email.get("username") else None
         self.email_rows.add("&To:", self.to, "One or more addresses, separated by commas.")
-        self.email_rows.add("&From:", self.sender, "The address the alerts come from. The mail server may insist on "
-                            "its own.")
-        self.email_rows.add("Mail &server (SMTP):", self.host, "Your mail server's name, from whoever looks after "
-                            "email.")
+        self.email_rows.add("&From:", self.sender, "The address alerts come from. Some mail servers require their own "
+                            "address here.")
+        self.email_rows.add("Mail &server (SMTP):", self.host, "Your mail server's name. Your email administrator can "
+                            "tell you.")
         self.email_rows.add("&Port:", self.port, "Usually 587 (with STARTTLS), or 465.")
         eform.addRow(self.starttls)
-        self.email_rows.add("&User name:", self.user, "Leave it empty when the mail server takes alerts without "
-                            "logging in.")
+        self.email_rows.add("&User name:", self.user, "Leave it empty if the mail server accepts alerts without a "
+                            "login.")
+        keyring = bool(settings.get("keyring"))         # without one, say where the core reads each secret instead
         self.email_rows.add("Pass&word:", self.password, (f"{stored}. Leave it empty to keep it." if stored and
                                                           stored != "Not stored yet" else
-                                                          "Kept in Windows Credential Manager; never shown again."))
+                                                          "Stored in Windows Credential Manager and never shown again."
+                                                          if keyring else
+                                                          "Read from the environment variable named in site.yaml's "
+                                                          "alerts email settings (secret: env:NAME). Run "
+                                                          "folio-exchange secret status to check it."))
         box.addWidget(self.email_box)
 
         hook = settings.get("webhook") or {}
@@ -92,24 +97,26 @@ class AlertsDialog(QDialog):
         self.hook_rows = Rows(hform)
         self.kind = QComboBox()
         self.kind.setAccessibleName("Kind of webhook")
-        self.kind.addItem("Slack, or another webhook that takes {\"text\"} (Mattermost, Google Chat)", "slack")
+        self.kind.addItem("Slack, or another webhook that accepts {\"text\"}, such as Mattermost or Google Chat", "slack")
         self.kind.addItem("A Microsoft Teams workflow", "teams")
         self.kind.setCurrentIndex(max(0, self.kind.findData(hook.get("format") or "slack")))
         self.url = secret_box("Webhook address")
         where = model.password_words(hook.get("url")) if hook else None
         self.hook_rows.add("&Kind:", self.kind)
-        self.hook_rows.add("Webhook &address:", self.url, ("The address is a secret: anyone who has it can post to the "
-                                                           "channel. It is kept in Windows Credential Manager under "
-                                                           "this site folder's name.")
+        self.hook_rows.add("Webhook &address:", self.url, "Keep this address secret. Anyone who has it can post to "
+                                                          "the channel. "
+                           + ("It's stored in Windows Credential Manager under this site folder's name." if keyring else
+                              "Without Credential Manager, it's read from the environment variable named in "
+                              "site.yaml's alerts (webhook: env:NAME).")
                            + (f" {where}. Leave it empty to keep it." if where and where != "Not stored yet" else ""))
         box.addWidget(self.hook_box)
         box.addStretch(1)
         self.problem = problem_label()
         box.addWidget(self.problem)
-        self.save_button = button("Sa&ve alerts", "Save the alert settings")
+        self.save_button = button("Sa&ve alerts", "Save alerts")
         self.save_button.setDefault(True)
         self.save_button.clicked.connect(self._save)
-        cancel = button("Cancel", "Close without saving")
+        cancel = button("Cancel", "Cancel without saving")
         cancel.clicked.connect(self.reject)
         box.addLayout(actions_row(self.save_button, cancel))
         self.use_email.toggled.connect(self._show)
@@ -130,7 +137,7 @@ class AlertsDialog(QDialog):
             to = [x for x in re.split(r"[,;\s]+", self.to.text()) if x]
             bad = next((x for x in to if not ADDRESS.fullmatch(x)), None)
             if not to or bad:
-                return self._fail(self.email_rows, self.to, f"{bad} is not an email address." if bad else
+                return self._fail(self.email_rows, self.to, f"{bad} isn't an email address." if bad else
                                   "Enter the address to send alerts to.")
             if not ADDRESS.fullmatch(self.sender.text().strip()):
                 return self._fail(self.email_rows, self.sender, "Enter the address the alerts come from.")
@@ -138,8 +145,8 @@ class AlertsDialog(QDialog):
                 return self._fail(self.email_rows, self.host, "Enter the mail server's name.")
             user = self.user.text().strip()
             if user and not self.starttls.isChecked() and self.port.value() != 465:
-                return self._fail(self.email_rows, self.port, "Logging in to the mail server needs STARTTLS (or port "
-                                  "465), so the password is never sent unencrypted.")
+                return self._fail(self.email_rows, self.port, "Logging in to the mail server needs STARTTLS or port "
+                                  "465, so the password is never sent unencrypted.")
             if self.password.text() and not user:
                 return self._fail(self.email_rows, self.user, "Enter the user name that goes with the password.")
             out["email"] = {"to": to, "from": self.sender.text().strip(), "smtp_host": self.host.text().strip(),
@@ -148,7 +155,7 @@ class AlertsDialog(QDialog):
             if self.url.text():
                 refused = notify.url_problem(self.url.text())
                 if refused:
-                    return self._fail(self.hook_rows, self.url, f"That webhook address is refused: {refused}.")
+                    return self._fail(self.hook_rows, self.url, f"That webhook address isn't allowed: {refused}.")
             elif not self.settings.get("webhook"):
                 return self._fail(self.hook_rows, self.url, "Enter the webhook address.")
             out["webhook"] = {"format": self.kind.currentData()}

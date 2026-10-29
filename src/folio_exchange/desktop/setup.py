@@ -17,13 +17,11 @@ from .forms import Rows, edit, note, problem_label, secret_box, take, tell
 from .pages import Page, actions_row, button, heading, text
 
 INTRO = ("FOLIO-Exchange reads your library's records from FOLIO with a read-only account and sends each vendor the "
-         "files it asks for. Start by connecting it to FOLIO: the details are tested with FOLIO before anything is "
-         "saved.")
-NO_KEYRING = ("This computer has no Windows Credential Manager that FOLIO-Exchange can use, so the password cannot "
-              "be stored from this app. Whoever looks after this computer needs to set the FOLIO_PASSWORD environment "
-              "variable for this account; FOLIO-Exchange then uses it.")
-SYNCED = ("This folder is inside OneDrive or Dropbox. Keep the site in a folder that is not synced: syncing can copy "
-          "half-written files and the run history between computers.")
+         "files it asks for. Start by connecting to FOLIO. FOLIO checks the details before anything is saved.")
+NO_KEYRING = ("Windows Credential Manager isn't available on this computer, so FOLIO-Exchange can't store the password. "
+              "Ask your IT administrator to set the FOLIO_PASSWORD environment variable for your Windows account.")
+SYNCED = ("This folder is inside OneDrive or Dropbox. Keep the site in a folder that isn't synced, because syncing "
+          "can copy half-written files and the run history between computers.")
 
 
 class ConnectForm(QWidget):
@@ -53,9 +51,9 @@ class ConnectForm(QWidget):
         self.user = edit("User name")
         self.password = secret_box("FOLIO password")
         self.rows.add("API &address:", self.url,
-                      "On Eureka, the Kong gateway URL, starting https://. Your FOLIO administrator can tell you it.")
+                      "On Eureka, the Kong gateway URL, starting with https://. Ask your FOLIO administrator for it.")
         self.rows.add("Te&nant id:", self.tenant, "The FOLIO tenant this library uses.")
-        self.rows.add("&User name:", self.user, "A read-only service account, not a person's own login.")
+        self.rows.add("&User name:", self.user, "A read-only service account, not someone's personal login.")
         self.password_caption = self.rows.add("&Password:", self.password, self._password_help())
         box.addLayout(form)
         self.problem = problem_label()
@@ -63,7 +61,7 @@ class ConnectForm(QWidget):
         self.status = note(about="Connection status")
         self.status.hide()
         box.addWidget(self.status)
-        self.save_button = theme.primary(button("&Test and save", "Test the connection with FOLIO, then save it"))
+        self.save_button = theme.primary(button("&Test and save", "Test and save the connection"))
         self.save_button.clicked.connect(self._submit)
         self.cancel_button = button("Cancel", "Cancel changing the connection")
         self.cancel_button.clicked.connect(self.cancelled.emit)
@@ -74,9 +72,9 @@ class ConnectForm(QWidget):
 
     def _password_help(self) -> str:
         if not self.first:
-            return "Leave empty to keep the stored password. A new one is checked with FOLIO before it replaces the old one."
-        return ("Checked with FOLIO, then kept in Windows Credential Manager on this computer. It is never written to "
-                "a file." + (" Leave it empty to use a password stored here before." if self.folio.get("username")
+            return "Leave it empty to keep the stored password. A new one replaces it only after FOLIO accepts it."
+        return ("Checked with FOLIO, then stored in Windows Credential Manager on this computer. It's never written to "
+                "a file." + (" Leave it empty to use the password stored before." if self.folio.get("username")
                              else ""))
 
     def fill(self, folio: dict, keyring: bool) -> None:
@@ -168,9 +166,9 @@ class SetupPage(Page):
     def show_state(self, state: dict) -> None:
         """setupops.site_state of the folder. What was typed stays while the same folder is shown."""
         if state.get("problem"):
-            self.title.setText("This site's settings do not load")
-            self.what.setText(f"This folder's site.yaml could not be used. {state['problem']}\n\nCorrect the FOLIO "
-                              "connection below, or correct site.yaml in a text editor and press F5.")
+            self.title.setText("This site's settings don't load")
+            self.what.setText(f"This folder's site.yaml couldn't be used. {state['problem']}\n\nCorrect the FOLIO "
+                              "connection below, or edit site.yaml in a text editor and press F5.")
         else:
             self.title.setText("Connect to FOLIO")
         self.what.setVisible(bool(state.get("problem")))

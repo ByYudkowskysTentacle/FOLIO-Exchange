@@ -33,7 +33,20 @@ from .forms import Rows, announce, edit, note, problem_label, secret_box, take, 
 from .pages import actions_row, button, heading, text
 
 TRANSPORTS = (("sftp", "The vendor's SFTP server"), ("local", "A folder on this computer or the network"),
-              ("none", "Not yet: keep it a dry run"))
+              ("none", "Nowhere yet (dry run)"))
+# The login box's help: with Credential Manager, and without it, where the core reads each secret instead (a feed
+# file's delivery: ``secret: env:NAME`` for the password or passphrase, ``private_key`` for the key file).
+PASSWORD_HELP = ("Stored in Windows Credential Manager on this computer. It's never shown again or written to a "
+                 "file.",
+                 "Read from the environment variable named in the feed file's delivery (secret: env:NAME). Run "
+                 "folio-exchange secret status to check it.")
+KEY_HELP = ("The private key that matches the public key the vendor has, in OpenSSH or PEM format. If you choose a "
+            "PuTTY .ppk key, you'll see how to convert it. It's kept in this site's keys folder, where only this "
+            "Windows user can read it.",
+            "The private key that matches the public key the vendor has. Without Credential Manager, this app can't "
+            "save it. Set private_key in the feed file's delivery to the key file's path instead.")
+PASSPHRASE_HELP = ("Stored in Windows Credential Manager.",
+                   "Read from the environment variable named in the feed file's delivery (secret: env:NAME).")
 
 
 class DeliveryDialog(QDialog):
@@ -44,7 +57,7 @@ class DeliveryDialog(QDialog):
         super().__init__(parent)
         self.name = name
         self.saving = False
-        self.setWindowTitle(f"FOLIO-Exchange – delivery of {name}")
+        self.setWindowTitle(f"FOLIO-Exchange – delivery for {name}")
         self.resize(640, 560)
         box = QVBoxLayout(self)
         box.addWidget(heading("Change delivery", 1.3))
@@ -68,19 +81,18 @@ class DeliveryDialog(QDialog):
         self.user = edit("SFTP user name")
         self.remote = edit("Folder on the server")
         self.fingerprint = edit("Server key fingerprint from the vendor", placeholder="SHA256:…")
-        self.later = QCheckBox("I don't have it yet: save the server, but don't connect until I confirm it")
-        self.later.setAccessibleName("I don't have the fingerprint yet: save the server, but don't connect until I "
-                                     "confirm it")
+        self.later = QCheckBox("I don't have it yet – save the server without connecting until I confirm it")
+        self.later.setAccessibleName("I don't have it yet – save the server without connecting until I confirm it")
         self.rows.add("Server &name:", self.host, "The SFTP server the vendor gave you, such as sftp.vendor.com.")
         self.rows.add("&Port:", self.port, "Usually 22.")
         self.rows.add("&User name:", self.user, "The SFTP user name the vendor gave you.")
-        self.rows.add("&Folder on the server:", self.remote, "Where the files go on the vendor's server. A dot (.) is "
-                      "the folder you land in when you log in.")
+        self.rows.add("&Folder on the server:", self.remote, "Where the files go on the vendor's server. A dot (.) means "
+                      "the folder you start in after logging in.")
         self.fp_caption = self.rows.add("Server &key fingerprint from the vendor:", self.fingerprint, "Ask the "
                                         "vendor for it.")
         form.addRow(self.later)
-        form.addRow(note("The feed is paused, and nothing logs in to the server, until you come back and enter the "
-                         "vendor's fingerprint.", "About confirming later"))
+        form.addRow(note("Saving pauses the feed. Nothing logs in to the server until you enter the vendor's "
+                         "fingerprint.", "About confirming later"))
         box.addWidget(self.sftp_box)
         self.local_box = QWidget()
         lform = QFormLayout(self.local_box)
@@ -93,11 +105,11 @@ class DeliveryDialog(QDialog):
         browse.clicked.connect(self._browse)
         row.addWidget(self.folder, 1)
         row.addWidget(browse)
-        self.local_rows.add("F&older:", folder_row, "The folder's full path, on this computer or the network, such as "
-                            "D:\\Exports\\vendor or \\\\server\\share\\vendor. It is made if it does not exist.",
+        self.local_rows.add("F&older:", folder_row, "The folder's full path on this computer or the network, such as "
+                            "D:\\Exports\\vendor or \\\\server\\share\\vendor. It's created if it doesn't exist.",
                             focus=self.folder)
         box.addWidget(self.local_box)
-        self.none_box = note("The feed keeps building its files on this computer only. Preview and Run still work.",
+        self.none_box = note("The feed builds its files on this computer only. Preview and Run still work.",
                              "A dry run")
         box.addWidget(self.none_box)
         box.addStretch(1)
@@ -106,14 +118,14 @@ class DeliveryDialog(QDialog):
         self.status = note(about="Saving")
         self.status.hide()
         box.addWidget(self.status)
-        self.again_button = button("Save my choices on the file as it is no&w",
-                                   "Save my choices on the feed file as it is now")
+        self.again_button = button("Save my choices to the up&dated file",
+                                   "Save my choices to the updated file")
         self.again_button.clicked.connect(self.refresh_version.emit)
         self.again_button.hide()
-        self.save_button = theme.primary(button("&Save delivery", "Save the delivery"))
+        self.save_button = theme.primary(button("&Save delivery", "Save delivery"))
         self.save_button.setDefault(True)
         self.save_button.clicked.connect(self._save)
-        cancel = button("Cancel", "Close without saving")
+        cancel = button("Cancel", "Cancel without saving")
         cancel.clicked.connect(self.reject)
         box.addLayout(actions_row(self.save_button, self.again_button, cancel))
         self.rebase(st)
@@ -133,10 +145,9 @@ class DeliveryDialog(QDialog):
             self.user.setText(str(d.get("username") or ""))
             self.remote.setText(str(d.get("remote_dir") or "."))
             self.folder.setText(str(d.get("directory") or ""))
-        help_text = ("Ask the vendor for it: it starts SHA256: (or is an older value such as 3f:a2:…:9c). On saving, "
-                     "FOLIO-Exchange reads the server's own key and saves only if they match, so files cannot go to a "
-                     "server pretending to be the vendor's." + (" This server's key is already confirmed: leave this "
-                                                                "empty to keep it." if self.known else ""))
+        help_text = ("Ask the vendor for it. It starts with SHA256: or looks like 3f:a2:…:9c, and must match the "
+                     "server's own key when you save." + (" This server's key is already confirmed. Leave this "
+                                                          "empty to keep it." if self.known else ""))
         self.rows.set_help(self.fingerprint, help_text)
 
     def transport(self) -> str:
@@ -177,7 +188,7 @@ class DeliveryDialog(QDialog):
             same = (self.known and host.lower() == str(d.get("host") or "").lower()
                     and self.port.value() == int(d.get("port") or 22))
             if not fp and not self.later.isChecked() and not same:
-                return self._fail(self.rows, self.fingerprint, "Enter the fingerprint the vendor gave you, or tick the "
+                return self._fail(self.rows, self.fingerprint, "Enter the fingerprint the vendor gave you, or check the "
                                   "box below to confirm it later.")
             return {"transport": "sftp", "host": host, "port": self.port.value(), "username": self.user.text().strip(),
                     "remote_dir": self.remote.text().strip() or ".", "vendor_fingerprint": fp,
@@ -212,13 +223,14 @@ class DeliveryDialog(QDialog):
         said under the form, announced and focused, so a screen reader reads it."""
         self.working(False)
         self.again_button.hide()
-        tell(self.problem, f"Not saved. {message}")
+        said = "nothing was saved" in message.lower()                  # the core's words say it already
+        tell(self.problem, message if said else f"Not saved. {message}")
 
     def conflict(self, message: str) -> None:
         """The feed file changed underneath the form: nothing was saved and what was entered stays. The button
         that saves the same choices on the file as it is now takes the focus, and carries the reason."""
         self.working(False)
-        words = f"Not saved: {model.first_sentence(message)} Nothing was saved, and what you entered is still here."
+        words = f"Not saved. {model.first_sentence(message)} What you entered is still here."
         self.problem.setText(words)
         self.problem.show()
         self.again_button.show()
@@ -244,8 +256,8 @@ class LoginBox(QWidget):
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(heading("Login to the vendor's server", 1.15))
-        self.no_keyring = text("This computer has no Windows Credential Manager that FOLIO-Exchange can use, so "
-                               "passwords cannot be stored from this app.", "No Credential Manager")
+        self.no_keyring = text("Windows Credential Manager isn't available on this computer, so FOLIO-Exchange can't "
+                               "store passwords.", "No Credential Manager")
         self.no_keyring.hide()
         box.addWidget(self.no_keyring)
         self.key_saved = text(about="Key saved")
@@ -267,10 +279,9 @@ class LoginBox(QWidget):
         pform = QFormLayout(self.password_box)
         self.password_rows = Rows(pform)
         self.password = secret_box("SFTP password")
-        self.password_rows.add("SFTP pass&word:", self.password, "Kept in Windows Credential Manager on this "
-                               "computer. It is never shown again or written to a file.")
+        self.password_rows.add("SFTP pass&word:", self.password, PASSWORD_HELP[0])
         self.password.returnPressed.connect(self._save_password)
-        self.password_button = theme.primary(button("Save in Cre&dential Manager", "Save the SFTP password in Credential Manager"))
+        self.password_button = theme.primary(button("Save in Cre&dential Manager", "Save in Credential Manager"))
         self.password_button.clicked.connect(self._save_password)
         pform.addRow(actions_row(self.password_button))
         box.addWidget(self.password_box)
@@ -283,17 +294,15 @@ class LoginBox(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         self.key_file = edit("Private key file")
         self.key_file.setReadOnly(True)
-        choose = self.choose_button = button("C&hoose the key file…", "Choose the private key file")
+        choose = self.choose_button = button("C&hoose the key file…", "Choose the key file")
         choose.clicked.connect(self._choose)
         row.addWidget(self.key_file, 1)
         row.addWidget(choose)
-        self.key_rows.add("Private key file:", file_row, "The private key whose public half the vendor has (OpenSSH "
-                          "or PEM format). A PuTTY .ppk key needs converting first; the message says how. It is kept "
-                          "in this site's keys folder, readable only by this Windows user.", focus=choose)
+        self.key_rows.add("Private key file:", file_row, KEY_HELP[0], focus=choose)
         self.key_rows.problems[self.key_file] = self.key_rows.problems.pop(choose)
         self.passphrase = secret_box("Key passphrase")
-        self.key_rows.add("Passphrase (if the key has one):", self.passphrase, "Kept in Windows Credential Manager.")
-        self.key_button = theme.primary(button("Save &key", "Save the private key"))
+        self.key_rows.add("Passphrase (if the key has one):", self.passphrase, PASSPHRASE_HELP[0])
+        self.key_button = theme.primary(button("Save &key", "Save key"))
         self.key_button.clicked.connect(self._save_key)
         kform.addRow(actions_row(self.key_button))
         box.addWidget(self.key_box)
@@ -303,11 +312,18 @@ class LoginBox(QWidget):
         self.idle = True
         self.saving = False
         self.shown: tuple | None = None
+        self.help_keyring = True                          # the help above is the one for a computer with a keyring
 
     def show_login(self, name: str, d: dict, keyring: bool) -> None:
         """A feed's delivery (setupops.feed_settings' delivery, which holds no secret). The choice of password or
         key follows the feed's own until the person changes it; a refresh of the same feed keeps their choice."""
         self.no_keyring.setVisible(not keyring)
+        if keyring != self.help_keyring:                  # never "Stored in Credential Manager" without one
+            self.help_keyring = keyring
+            which = 0 if keyring else 1
+            self.password_rows.set_help(self.password, PASSWORD_HELP[which])
+            self.key_rows.set_help(self.choose_button, KEY_HELP[which])
+            self.key_rows.set_help(self.passphrase, PASSPHRASE_HELP[which])
         shown = (name, d.get("auth"))
         if shown != self.shown:
             self.shown = shown
@@ -388,6 +404,6 @@ class LoginBox(QWidget):
 
     def saved_key(self, public: str) -> None:
         self.working(False)
-        self.key_saved.setText(f"Key saved. Its public fingerprint is {public}. The vendor's server must know the "
+        self.key_saved.setText(f"Key saved. Its public fingerprint is {public}. The vendor's server must have the "
                                "matching public key (the .pub file).")
         self.key_saved.show()

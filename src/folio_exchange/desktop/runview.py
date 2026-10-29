@@ -34,7 +34,7 @@ class RunView(QWidget):
         self.title = heading("Result", 1.15)
         box.addWidget(self.title)
         self.head = text(about="Result")
-        self.folder_button = button("&Open folder", "Open the run's folder")
+        self.folder_button = button("&Open folder", "Open folder of this run")
         self.folder_button.clicked.connect(self._open_folder)
         row = QHBoxLayout()
         row.addWidget(self.head, 1)
@@ -124,7 +124,7 @@ class RunView(QWidget):
         was_running, self.running = self.running, False
         if state == "error":
             self.run_id = None
-            self.head.setText(f"Did not run: {model.page_words(result.get('error')) or 'no reason was given'}")
+            self.head.setText(f"Didn't run: {model.page_words(result.get('error')) or 'no reason was given'}")
             self.folder_button.hide()
             self.log.setPlainText("\n".join(lines or []))
             self._tabs(False, False, bool(lines))
@@ -136,8 +136,7 @@ class RunView(QWidget):
 
     def _show_time(self) -> None:
         doing = model.DOING_WORDS.get(self.kind, "Working")
-        self.head.setText(f"{doing}… Time {round(time.monotonic() - self.started)} s. Other actions wait until it "
-                          "finishes.")
+        self.head.setText(f"{doing}… Time {round(time.monotonic() - self.started)} s.")
 
     def _show_run(self, result: dict, delivers: bool) -> None:
         run = result.get("run") or {}

@@ -25,12 +25,12 @@ from . import model, theme
 from .forms import Rows, edit
 from .pages import Facts, Page, actions_row, button, heading, lines_label, set_lines, text
 
-RENAME_ABOUT = ("The folder's name is this site's name: it shows at the top of this window and in alert messages, "
-                "and the scheduled task and the desktop launcher are named after it. Renaming keeps the folder where "
-                "it is. The FOLIO and vendor passwords are stored by account, so they carry on as they are.")
-REGISTER_ABOUT = ("A console window opens and asks for your Windows password, so the task can run while nobody is "
-                  "signed in. FOLIO-Exchange never sees the password. The task starts every hour at minute 7, also on "
-                  "battery power, and runs the feeds that are due.")
+RENAME_ABOUT = ("The folder's name is the site's name. It shows at the top of this window and in alerts, and the "
+                "scheduled task and desktop launcher are named after it. Renaming keeps the folder in the same place, "
+                "and stored passwords keep working.")
+REGISTER_ABOUT = ("A console window opens and asks for your Windows password, so the task can run when nobody is "
+                  "signed in. Type it only in that window. FOLIO-Exchange never sees it. The task starts at 7 minutes "
+                  "past every hour, even on battery, and runs the feeds that are due.")
 
 
 def task_command(site_root: Path) -> tuple[str, list[str], str]:
@@ -77,7 +77,7 @@ class OptionsPage(Page):
         self.idle = True
         self.busy = {"rename": False, "register": False, "test": False}
         self.box.addWidget(heading("Options"))
-        self.box.addWidget(text("This site's folder, its scheduled runs and its alerts.", "About options"))
+        self.box.addWidget(text("The site folder, scheduled runs and alerts.", "About options"))
 
         self.box.addWidget(heading("Rename the site folder", 1.15))
         self.done = text(about="Renamed")
@@ -92,14 +92,14 @@ class OptionsPage(Page):
         form = QFormLayout()
         self.rows = Rows(form)
         self.name = edit("New name of the site folder")
-        self.rows.add("Folder &name:", self.name, "For example the library's name, such as Lakeside College Library. "
-                      "Letters, numbers, spaces, dots, hyphens and brackets work everywhere.")
+        self.rows.add("Folder &name:", self.name, "For example, Lakeside College Library. "
+                      "Letters, numbers, spaces, periods, hyphens and parentheses work everywhere.")
         self.box.addLayout(form)
         self.becomes = text(about="The new folder")
         self.box.addWidget(self.becomes)
         self.name.textChanged.connect(self._preview)
         self.name.returnPressed.connect(self._rename)
-        self.rename_button = theme.primary(button("&Rename folder", "Rename the site folder"))
+        self.rename_button = theme.primary(button("&Rename folder", "Rename folder"))
         self.rename_button.clicked.connect(self._rename)
         self.box.addLayout(actions_row(self.rename_button))
 
@@ -121,14 +121,14 @@ class OptionsPage(Page):
         self.set_platform(self.windows)
 
         self.box.addWidget(heading("Alerts", 1.15))
-        self.box.addWidget(text("Who hears about a run that failed, was blocked or waits for review, by email or in a "
-                                "chat channel. The mail server's password and the webhook's address are kept in "
-                                "Windows Credential Manager.", "About alerts"))
+        self.box.addWidget(text("Who hears about a run that failed, was blocked or is waiting for review, by email or "
+                                "chat. The mail server password and webhook address are stored in Windows Credential "
+                                "Manager.", "About alerts"))
         self.alerts = Facts()
         self.box.addWidget(self.alerts)
         self.alerts_state = text(about="Alert settings")
         self.box.addWidget(self.alerts_state)
-        self.alerts_button = button("Change &alerts…", "Change the alert settings")
+        self.alerts_button = button("Change &alerts…", "Change alerts")
         self.alerts_button.clicked.connect(self.change_alerts.emit)
         self.test_button = button("Send a &test alert", "Send a test alert")
         self.test_button.clicked.connect(self._test)
@@ -157,8 +157,8 @@ class OptionsPage(Page):
         self._preview()
         self.task.setText(model.task_words(summary.get("task"), self.windows))
         if not self.windows:
-            self.cron.setText(f"Nothing starts the runs until this computer's scheduler does, every hour. Add this "
-                              f"line with crontab -e:\n{cron_line(Path(summary.get('root') or '.'))}")
+            self.cron.setText(f"Add this line with crontab -e so this computer's scheduler starts the runs every "
+                              f"hour:\n{cron_line(Path(summary.get('root') or '.'))}")
 
     def _preview(self) -> None:
         parent = str(self.site.get("parent") or "")
@@ -192,7 +192,7 @@ class OptionsPage(Page):
         ``failed``, the folder moved but a step after it did not work (the window follows the folder anyway)."""
         self.renaming(False)
         if res.get("failed"):
-            self.done.setText(f"Renamed to {res['name']}, but not everything after that worked: {res['failed']}")
+            self.done.setText(f"Renamed to {res['name']}, but a later step failed: {res['failed']}")
         else:
             self.done.setText(f"Renamed to {res['name']}. " + ("One thing is left to do:" if res.get("task") else
                                                                "Nothing else needs doing."))
@@ -206,14 +206,13 @@ class OptionsPage(Page):
     def show_registered(self, registered: bool | None, error: str | None = None) -> None:
         """Whether Task Scheduler has this site's task (None: still looking, or not Windows)."""
         if error:
-            self.registered.setText(f"Could not ask Task Scheduler: {error}")
+            self.registered.setText(f"Couldn't check Task Scheduler: {error}")
         elif registered is None:
-            self.registered.setText("Looking in Task Scheduler…")
+            self.registered.setText("Checking Task Scheduler…")
         else:
             self.registered.setText(f"Task Scheduler has the task \"{schedule.task_name(Path(self.site.get('root') or '.'))}\"."
                                     if registered else
-                                    "Task Scheduler does not have this site's task yet, so no feed runs on its own. "
-                                    "Register it below.")
+                                    "Task Scheduler doesn't have this site's task yet. Register it below.")
 
     def _register(self) -> None:
         if not self.busy["register"] and self.register_button.isEnabled():
@@ -228,7 +227,7 @@ class OptionsPage(Page):
     # ------------------------------------------------------------ alerts
     def show_alerts(self, settings: dict | None, error: str | None = None) -> None:
         if error:
-            self.alerts_state.setText(f"The alert settings could not be read: {error}")
+            self.alerts_state.setText(f"Couldn't load the alert settings: {error}")
             self.alerts_state.show()
             return
         self.alerts_state.hide()

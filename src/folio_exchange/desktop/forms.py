@@ -27,8 +27,8 @@ from PySide6.QtWidgets import (
 
 from . import model, theme
 
-SCHEDULE_HELP = ("For example daily 06:00, Mon,Thu 06:00 or monthly 15 01:00 (days 1 to 28). Times are in the site's "
-                 "own time zone.")
+SCHEDULE_HELP = ("For example: daily 06:00, Mon,Thu 06:00 or monthly 15 01:00 (days 1 to 28). Times are in the "
+                 "site's time zone.")
 COMMAS = "Separate them with commas."
 
 
@@ -311,9 +311,9 @@ class LegacyFields(QWidget):
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
         self.rows = Rows(form)
-        form.addRow(note("If loan counts and dates from your old system were kept in item notes when you moved to "
-                         "FOLIO, choose the note types that hold them, so the vendor gets the whole history. "
-                         "Otherwise leave these as None.", "Items migrated from an older system"))
+        form.addRow(note("If your old system's loan counts and dates were kept in item notes when you moved to "
+                         "FOLIO, choose the note types that hold them so the vendor gets the full history. "
+                         "Otherwise, leave these as None.", "Items migrated from an older system"))
         self.boxes: dict[str, QComboBox] = {}
         for key in model.LEGACY_KEYS:
             box = QComboBox()
