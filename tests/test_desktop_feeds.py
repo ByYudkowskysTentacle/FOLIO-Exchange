@@ -174,6 +174,27 @@ def test_preview_streams_its_log_then_shows_the_rows_and_sends_nothing(qtbot, si
     assert "chq – On, no runs yet" in sidebar(w)
 
 
+def test_a_preview_takes_the_room_below_and_shows_its_rows_first(qtbot, site):
+    """Regression: the result sat below the sections, so a preview's rows were out of sight until the person
+    scrolled the whole page, and a finished action still showed its Log rather than the rows."""
+    w = window(qtbot, site)
+    w.resize(1100, 760)
+    page = on_feed(qtbot, w)
+    bar = page.verticalScrollBar()
+    qtbot.waitUntil(lambda: bar.maximum() == 0, timeout=5000)           # the page fits the window
+    qtbot.mouseClick(page.preview_button, Qt.MouseButton.LeftButton)
+    assert page.result.tabs.currentWidget() is page.result.log          # its log while it runs
+    above, below = page.split.sizes()
+    assert below > above                                                # the result has most of the room
+    settled(qtbot, w)
+    qtbot.waitUntil(lambda: page.result.rows.rowCount() > 0, timeout=15000)
+    assert page.result.tabs.currentIndex() == 0                         # then its rows, first
+    assert bar.maximum() == 0 and page.result.rows.isVisible()          # in sight, with nothing to scroll
+    page.result.tabs.setCurrentIndex(1)                                 # the person looks at the Summary…
+    page.show_rows("chq", result(w)["run"]["id"], result(w)["rows"])   # …and the rows come again
+    assert page.result.tabs.currentIndex() == 1                         # the person's choice stays
+
+
 def test_run_and_build_only_ask_the_core_to_send_or_not(qtbot, site, monkeypatch):
     """Run sends (deliver=True), Build only never does (deliver=False): the flag the page passes."""
     asked = []

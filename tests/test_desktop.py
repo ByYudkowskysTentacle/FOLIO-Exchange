@@ -14,12 +14,13 @@ if not QT_LOADS:
     pytest.skip("needs the desktop extra (PySide6) and pytest-qt, and a Qt that loads", allow_module_level=True)
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QMessageBox, QPushButton  # noqa: E402
 from sitekit import make_feed  # noqa: E402
 
 from folio_exchange import siteops, views  # noqa: E402
 from folio_exchange.desktop import app as desktop_app  # noqa: E402
 from folio_exchange.desktop import model, pages, places, single  # noqa: E402
+from folio_exchange.desktop import picker as picker_module  # noqa: E402
 from folio_exchange.desktop import window as window_module  # noqa: E402
 from folio_exchange.desktop.feed import FeedPage  # noqa: E402
 from folio_exchange.desktop.picker import NewSiteDialog, SitePicker  # noqa: E402
@@ -395,6 +396,36 @@ def test_the_picker_refuses_a_folder_without_site_yaml(qtbot, tmp_path, site):
     picker.ask_folder = lambda: str(site)
     picker.open_folder()
     assert picker.chosen == site.resolve() and not picker.is_new
+
+
+def test_a_first_start_offers_to_set_up_a_site_outside_synced_folders(qtbot, tmp_path, monkeypatch):
+    """With no recent sites, Enter sets up a new site, which starts in Documents, or in the home folder when
+    Documents is in OneDrive (a site must not live in a synced folder)."""
+    picker = SitePicker()
+    qtbot.addWidget(picker)
+    new = next(b for b in picker.findChildren(QPushButton) if b.accessibleName() == "Set up a new site")
+    assert new.isDefault() and not picker.open_button.isEnabled()
+    docs, home = tmp_path / "OneDrive" / "Documents", tmp_path / "home"
+    docs.mkdir(parents=True)
+    home.mkdir()
+
+    class Paths:
+        StandardLocation = picker_module.QStandardPaths.StandardLocation
+
+        @staticmethod
+        def writableLocation(where):  # noqa: N802 - Qt's naming
+            return str(docs if where == Paths.StandardLocation.DocumentsLocation else home)
+
+    monkeypatch.setattr(picker_module, "QStandardPaths", Paths)
+    dialog = NewSiteDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.parent_edit.text() == str(home)
+    dialog.name_edit.setText("Lakeside Library")
+    assert str(home / "Lakeside Library") in dialog.full.text()
+    plain = tmp_path / "Documents"
+    plain.mkdir()
+    docs = plain
+    assert NewSiteDialog().parent_edit.text() == str(plain)             # Documents, when it is not synced
 
 
 def test_a_new_site_needs_a_good_name(qtbot, tmp_path):

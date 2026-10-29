@@ -123,12 +123,17 @@ def _audit(site: Site, feed: str | None, action: str, detail: dict) -> None:
 
 
 # ------------------------------------------------------------------ the FOLIO connection
+def synced_folder(path: Path | str) -> bool:
+    """Whether ``path`` looks like it is inside OneDrive or Dropbox, where a site should not live."""
+    return any(w in str(path).lower() for w in ("onedrive", "dropbox"))
+
+
 def site_state(root: Path) -> dict:
     """Whether the folder holds a usable site, and its FOLIO connection (never the password)."""
     root = Path(root)
     state: dict[str, Any] = {"root": str(root), "ready": False, "problem": None, "folio": {},
                              "keyring": credentials.keyring_available(),
-                             "synced_folder": any(w in str(root).lower() for w in ("onedrive", "dropbox"))}
+                             "synced_folder": synced_folder(root)}
     if not (root / SITE_FILE).is_file():
         return state
     try:
