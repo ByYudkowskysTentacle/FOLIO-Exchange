@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import setupops
-from . import model
+from . import model, theme
 from .forms import (
     SCHEDULE_HELP,
     LegacyFields,
@@ -112,9 +112,9 @@ class FeedWizard(Page):
         self.box.addWidget(self.problem)
         self.back_button = button("&Back", "Back to the step before")
         self.back_button.clicked.connect(self.back)
-        self.next_button = button("&Next", "Next step")
+        self.next_button = theme.primary(button("&Next", "Next step"))
         self.next_button.clicked.connect(self.next)
-        self.add_button = button("&Add feed", "Add the feed, paused and as a dry run")
+        self.add_button = theme.primary(button("&Add feed", "Add the feed, paused and as a dry run"))
         self.add_button.clicked.connect(self._add)
         self.cancel_button = button("Cancel", "Cancel adding a feed")
         self.cancel_button.clicked.connect(self.cancelled.emit)

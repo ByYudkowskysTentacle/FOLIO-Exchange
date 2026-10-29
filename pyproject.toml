@@ -45,7 +45,7 @@ folio-exchange-app = "folio_exchange.desktop:main"   # a GUI script: Windows ope
 where = ["src"]
 
 [tool.setuptools.package-data]
-folio_exchange = ["recipes/*/*.yaml", "recipes/*/*.md", "recipes/*/samples/*", "schemas/*.json", "web/*", "recipe_sources.yaml"]
+folio_exchange = ["recipes/*/*.yaml", "recipes/*/*.md", "recipes/*/samples/*", "schemas/*.json", "web/*", "desktop/*.svg", "recipe_sources.yaml"]
 
 [tool.ruff]
 line-length = 120

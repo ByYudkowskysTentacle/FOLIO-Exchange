@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model
+from . import model, theme
 from .delivery import LoginBox
 from .forms import announce
 from .pages import (
@@ -112,7 +112,7 @@ class FeedPage(Page):
         self.preview_button = button("Pre&view", "Preview: build sample files and send nothing")
         self.preview_button.setToolTip("Preview (Ctrl+Enter): builds sample files from live data and sends nothing")
         self.preview_button.clicked.connect(self._preview)
-        self.run_button = button("&Run", "Run: update from FOLIO, build, check, then send or hold for review")
+        self.run_button = theme.primary(button("&Run", "Run: update from FOLIO, build, check, then send or hold for review"))
         self.run_button.setToolTip("Update from FOLIO, build, check, then send (or hold for review)")
         self.run_button.clicked.connect(self._run)
         self.build_button = button("&Build only", "Build only: update and build the files, and send nothing")
@@ -129,13 +129,14 @@ class FeedPage(Page):
         self.box.addWidget(self.notice)
 
         self.waiting = QFrame()
+        self.waiting.setObjectName("waiting")
         self.waiting.setFrameShape(QFrame.Shape.StyledPanel)
         wbox = QVBoxLayout(self.waiting)
         self.waiting_text = text(about="A run waits for you")
         wbox.addWidget(self.waiting_text)
         self.waiting_folder = button("Open its &folder", "Open the waiting run's folder")
         self.waiting_folder.clicked.connect(self._open_waiting_folder)
-        self.review_button = button("Review and s&end…", "Review and send the waiting run")
+        self.review_button = theme.primary(button("Review and s&end…", "Review and send the waiting run"))
         self.review_button.clicked.connect(self._review)
         wbox.addLayout(actions_row(self.waiting_folder, self.review_button))
         self.waiting.hide()
@@ -250,7 +251,7 @@ class FeedPage(Page):
         self.paused_text = text(about="This feed is paused")
         box.addWidget(self.paused_title)
         box.addWidget(self.paused_text)
-        self.resume_button = button("Resume feed", "Resume this feed")
+        self.resume_button = theme.primary(button("Resume feed", "Resume this feed"))
         self.resume_button.clicked.connect(lambda: self.set_enabled.emit(self.name, True))
         self.resume_row = QWidget()
         self.resume_row.setLayout(actions_row(self.resume_button))

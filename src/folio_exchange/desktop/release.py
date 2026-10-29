@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QWidget
 
-from . import model
+from . import model, theme
 from .pages import Facts, actions_row, button, heading, lines_label, set_lines, text
 
 
@@ -31,7 +31,7 @@ class ReleaseDialog(QDialog):
         self.newer.setVisible(bool(summary.get("newer_runs")))
         box.addWidget(self.newer)
         self.cancel_button = button("&Cancel", "Cancel: send nothing")
-        self.send_button = button("&Send files", "Send files")
+        self.send_button = theme.primary(button("&Send files", "Send files"))
         self.cancel_button.setDefault(True)
         for b in (self.cancel_button, self.send_button):
             b.setAutoDefault(True)                     # Enter acts on the focused button

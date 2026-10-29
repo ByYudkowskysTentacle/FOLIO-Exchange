@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import setupops
-from . import model
+from . import model, theme
 from .forms import (
     COMMAS,
     SCHEDULE_HELP,
@@ -131,7 +131,7 @@ class SettingsDialog(QDialog):
         box.addWidget(scroll, 1)
         self.problem = problem_label()
         box.addWidget(self.problem)
-        self.review_button = button("Re&view changes", "Review the changes before saving them")
+        self.review_button = theme.primary(button("Re&view changes", "Review the changes before saving them"))
         self.review_button.setDefault(True)
         self.review_button.clicked.connect(self.show_review)
         cancel = button("Cancel", "Close without saving")
@@ -154,7 +154,7 @@ class SettingsDialog(QDialog):
         self.review_note = note(about="After saving")
         box.addWidget(self.review_note)
         box.addStretch(1)
-        self.save_button = button("&Save", "Save the settings")
+        self.save_button = theme.primary(button("&Save", "Save the settings"))
         self.save_button.clicked.connect(self._save)
         self.apply_button = button("&Apply my changes to the file as it is now",
                                    "Apply my changes to the file as it is now, and review them again")
