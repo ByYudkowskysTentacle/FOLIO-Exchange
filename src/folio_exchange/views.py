@@ -201,14 +201,20 @@ def read_rows(site: Site, feed: Feed, row: dict, output: str | None, limit: int 
     path = runner.run_path(site, row["run_dir"]) / name
     if not path.is_file():
         return {"output": o["name"], "file": name, "header": [], "rows": [], "total": 0, "missing": True}
-    with open(path, newline="", encoding="utf-8") as fh:
-        reader = csv.reader(fh, delimiter=o["delimiter"])
-        header = next(reader, []) if o.get("header", True) else [c["header"] for c in o["columns"]]
-        rows, total = [], 0
-        for r in reader:
-            total += 1
-            if len(rows) < limit:
-                rows.append(r)
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh, delimiter=o["delimiter"])
+            header = next(reader, []) if o.get("header", True) else [c["header"] for c in o["columns"]]
+            rows, total = [], 0
+            for r in reader:
+                total += 1
+                if len(rows) < limit:
+                    rows.append(r)
+    except csv.Error as exc:
+        # A value longer than the csv module takes (131,072 characters), or a quote it cannot pair: the run itself
+        # is still shown, only without its rows.
+        raise ConfigError(f"The rows of {name} could not be read ({exc}). Open the run's folder to look at the "
+                          "file itself.") from None
     return {"output": o["name"], "outputs": [d["name"] for d in delimited], "file": name, "header": header,
             "rows": rows, "total": total}
 

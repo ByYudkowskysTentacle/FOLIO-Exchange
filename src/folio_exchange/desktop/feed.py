@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QApplication, QFormLayout, QFrame, QLabel, QTabWidget, QVBoxLayout, QWidget
 
 from . import model
+from .delivery import LoginBox
+from .forms import announce
 from .pages import (
     Facts,
     Page,
@@ -56,6 +58,10 @@ class FeedPage(Page):
     open_run = Signal(str, int)               # the feed, a run's id
     rows_wanted = Signal(str, int, str)       # the feed, a run's id, an output
     open_in_page = Signal(str)
+    edit_settings = Signal(str)
+    change_delivery = Signal(str)
+    save_password = Signal(str)               # the window takes the password from ``login``
+    save_key = Signal(str)                    # the window takes the key file and passphrase from ``login``
 
     def __init__(self) -> None:
         super().__init__()
@@ -68,6 +74,8 @@ class FeedPage(Page):
         self.reviewing = self.toggling = False
         self.unconfirmed = False              # an SFTP server key not confirmed yet: no delivery test
         self.waiting_id: int | None = None
+        self.server_keys: dict[str, dict] = {}    # each feed's server key, as read when its delivery was saved
+        self.keyring = True
         self.layout_shown: object = None
         self.runs_shown: list[dict] | None = None
         self.title = heading("Feed")
@@ -113,6 +121,7 @@ class FeedPage(Page):
         self.tabs.addTab(self._settings(), TABS[2])
         self.tabs.addTab(self._delivery(), TABS[3])
         self.tabs.addTab(self._history(), TABS[4])
+        self.tabs.currentChanged.connect(self._tab_changed)
         self.box.addWidget(self.tabs)
         self.result = RunView(NO_RESULT)
         self.result.open_folder.connect(self.open_folder)
@@ -134,8 +143,19 @@ class FeedPage(Page):
             form.addRow(caption(f"{words}:"), self.fields[key])
         self.form = form
         box.addLayout(form)
+        self.setup_delivery = button("Set u&p delivery", "Set up where this feed's files go")
+        self.setup_delivery.clicked.connect(lambda: self.show_tab(3))
+        box.addLayout(actions_row(self.setup_delivery))
         box.addStretch(1)
         return w
+
+    def _tab_changed(self, index: int) -> None:
+        if index != 3:
+            self.login.clear_secrets()          # leaving the Delivery tab drops a typed, unsent password (as the page)
+
+    def show_tab(self, index: int) -> None:
+        self.tabs.setCurrentIndex(index)
+        self.tabs.tabBar().setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _layout(self) -> QWidget:
         w = QWidget()
@@ -145,9 +165,11 @@ class FeedPage(Page):
     def _settings(self) -> QWidget:
         w = QWidget()
         box = QVBoxLayout(w)
+        self.edit_button = button("Edit setti&ngs…", "Edit this feed's settings")
+        self.edit_button.clicked.connect(lambda: self.edit_settings.emit(self.name))
+        box.addLayout(actions_row(self.edit_button))
         box.addWidget(text("The layout (which columns and fields the vendor gets) comes from the recipe: see the "
-                           "Layout tab. Changing these settings comes to this app later; until then, use Open this "
-                           "feed in the browser page.", "About the settings"))
+                           "Layout tab.", "About the settings"))
         self.basics = Facts()
         box.addWidget(self.basics)
         box.addWidget(heading("Filters", 1.0))
@@ -169,24 +191,39 @@ class FeedPage(Page):
     def _delivery(self) -> QWidget:
         w = QWidget()
         box = QVBoxLayout(w)
+        self.added = text(about="Feed added")
+        self.added.hide()
+        box.addWidget(self.added)
         box.addWidget(heading("Where the files go", 1.15))
         self.delivery_problem = text(about="Problem")
         box.addWidget(self.delivery_problem)
         self.where = Facts()
         box.addWidget(self.where)
+        self.server_key = lines_label("The server's key, as read when the delivery was saved")
+        self.server_key.hide()
+        box.addWidget(self.server_key)
+        self.change_button = button("&Change delivery…", "Change where this feed's files go")
+        self.change_button.clicked.connect(lambda: self.change_delivery.emit(self.name))
         self.test_button = button("&Test delivery", "Test delivery: log in and look at the folder, send nothing")
         self.test_button.setToolTip("Logs in and looks at the folder; it sends nothing.")
         self.test_button.clicked.connect(self._test)
         self.test_why = text("The test waits until the server key is confirmed.", "Why the test waits")
-        box.addLayout(actions_row(self.test_button, self.test_why))
+        box.addLayout(actions_row(self.change_button, self.test_button, self.test_why))
         self.test_result = text(about="Delivery test")
         box.addWidget(self.test_result)
+        self.login = LoginBox()
+        self.login.save_password.connect(lambda: self.save_password.emit(self.name))
+        self.login.save_key.connect(lambda: self.save_key.emit(self.name))
+        box.addWidget(self.login)
         self.paused_title = heading("This feed is paused", 1.0)
         self.paused_text = text(about="This feed is paused")
         box.addWidget(self.paused_title)
         box.addWidget(self.paused_text)
-        box.addWidget(text("Changing where the files go, and storing the password or key, comes to this app "
-                           "later; until then, use Open this feed in the browser page.", "About delivery"))
+        self.resume_button = button("Resume feed", "Resume this feed")
+        self.resume_button.clicked.connect(lambda: self.set_enabled.emit(self.name, True))
+        self.resume_row = QWidget()
+        self.resume_row.setLayout(actions_row(self.resume_button))
+        box.addWidget(self.resume_row)
         box.addStretch(1)
         return w
 
@@ -209,6 +246,8 @@ class FeedPage(Page):
         another = d["name"] != self.name
         if another:
             self.notice.hide()
+            self.login.clear_secrets()                  # nothing typed for one feed stays for the next
+            self.added.hide()
         self.name, self.detail, self.settings = d["name"], d, settings or {}
         recipe = d.get("recipe") or {}
         dl = d.get("delivery") or {}
@@ -267,6 +306,7 @@ class FeedPage(Page):
         if not d.get("waiting") and last and last.get("status") == "failed":
             notes.append(f"The last run failed. {model.page_words(last.get('error'))}".rstrip())
         transport = (d.get("delivery") or {}).get("transport")
+        self.setup_delivery.setVisible(not transport or transport == "none")
         if not transport or transport == "none":
             notes.append("This feed has nowhere to send files yet: it is a dry run. Preview and Run build its files "
                          "on this computer only.")
@@ -349,14 +389,22 @@ class FeedPage(Page):
         dl = st.get("delivery") or {"transport": (d.get("delivery") or {}).get("transport") or "none"}
         self.where.show_rows(model.delivery_rows(dl))
         transport = dl.get("transport") or "none"
+        if transport != "none":
+            self.added.hide()               # "nothing is sent until a delivery is set up" is no longer true (the page's)
         self.unconfirmed = transport == "sftp" and not dl.get("host_key_confirmed")
         self.test_button.setVisible(transport != "none")
+        self.change_button.setVisible(not st.get("error"))
+        self.login.setVisible(transport == "sftp" and not st.get("error"))
+        if transport == "sftp":
+            self.login.show_login(self.name, dl, self.keyring)
+        self._show_server_key()
         self.test_why.setVisible(self.unconfirmed)
         self.test_result.setText(self.checks.get(self.name, ""))
         self.test_result.setVisible(bool(self.checks.get(self.name)))
         paused = not d.get("enabled")
         self.paused_title.setVisible(paused)
         self.paused_text.setVisible(paused)
+        self.resume_row.setVisible(paused)
         if paused:
             parts = ["Its schedule does not run it, but you can still Preview and Run it by hand."]
             parts.append("It has no delivery yet: resumed, its scheduled runs only build files on this computer."
@@ -366,8 +414,7 @@ class FeedPage(Page):
                          "chosen Review and send…")
             if self.unconfirmed:
                 parts.append("The server key is not confirmed yet, so nothing is sent even when it runs. Enter the "
-                             "vendor's fingerprint under Change delivery on the feed's page in the browser page "
-                             "first.")
+                             "vendor's fingerprint under Change delivery… first.")
             self.paused_text.setText(" ".join(parts))
 
     # ------------------------------------------------------------ actions under way
@@ -380,7 +427,8 @@ class FeedPage(Page):
         long = idle and not reviewing
         wanted = {self.preview_button: long, self.run_button: long, self.build_button: long,
                   self.pause_button: idle and not toggling, self.review_button: idle and not reviewing,
-                  self.test_button: long and not self.unconfirmed}
+                  self.test_button: long and not self.unconfirmed, self.resume_button: idle and not toggling,
+                  self.edit_button: long, self.change_button: long}
         focused = QApplication.focusWidget()
         if focused in wanted and not wanted[focused] and self.result.head.isVisible():
             # Disabling the focused button would move the focus on to the next one ("Open this feed in the
@@ -388,6 +436,7 @@ class FeedPage(Page):
             self.result.head.setFocus(Qt.FocusReason.OtherFocusReason)
         for b, on in wanted.items():
             b.setEnabled(on)
+        self.login.set_idle(long)
 
     def say(self, message: str | None) -> None:
         """What just happened, above the sections (the page's short notices): plain text, as written."""
@@ -444,6 +493,42 @@ class FeedPage(Page):
         res["rows"], res["rows_error"] = rows, error
         if name == self.name:
             self.result.show_result(res, self.delivers())
+
+    def _show_server_key(self) -> None:
+        """The server's key (or keys) as read when this feed's delivery was saved here, as the page shows it."""
+        key = self.server_keys.get(self.name)
+        offered = (key or {}).get("keys") if isinstance((key or {}).get("keys"), list) else None
+        if not key:
+            set_lines(self.server_key, [], "")
+        elif offered and len(offered) > 1:
+            set_lines(self.server_key, [f"The server offers several keys, as read when you saved. The "
+                                        f"{key.get('type') or 'first'} key is the one kept for this feed."]
+                      + [f"{k.get('type') or 'key'}: {k['sha256']} (older form: {k['md5']})" for k in offered], "")
+        else:
+            set_lines(self.server_key, [f"The server's key, as read when you saved: {key['sha256']} (older form: "
+                                        f"{key['md5']})"], "")
+        self.server_key.setVisible(bool(key))
+
+    def delivery_saved(self, name: str, server_key: dict | None, words: str) -> None:
+        """A delivery was saved for ``name``: keep the server key it read, and say what happens now."""
+        if server_key:
+            self.server_keys[name] = server_key
+        else:
+            self.server_keys.pop(name, None)
+        self.checks.pop(name, None)                  # an earlier test was of the old destination
+        if name == self.name:
+            self._show_server_key()
+            self.test_result.hide()
+            self.say(words)
+
+    def feed_added(self, name: str, title: str) -> None:
+        """A feed added in the wizard: its Delivery tab says what it is, as the page's does."""
+        self.tabs.setCurrentIndex(3)
+        self.added.setText(f"{title} is added, as a paused dry run. You can Preview and Run it now: its files stay on "
+                           "this computer. Nothing is sent to the vendor until a delivery is set up here.")
+        self.added.show()
+        self.added.setFocus(Qt.FocusReason.OtherFocusReason)     # the window moved here itself: say where, and why
+        announce(self.added)
 
     def running_here(self) -> bool:
         return (self.results.get(self.name) or {}).get("state") == "running"

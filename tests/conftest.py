@@ -54,6 +54,13 @@ def qt_garbage_on_the_main_thread(request):
     collector.stop()
 
 
+# Never touch the developer's real credential store, not even from a thread that outlives its test (a window's
+# reading of the site, or a look at FOLIO still retrying after the mock FOLIO stopped): "keyring" cannot be imported
+# for the whole run. Regression: blocked only during each test, a leftover thread imported the real package between
+# tests, and the next test's secrets went to Windows Credential Manager instead of its fake.
+sys.modules["keyring"] = None
+
+
 @pytest.fixture(autouse=True)
 def no_real_keyring(monkeypatch):
     """Never touch the developer's real credential store; tests that need one install a fake."""
@@ -75,6 +82,16 @@ def no_real_app_settings(monkeypatch, tmp_path_factory):
 
     folder = tmp_path_factory.mktemp("app-settings")
     monkeypatch.setattr(places, "config_dir", lambda: folder)
+
+
+@pytest.fixture(autouse=True)
+def no_real_desktop(monkeypatch, tmp_path_factory):
+    """A site renamed in a test carries its desktop launcher along (siteops.rename_site): that is a test folder,
+    never the developer's own Desktop, where it could rewrite or delete a real launcher."""
+    from folio_exchange import launcher
+
+    folder = tmp_path_factory.mktemp("desktop")
+    monkeypatch.setattr(launcher, "desktop", lambda: folder)
 
 
 @pytest.fixture

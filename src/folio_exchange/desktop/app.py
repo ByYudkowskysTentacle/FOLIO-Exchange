@@ -61,7 +61,7 @@ def site_from(named: str | None) -> Path | None:
         new = siteops.new_site_root(named)
         if new is not None:
             siteops.make_site_folder(new)
-            log.info("New site at %s: the browser page starts with the FOLIO connection", new)
+            log.info("New site at %s: the app starts with the FOLIO connection", new)
             return new
         return find_site(named)
     picker = SitePicker()

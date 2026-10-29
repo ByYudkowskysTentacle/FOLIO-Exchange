@@ -144,6 +144,14 @@ def _task_exists(name: str, run: Callable[..., Any]) -> bool:
     return done.returncode == 0
 
 
+def task_registered(root: Path, run: Callable[..., Any] | None = None) -> bool | None:
+    """Whether this site's scheduled task is registered with the Windows Task Scheduler (None elsewhere, where
+    the hourly start is a crontab line FOLIO-Exchange cannot see). Asks schtasks, so it can take a moment."""
+    if platform.system() != "Windows":
+        return None
+    return _task_exists(schedule.task_name(Path(root)), run or subprocess.run)
+
+
 def _carry_alert_secrets(site_alerts: dict, old: str, new: str) -> list[str]:
     """Copy the alert addresses stored in Credential Manager under the old folder name to the new one. The old
     entries stay (another site with the same folder name elsewhere may share them); nothing is overwritten."""

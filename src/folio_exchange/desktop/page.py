@@ -1,4 +1,4 @@
-"""The browser page, for what the app does not show yet: served from this process, sharing its job runner.
+"""The browser page, a second way in (Ctrl+B): served from this process, sharing its job runner.
 
 The page's server starts the first time it is needed, on a free 127.0.0.1 port, with the app's own ``Jobs``,
 so the app and the page run one action at a time between them. Each open uses a fresh one-time link, so the

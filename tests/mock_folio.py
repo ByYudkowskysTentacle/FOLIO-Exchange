@@ -145,6 +145,7 @@ class MockFolio:
         self.legacy_login = 404          # what the legacy /authn/login answers: a missing route, as in real Okapi
         self.expire_tokens = False
         self.valid_tokens: set[str] = set()
+        self.password = "secret"         # what a login must give (a test may make it more distinctive)
         handler = self._handler()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -206,7 +207,7 @@ class MockFolio:
                 if u.path == "/authn/login-with-expiry":
                     if mock.fail_login:
                         return self._send(mock.fail_login.pop(0), {"error": "gateway busy"})
-                    if payload.get("password") != "secret":
+                    if payload.get("password") != mock.password:
                         return self._send(422, {"errors": [{"message": "bad password"}]})
                     tok = uuid.uuid4().hex
                     mock.valid_tokens.add(tok)
