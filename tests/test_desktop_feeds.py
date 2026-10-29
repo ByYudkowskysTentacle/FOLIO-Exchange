@@ -21,7 +21,7 @@ from folio_exchange import views  # noqa: E402
 from folio_exchange.config import load_site  # noqa: E402
 from folio_exchange.desktop import window as window_module  # noqa: E402
 from folio_exchange.desktop.activity import ActivityPage  # noqa: E402
-from folio_exchange.desktop.pages import HomePage, LaterPage  # noqa: E402
+from folio_exchange.desktop.pages import HomePage  # noqa: E402
 from folio_exchange.desktop.release import ReleaseDialog  # noqa: E402
 from folio_exchange.desktop.runview import RunView  # noqa: E402
 from folio_exchange.desktop.window import MainWindow  # noqa: E402
@@ -145,11 +145,11 @@ def test_an_sftp_delivery_shows_where_the_password_comes_from_never_the_password
     texts += [t.item(r, c).text() for t in w.findChildren(QTableWidget) for r in range(t.rowCount())
               for c in range(t.columnCount()) if t.item(r, c) is not None]
     assert not [t for t in texts if secret in t]                          # named by where it is, never shown
-    # Regression: both texts sent people to a Change delivery button the app does not have.
-    assert page.where.values["Server key"].text().endswith(
-        "under Change delivery on the feed's page in the browser page.")
+    # Regression (D2): both texts sent people to a Change delivery button the app did not have; D3 brings it.
+    assert page.where.values["Server key"].text().endswith("under Change delivery… on this tab.")
+    assert shown(page.change_button)
     assert shown(page.paused_text) and page.paused_text.text().endswith(
-        "Enter the vendor's fingerprint under Change delivery on the feed's page in the browser page first.")
+        "Enter the vendor's fingerprint under Change delivery… first.")
 
 
 # ------------------------------------------------------------ preview, run, build only
@@ -486,12 +486,13 @@ def test_activity_lists_runs_and_changes_newest_first(qtbot, site):
     assert act.notice.text().startswith("Showing the run of chq")
 
 
-def test_activity_is_in_the_app_and_recipes_and_options_stay_on_the_page(qtbot, site):
+def test_activity_recipes_and_options_are_in_the_app(qtbot, site):
+    """D3: Recipes and Options were the browser page's until now."""
     w = window(qtbot, site)
-    assert "activity" not in w.later and set(w.later) == {"recipes", "options"}
-    for key in ("recipes", "options"):
+    for key, page in (("activity", w.activity), ("recipes", w.recipes), ("options", w.options),
+                      ("add", w.wizard)):
         w.select(key)
-        assert isinstance(w.stack.currentWidget(), LaterPage)
+        assert w.stack.currentWidget() is page
 
 
 # ------------------------------------------------------------ Home

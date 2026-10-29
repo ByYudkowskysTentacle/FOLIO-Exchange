@@ -27,7 +27,7 @@ from typing import Any
 
 import requests
 
-from . import credentials, delivery, runner, schedule
+from . import credentials, delivery, notify, runner, schedule
 from .client import FolioClient, probe, tls_verify
 from .config import SITE_DEFAULTS, SITE_FILE, Site, load_site, merge, read_yaml, write_yaml
 from .errors import ConfigError, FxError, RecipeError
@@ -104,6 +104,15 @@ def write_settings(path: Path, data: dict, header: str) -> Path | None:
         backup.write_text(path.read_text(encoding="utf-8-sig"), encoding="utf-8")
     write_yaml(path, data, header)
     return backup
+
+
+WHERE = {"ui": "from the page", "app": "from the app", "cli": "from the command line"}
+
+
+def _from(via: str) -> str:
+    """Where a change was made, for the activity log's action ("feed added from the app"); ``detail.from`` keeps
+    the short form."""
+    return WHERE.get(via, f"from {via}")
 
 
 def _audit(site: Site, feed: str | None, action: str, detail: dict) -> None:
@@ -192,7 +201,7 @@ def connect(root: Path, base_url: str, tenant: str, username: str, password: str
         write_settings(path, raw, SITE_HEADER)
     site = load_site(root)
     if changed:
-        _audit(site, None, "site settings written from the page", {"file": SITE_FILE, "from": via})
+        _audit(site, None, f"site settings written {_from(via)}", {"file": SITE_FILE, "from": via})
     if password:
         _audit(site, None, "secret stored", {"what": "FOLIO password", "service": credentials.FOLIO_SERVICE,
                                              "account": account, "from": via})
@@ -278,14 +287,16 @@ def _recipe_for(library: RecipeLibrary, uses: Any) -> Recipe | None:
         return None
 
 
-def feed_settings(site: Site, library: RecipeLibrary, name: str) -> dict:
+def feed_settings(site: Site, library: RecipeLibrary, name: str, *,
+                  loaded: tuple[list, dict[str, str]] | None = None) -> dict:
     """What the feed form shows: the effective settings (the recipe's defaults where the feed sets nothing), the
-    delivery without secrets, and the file's version for saving."""
+    delivery without secrets, and the file's version for saving. ``loaded`` is ``load_all``'s answer when the
+    caller has it already (the app shows every feed at once, and loading them all again for each is slow)."""
     path = _feed_path(site, name)
     if not path.is_file():
         raise LookupError(f"No feed called {name!r}")
     raw = read_yaml(path)
-    feeds, errors = load_all(site, library)
+    feeds, errors = loaded if loaded is not None else load_all(site, library)
     feed = next((f for f in feeds if f.name == name), None)
     recipe = feed.recipe if feed else _recipe_for(library, raw.get("uses"))
     rdata = recipe.data if recipe else {}
@@ -469,8 +480,8 @@ def add_feed(site: Site, library: RecipeLibrary, name: str, uses: str, values: d
     raw["delivery"] = {"transport": "none"}
     site.feeds_dir.mkdir(parents=True, exist_ok=True)
     _save_checked(site, library, name, path, raw, None)
-    _audit(site, name, "feed added from the page (paused)", {"file": f"feeds/{name}.yaml", "uses": raw["uses"],
-                                                            "from": via})
+    _audit(site, name, f"feed added {_from(via)} (paused)", {"file": f"feeds/{name}.yaml", "uses": raw["uses"],
+                                                             "from": via})
     return feed_settings(site, library, name)
 
 
@@ -482,7 +493,7 @@ def save_feed(site: Site, library: RecipeLibrary, name: str, values: dict, *, ve
     changed = _apply(raw, values, _recipe_for(library, raw.get("uses")))
     if changed:
         _save_checked(site, library, name, path, raw, old)
-        _audit(site, name, "feed settings changed from the page", {"file": f"feeds/{name}.yaml",
+        _audit(site, name, f"feed settings changed {_from(via)}", {"file": f"feeds/{name}.yaml",
                                                                     "changed": changed, "from": via})
     return {**feed_settings(site, library, name), "changed": changed}
 
@@ -599,7 +610,7 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
     if old_d.get("private_key") and not d.get("private_key"):
         _drop_our_key(site, name, old_d["private_key"])
     host_key = None if keys is None else ("not confirmed" if pause else "confirmed")
-    _audit(site, name, "feed delivery set from the page", {"file": f"feeds/{name}.yaml", "transport": transport,
+    _audit(site, name, f"feed delivery set {_from(via)}", {"file": f"feeds/{name}.yaml", "transport": transport,
                                                           "host_key": host_key, "from": via})
     return {**feed_settings(site, library, name), "server_key": keys}
 
@@ -768,3 +779,154 @@ def store_private_key(site: Site, library: RecipeLibrary, name: str, key_text: s
     _audit(site, name, "SFTP private key stored", {"file": f"{KEYS_DIR}/{name}.key", "key": public,
                                                    "passphrase": bool(passphrase), "from": via})
     return {**feed_settings(site, library, name), "key": public}
+
+
+# ------------------------------------------------------------------ alerts
+def _smtp_account(email: dict) -> str:
+    return credentials.sftp_account(str(email.get("username") or ""), str(email.get("smtp_host") or ""))
+
+
+def alert_settings(site: Site) -> dict:
+    """What the alerts form shows: when alerts go, the email settings, and whether a webhook is set up, with
+    where each secret comes from (never the secret), and site.yaml's version for saving."""
+    a = site.alerts
+    email = a.get("email") if isinstance(a.get("email"), dict) else None
+    out_email = None
+    if email:
+        out_email = {k: email.get(k) for k in ("to", "from", "smtp_host", "smtp_port", "starttls", "username")}
+        out_email["password"] = (credentials.source(email.get("secret"), credentials.SMTP_SERVICE,
+                                                    _smtp_account(email)) if email.get("username") else None)
+    webhook = None
+    if a.get("webhook"):
+        webhook = {"format": a.get("webhook_format") or "slack",
+                   "url": credentials.source(a["webhook"], credentials.WEBHOOK_SERVICE, site.name)}
+    return {"on": a.get("on") or "failure", "email": out_email, "webhook": webhook,
+            "keyring": credentials.keyring_available(), "version": file_version(site.root / SITE_FILE)}
+
+
+def _clean_email(given: dict, old: dict) -> dict:
+    """The email settings from a form, checked as site.yaml's own check would."""
+    to = given.get("to")
+    if isinstance(to, str):
+        to = re.split(r"[,;\s]+", to)
+    to = [str(x).strip() for x in (to or []) if str(x).strip()]
+    bad = next((x for x in to if not re.fullmatch(r"[^@\s]+@[^@\s]+", x)), None)
+    if not to or bad:
+        raise ConfigError(f"{bad!r} is not an email address." if bad else "Enter the address to send alerts to.")
+    sender = str(given.get("from") or "").strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+", sender):
+        raise ConfigError("Enter the address the alerts come from (the mail server may insist on its own).")
+    host = str(given.get("smtp_host") or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", host):
+        raise ConfigError("Enter the mail server's name, e.g. smtp.office365.com.")
+    try:
+        port = int(given.get("smtp_port") or 587)
+    except (TypeError, ValueError):
+        port = 0
+    if not 0 < port < 65536:
+        raise ConfigError("Enter the mail server's port, usually 587.")
+    starttls = given.get("starttls", True)
+    if not isinstance(starttls, bool):
+        raise ConfigError("STARTTLS: expected yes or no.")
+    username = str(given.get("username") or "").strip() or None
+    if username and not starttls and port != 465:
+        raise ConfigError("Logging in to the mail server needs STARTTLS (or port 465), so the password is never "
+                          "sent unencrypted.")
+    out: dict[str, Any] = {"to": to, "from": sender, "smtp_host": host, "smtp_port": port, "starttls": starttls}
+    if username:
+        out["username"] = username
+        old_ref = old.get("secret") if old.get("username") == username and old.get("smtp_host") == host else None
+        out["secret"] = old_ref if credentials.is_secret_ref(old_ref) else "keyring"
+    return out
+
+
+def save_alerts(root: Path, form: dict, *, smtp_password: str | None = None, webhook_url: str | None = None,
+                version: str | None, via: str = "app") -> dict:
+    """Set when alerts go (``on``), the email settings and the chat webhook. The mail server's password and the
+    webhook address are secrets: they go to the keyring (the webhook under the site folder's name, as `secret
+    set webhook` keeps it), only once the rest is checked and site.yaml would still load. An empty password or
+    address keeps the one stored. ``form`` is {on, email: {...} or None, webhook: {format} or None}."""
+    root = Path(root)
+    path = root / SITE_FILE
+    old = path.read_bytes() if path.is_file() else None
+    if old is None:
+        raise ConfigError("Connect the site to FOLIO first.")
+    if version is not None and hashlib.sha256(old).hexdigest() != version:
+        raise ConfigError("site.yaml changed since this form was opened (by hand, or in another window). Nothing "
+                          "was saved: open the alerts again and make the change again.")
+    raw = read_yaml(path)
+    site = load_site(root)
+    alerts = dict(raw.get("alerts") or {})
+    before = repr(alerts)
+    on = form.get("on") or "failure"
+    if on not in ("failure", "always", "never"):
+        raise ConfigError("Choose when alerts are sent: failure, always or never.")
+    alerts["on"] = on
+    secrets_wanted: list[tuple[str, str, str, str]] = []     # (what, service, account, value)
+    email = form.get("email")
+    if email:
+        if not isinstance(email, dict):
+            raise ConfigError("email: expected a set of settings.")
+        old_email = alerts.get("email") if isinstance(alerts.get("email"), dict) else {}
+        cleaned = _clean_email(email, old_email)
+        if cleaned.get("username"):
+            account = _smtp_account(cleaned)
+            if smtp_password:
+                if cleaned["secret"] != "keyring":
+                    raise ConfigError(f"The mail server password is read from the environment variable "
+                                      f"{cleaned['secret'][4:]}; set that instead.")
+                secrets_wanted.append(("SMTP password", credentials.SMTP_SERVICE, account, smtp_password))
+            elif not credentials.resolve(cleaned["secret"], credentials.SMTP_SERVICE, account):
+                raise ConfigError(f"Enter the mail server password for {cleaned['username']}: it is kept in Windows "
+                                  "Credential Manager.")
+        elif smtp_password:
+            raise ConfigError("Enter the mail server's user name too, or leave the password empty.")
+        alerts["email"] = cleaned
+    else:
+        alerts.pop("email", None)
+    hook = form.get("webhook")
+    if hook:
+        if not isinstance(hook, dict) or hook.get("format", "slack") not in ("slack", "teams"):
+            raise ConfigError("Choose the kind of webhook: slack or teams.")
+        alerts["webhook_format"] = hook.get("format") or "slack"
+        ref = alerts.get("webhook") if credentials.is_secret_ref(alerts.get("webhook")) else "keyring"
+        if webhook_url:
+            refused = notify.url_problem(webhook_url)
+            if refused:
+                raise ConfigError(f"That webhook address is refused: {refused}.")
+            ref = "keyring"
+            secrets_wanted.append(("alert webhook URL", credentials.WEBHOOK_SERVICE, site.name, webhook_url.strip()))
+        elif not credentials.resolve(ref, credentials.WEBHOOK_SERVICE, site.name):
+            raise ConfigError("Enter the webhook address: it is kept in Windows Credential Manager.")
+        alerts["webhook"] = ref
+    else:
+        alerts.pop("webhook", None)
+        alerts.pop("webhook_format", None)
+    if secrets_wanted and not credentials.keyring_available():
+        raise ConfigError("No system keyring is available on this computer, so the password or address cannot be "
+                          "stored. Use an environment variable instead (see `folio-exchange secret status`).")
+    raw["alerts"] = alerts
+    _site_would_load(raw)
+    changed = repr(alerts) != before
+    with _SAVE:
+        # The file first, then the secrets: a save refused here (or a write that fails) stores nothing, so "not
+        # saved" is true of the password and the webhook address too.
+        if changed:
+            if path.read_bytes() != old:
+                raise ConfigError("site.yaml changed while this was being saved (by hand, or in another window). "
+                                  "The settings were not saved: open the alerts again and make the change again.")
+            write_settings(path, raw, SITE_HEADER)
+        for what, service, account, value in secrets_wanted:
+            try:
+                credentials.store(service, account, value)
+            except Exception as exc:  # noqa: BLE001 - any keyring failure means the same here
+                raise ConfigError(f"The alert settings were saved, but the {what} could not be stored in the keyring "
+                                  f"({type(exc).__name__}: {exc}). Enter it again.") from None
+    site = load_site(root)
+    if changed:
+        _audit(site, None, f"alert settings changed {_from(via)}", {"file": SITE_FILE, "on": on,
+                                                                  "email": bool(email), "webhook": bool(hook),
+                                                                  "from": via})
+    for what, service, account, _value in secrets_wanted:
+        _audit(site, None, "secret stored", {"what": what, "service": service, "account": account, "from": via})
+    return {**alert_settings(site), "changed": changed}

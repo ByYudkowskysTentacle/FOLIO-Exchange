@@ -77,7 +77,8 @@ def blocking_job(qtbot):
 def test_the_window_shows_the_sites_feeds(qtbot, site):
     w = window(qtbot, site)
     assert w.windowTitle() == "FOLIO-Exchange – site"
-    assert sidebar(w) == ["Home", "chq – On, no runs yet", "Activity", "Recipes", "Connection", "Options"]
+    assert sidebar(w) == ["Home", "chq – On, no runs yet", "Add a vendor feed", "Activity", "Recipes", "Connection",
+                          "Options"]
     assert w.stack.currentWidget() is w.home
     assert w.home.table.rowCount() == 1 and w.home.table.item(0, 0).text() == "chq"
     assert w.home.table.item(0, 3).text() == "On"
@@ -92,10 +93,18 @@ def test_the_window_shows_the_sites_feeds(qtbot, site):
 
 
 def test_every_control_has_an_accessible_name(qtbot, site):
-    from PySide6.QtWidgets import QAbstractButton, QListWidget, QPlainTextEdit, QTableWidget
+    from PySide6.QtWidgets import (
+        QAbstractButton,
+        QComboBox,
+        QLineEdit,
+        QListWidget,
+        QPlainTextEdit,
+        QSpinBox,
+        QTableWidget,
+    )
 
     w = window(qtbot, site)
-    for kind in (QAbstractButton, QListWidget, QPlainTextEdit, QTableWidget):
+    for kind in (QAbstractButton, QListWidget, QPlainTextEdit, QTableWidget, QLineEdit, QComboBox, QSpinBox):
         for control in w.findChildren(kind):
             if not control.objectName().startswith("qt_"):         # Qt's own (the menu bar's overflow button)
                 assert control.accessibleName(), control
@@ -109,7 +118,7 @@ def test_a_refresh_shows_changes(qtbot, site):
               delivery={"transport": "local", "directory": str(site / "drop-2")})
     views.set_enabled(site, "chq", False, via="ui")
     qtbot.keyClick(w, Qt.Key.Key_F5)
-    qtbot.waitUntil(lambda: len(sidebar(w)) == 7, timeout=15000)
+    qtbot.waitUntil(lambda: len(sidebar(w)) == 8, timeout=15000)
     assert "chq – Paused, no runs yet" in sidebar(w) and "second – On, no runs yet" in sidebar(w)
 
 
@@ -123,14 +132,15 @@ def test_a_site_that_cannot_be_read_says_so_and_keeps_the_last_view(qtbot, site,
     assert "chq – On, no runs yet" in sidebar(w)
 
 
-def test_a_folder_not_set_up_yet_points_to_the_page(qtbot, tmp_path):
+def test_a_folder_not_set_up_yet_starts_with_the_connection_to_folio(qtbot, tmp_path):
     root = tmp_path / "new-site"
     root.mkdir()
     w = window(qtbot, root)
     assert sidebar(w) == ["Set up this site"]
-    assert w.stack.currentWidget() is w.not_ready
-    assert "has no site.yaml" in w.not_ready.what.text()
-    qtbot.mouseClick(w.not_ready.set_up_button, Qt.MouseButton.LeftButton)
+    assert w.stack.currentWidget() is w.setup and w.setup.title.text() == "Connect to FOLIO"
+    assert w.setup.form.isVisible() and not w.setup.what.isVisible()
+    assert str(root) in w.setup.folder.text()
+    w.open_page("home")                                                # the browser page stays a second way in
     assert len(w.opened) == 1 and "?t=" in w.opened[0]
     w.close()
     assert w.page.httpd is None                                        # the page stops with the window
@@ -139,8 +149,8 @@ def test_a_folder_not_set_up_yet_points_to_the_page(qtbot, tmp_path):
 def test_site_yaml_that_does_not_load_is_shown(qtbot, tmp_path):
     (tmp_path / "site.yaml").write_text("folio: [not, a, mapping]\n", encoding="utf-8")
     w = window(qtbot, tmp_path)                    # regression: site_state failed on a folio: that is a list
-    assert w.stack.currentWidget() is w.not_ready
-    assert w.not_ready.title.text() == "This site's settings do not load"
+    assert w.stack.currentWidget() is w.setup
+    assert w.setup.title.text() == "This site's settings do not load" and w.setup.what.isVisible()
 
 
 def test_a_first_reading_that_fails_is_shown_in_place(qtbot, site, monkeypatch):
@@ -319,6 +329,8 @@ def test_screen_readers_hear_what_each_label_shows(qtbot, site):
     from PySide6.QtWidgets import QLabel
 
     def shown(label: QLabel) -> str:
+        if label.buddy() is not None:                                  # a form's caption: its mnemonic is not read
+            return label.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
         if label.textFormat() != Qt.TextFormat.RichText:
             return label.text()
         doc = QTextDocument()
@@ -329,7 +341,7 @@ def test_screen_readers_hear_what_each_label_shows(qtbot, site):
     w.connection.refused("Another action is still running")
     w.say("Running: run of chq.")
     heard = 0
-    for key in ("home", "feed:chq", "connection", "activity"):
+    for key in ("home", "feed:chq", "connection", "activity", "recipes", "options", "add"):
         w.select(key)
         for label in [w.banner, *w.stack.currentWidget().findChildren(QLabel)]:
             if label.isVisible() and label.text() and not label.objectName().startswith("qt_"):
@@ -488,7 +500,7 @@ def test_a_new_site_left_unfinished_reopens_from_the_recent_list(qtbot, tmp_path
     again.accept()
     assert again.chosen == root
     w = window(qtbot, root)
-    assert w.stack.currentWidget() is w.not_ready           # it opens on "Set up this site"
+    assert w.stack.currentWidget() is w.setup               # it opens on "Set up this site"
 
 
 def test_a_late_finish_from_an_older_check_leaves_the_newer_one_alone(qtbot, site, monkeypatch):

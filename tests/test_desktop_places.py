@@ -201,10 +201,9 @@ def test_a_delivery_is_described_without_its_secret():
     assert rows["Server key"].endswith("Confirmed: it matches the fingerprint the vendor gave.")
     assert rows["Login"] == "With a password. Stored in Windows Credential Manager (folio-exchange-sftp)."
     assert model.delivery_rows({"transport": "none"})[0][1].startswith("Nowhere yet")
-    # Regression (parity-4): it sent people to a Change delivery button the app does not have.
+    # Regression (parity-4): it sent people to a Change delivery button the app did not have (D3 brings it).
     unconfirmed = dict(model.delivery_rows({**d, "host_key_confirmed": False}))["Server key"]
-    assert unconfirmed.endswith("enter the vendor's fingerprint under Change delivery on the feed's page in the "
-                                "browser page.")
+    assert unconfirmed.endswith("enter the vendor's fingerprint under Change delivery… on this tab.")
     ok = {"status": "done", "result": {"where": "folder D:\\drop", "entries": None}}
     assert "usual for upload-only accounts" in model.delivery_check_words(ok)
     assert model.delivery_check_words({"status": "error", "error": "No answer"}) == "The test failed. No answer"

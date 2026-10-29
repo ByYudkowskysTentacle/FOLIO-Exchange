@@ -39,7 +39,7 @@ The desktop app's widget tests run only when its Qt extra is installed too (`-e 
 
 ## Desktop app (early preview)
 
-A desktop app, a window of its own for each site, is on the way (see [the plan](docs/desktop-plan.md)). This first version shows a site's feeds, their state and last run, and the FOLIO connection, and checks the connection; everything else opens in the browser page, which stays the full interface for now. It needs Qt, which is an optional extra:
+A desktop app, a window of its own for each site, is on the way (see [the plan](docs/desktop-plan.md)). It already does what the browser page does: it sets up a new site (connecting to FOLIO, then adding a vendor feed), shows and runs each feed, releases held deliveries, edits a feed's settings and delivery (with the SFTP server key check), stores its password or key, gets recipes from vendors and renames the site folder. It also registers the scheduled task and sets up alerts. The browser page stays available from the app (Ctrl+B). It needs Qt, which is an optional extra:
 
 ```bash
 .venv/Scripts/python -m pip install -c constraints.txt -e ".[desktop]"

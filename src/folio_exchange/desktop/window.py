@@ -2,11 +2,12 @@
 
 The window reads the site off its own thread (``worker.Reader``) every minute, when it is activated, after an
 action and on F5, and keeps showing the last good reading if one fails. Long actions (check, preview, run, build,
-release, delivery test) run one at a time through the ``Jobs`` it shares with the browser page, each watched by a
-``JobWatcher`` (one the page started too, so its feed shows its progress and result here); short ones that touch
-the disk (pause or resume, a run's details and rows, what a release would send, opening a run's folder) run as
-``Errands``, and only the newest answer for each place is shown. Closing while an action runs, or while a pause
-or resume is written, waits for it rather than cut it off.
+release, delivery test, and setting up: see ``actions.py``) run one at a time through the ``Jobs`` it shares with
+the browser page, each watched by a ``JobWatcher`` (one the page started too, so its feed shows its progress and
+result here); short ones that touch the disk or only look (pause or resume, a run's details and rows, what a
+release would send, opening a run's folder, the recipes, the tenant's lists) run as ``Errands``, and only the
+newest answer for each place is shown. Closing while an action runs, or while a pause or resume is written, waits
+for it rather than cut it off.
 """
 from __future__ import annotations
 
@@ -36,13 +37,18 @@ from .. import views
 from ..errors import FxError
 from ..jobs import Job, Jobs
 from . import model, places
+from .actions import SETUP_DONE, SetupActions
 from .activity import ActivityPage
 from .feed import FeedPage
+from .options import OptionsPage, start_console
 from .page import PageFallback
-from .pages import ConnectionPage, HomePage, LaterPage, NotReadyPage, alert
+from .pages import ConnectionPage, HomePage, alert
 from .picker import NewSiteDialog, SitePicker
+from .recipes import RecipesPage
 from .release import ReleaseDialog
+from .setup import ConnectForm, SetupPage
 from .single import InstanceServer
+from .wizard import FeedWizard
 from .worker import Errands, JobWatcher, Reader
 
 log = logging.getLogger(__name__)
@@ -52,10 +58,6 @@ BUSY_MS = 500                     # how often the window looks whether an action
 ACTIVATE_GAP = 5.0                # seconds: activating the window refreshes at most this often
 PREVIEW_SAMPLE = 25                # instances a preview samples, as the page's Preview button asks for
 FEED_KINDS = ("preview", "run", "build", "release", "test-delivery")    # the actions of a feed the page can start
-LATER = (("recipes", "Recipes", "The vendors' recipes installed here, their new versions and what changed.",
-          "Open &Recipes in the browser page"),
-         ("options", "Options", "Renaming the site folder, and registering the scheduled task.",
-          "Open &Options in the browser page"))
 
 
 def open_in_browser(url: str) -> None:
@@ -83,7 +85,7 @@ def _what(job: Job) -> str:
     return model.job_words(job.kind, job.feed)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, SetupActions):
     def __init__(self, site_root: Path, jobs: Jobs | None = None, open_url=None,
                  instance: InstanceServer | None = None) -> None:
         super().__init__()
@@ -99,6 +101,16 @@ class MainWindow(QMainWindow):
         self.review_root = self.site_root                        # the folder the release question was read from
         self.asked: dict[tuple, int] = {}                        # the newest request for each place (see _ask)
         self.toggling = False                                    # a pause or resume is being written
+        self.job_about: object = None                            # what the running setup job is for (actions.py)
+        self.choices: dict | None = None                         # the tenant's lists, once read: {data} or {error}
+        self.opening_settings: str | None = None                 # the feed whose settings form is being read
+        self.pending_select: tuple[str, str | None] | None = None   # a view to open once the site is read again
+        self.renaming: str | None = None                         # the new name while the folder is renamed
+        self.renaming_started = False
+        self.registering = False                                 # a console registers the scheduled task
+        self.start_console = start_console                       # how that console is started (tests replace it)
+        self.settings_dialog = self.delivery_dialog = self.alerts_dialog = None
+        self.shown_key: str | None = None
         self.closing_after_job = False
         self.quitting = False
         self.was_busy = False
@@ -163,24 +175,45 @@ class MainWindow(QMainWindow):
         self.feed.open_folder.connect(lambda run_id: self.open_folder("feed", run_id))
         self.feed.open_run.connect(self.open_run)
         self.feed.rows_wanted.connect(lambda name, run_id, output: self.read_rows("feed", name, run_id, output))
+        self.feed.edit_settings.connect(self.edit_settings)
+        self.feed.change_delivery.connect(self.change_delivery)
+        self.feed.save_password.connect(self.save_password)
+        self.feed.save_key.connect(self.save_key)
+        self.home.add_feed.connect(lambda: self.select("add"))
         self.activity = ActivityPage()
         self.activity.open_run.connect(lambda run_id: self.open_run(None, run_id))
         self.activity.open_folder.connect(lambda run_id: self.open_folder("activity", run_id))
         self.activity.rows_wanted.connect(lambda run_id, output: self.read_rows("activity", None, run_id, output))
         self.connection = ConnectionPage()
         self.connection.check.connect(self.check_connection)
-        self.later: dict[str, LaterPage] = {}
-        for view, title, about, caption in LATER:
-            self.later[view] = LaterPage(view, title, about, caption)
-            self.later[view].open_in_page.connect(lambda v: self.open_page(v))
-        self.not_ready = NotReadyPage()
-        self.not_ready.set_up.connect(lambda: self.open_page("home"))
+        self.connection.change.connect(self.open_connect_form)
+        self.connect_form = ConnectForm(first=False)
+        self.connection.set_form(self.connect_form)
+        self.connect_form.submitted.connect(lambda: self.connect_folio(self.connect_form))
+        self.connect_form.cancelled.connect(self.connection.close_form)
+        self.setup = SetupPage()
+        self.setup.form.submitted.connect(lambda: self.connect_folio(self.setup.form))
+        self.wizard = FeedWizard()
+        self.wizard.want_recipes.connect(lambda: self.read_recipes("wizard"))
+        self.wizard.want_permissions.connect(self.want_permissions)
+        self.wizard.want_choices.connect(self.want_choices)
+        self.wizard.add.connect(self.add_feed)
+        self.wizard.get_recipes.connect(lambda: self.select("recipes"))
+        self.wizard.cancelled.connect(self.cancel_wizard)
+        self.recipes = RecipesPage()
+        self.recipes.check.connect(self.check_source)
+        self.recipes.install.connect(self.install_recipes)
+        self.options = OptionsPage()
+        self.options.rename.connect(self.rename_site)
+        self.options.register.connect(self.register_task)
+        self.options.change_alerts.connect(self.change_alerts)
+        self.options.test_alert.connect(self.test_alert)
         self.reading = QLabel("Reading the site…")
         self.reading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reading.setWordWrap(True)
         self.reading.setTextFormat(Qt.TextFormat.PlainText)        # it may show an error's text
-        for w in (self.reading, self.home, self.feed, self.activity, self.connection, *self.later.values(),
-                  self.not_ready):
+        for w in (self.reading, self.home, self.feed, self.activity, self.connection, self.recipes, self.options,
+                  self.wizard, self.setup):
             self.stack.addWidget(w)
 
         split = QSplitter()
@@ -222,8 +255,8 @@ class MainWindow(QMainWindow):
         items = [("home", "Home")]
         for f in (snap.get("summary") or {}).get("feeds") or []:
             items.append((f"feed:{f['name']}", self._feed_caption(f)))
-        return items + [("activity", "Activity"), ("recipes", "Recipes"), ("connection", "Connection"),
-                        ("options", "Options")]
+        return items + [("add", "Add a vendor feed"), ("activity", "Activity"), ("recipes", "Recipes"),
+                        ("connection", "Connection"), ("options", "Options")]
 
     def _feed_caption(self, f: dict) -> str:
         """A feed's sidebar line: its state in words, or "Running" while an action of it runs (the page's
@@ -264,14 +297,21 @@ class MainWindow(QMainWindow):
         if snap is None:
             self.stack.setCurrentWidget(self.reading)
             return
-        if not snap["state"].get("ready"):
-            self.not_ready.show_state(snap["state"])
-            self.stack.setCurrentWidget(self.not_ready)
-            return
         key = item.data(Qt.ItemDataRole.UserRole) if item is not None else "home"
+        if not snap["state"].get("ready"):
+            key = "setup"
+        moved = key != self.shown_key
+        if moved:
+            self._leave(self.shown_key)
+            self.shown_key = key
+        if key == "setup":
+            self.setup.show_state(snap["state"])
+            self.stack.setCurrentWidget(self.setup)
+            return
         summary = snap["summary"]
         feed = key[len("feed:"):] if key.startswith("feed:") else None
         if feed in snap["feeds"]:
+            self.feed.keyring = bool(snap["state"].get("keyring"))
             self.feed.show_feed(snap["feeds"][feed], (snap.get("runs") or {}).get(feed) or [],
                                 (snap.get("settings") or {}).get(feed), summary.get("warnings") or [])
             self.stack.setCurrentWidget(self.feed)
@@ -281,11 +321,36 @@ class MainWindow(QMainWindow):
         elif key == "connection":
             self.connection.show_site(summary)
             self.stack.setCurrentWidget(self.connection)
-        elif key in self.later:
-            self.stack.setCurrentWidget(self.later[key])
+        elif key == "add":
+            taken = [f["name"] for f in summary.get("feeds") or []] + list(summary.get("problems") or {})
+            if moved:
+                self.wizard.start(taken)
+            else:                                        # a refresh: what is being typed stays as it is
+                self.wizard.taken = taken
+            self.stack.setCurrentWidget(self.wizard)
+        elif key == "recipes":
+            if moved:                                    # read again on each visit, as the page does
+                self.recipes.loading()
+                self.read_recipes("page")
+            self.stack.setCurrentWidget(self.recipes)
+        elif key == "options":
+            self.options.show_site(summary)
+            if moved:
+                self.read_alerts()
+                self.look_for_task()
+            self.stack.setCurrentWidget(self.options)
         else:
             self.home.show_site(summary, model.attention(snap))
             self.stack.setCurrentWidget(self.home)
+
+    def _leave(self, key: str | None) -> None:
+        """Nothing typed into a password box outlives the view it was typed in."""
+        if key == "connection":
+            self.connection.close_form()
+        elif key == "setup":
+            self.setup.form.password.clear()
+        elif key and key.startswith("feed:"):
+            self.feed.login.clear_secrets()
 
     def _delivers(self) -> dict[str, bool]:
         return {name: bool((d.get("delivery") or {}).get("delivers"))
@@ -297,7 +362,7 @@ class MainWindow(QMainWindow):
         if self.quitting:
             return
         self._follow_page()
-        if self.reader.busy:
+        if self.reader.busy or self.renaming:            # no file of the folder is open while it is renamed
             self.again = True
             return
         self.last_refresh = time.monotonic()
@@ -317,9 +382,28 @@ class MainWindow(QMainWindow):
             summary = snap.get("summary") or {}
             self._set_title(summary.get("name") or self.site_root.name)
             self._fill_sidebar()
+            self._select_pending()
+        if self.renaming and not self.renaming_started:
+            self._start_rename()                         # it waited for this reading to end
+            return
         if self.again:
             self.again = False
             self.refresh()
+
+    def _select_pending(self) -> None:
+        """Open the view a setup step leads to (the wizard after connecting, a feed just added) once the site's
+        new reading has it."""
+        if self.pending_select is None:
+            return
+        key, title = self.pending_select
+        if key not in [k for k, _caption in self._items()]:
+            return
+        self.pending_select = None
+        self.select(key)
+        if key.startswith("feed:"):
+            self.feed.feed_added(key[len("feed:"):], title or key[len("feed:"):])
+        elif key == "add":
+            self.wizard.arrive()                         # the focus follows the window's own move, and is told why
 
     def _follow_page(self) -> None:
         """When the browser page renamed the site folder, carry on with the new folder. Called before anything
@@ -393,7 +477,9 @@ class MainWindow(QMainWindow):
             return
         kind, feed = self.watching
         self.watcher = self.watching = None
-        if kind == "check":
+        if kind in SETUP_DONE:
+            self._setup_done(kind, state)
+        elif kind == "check":
             self.connection.finished(state)
         elif kind == "test-delivery" and feed:
             self.feed.delivery_check_done(feed, state)
@@ -508,6 +594,9 @@ class MainWindow(QMainWindow):
         """Pause or resume a feed (audited as done in the app)."""
         if self.toggling:
             return                                           # a second press does nothing
+        if self.renaming:
+            self.feed.say("The site folder is being renamed; pause or resume the feed once it is done.")
+            return
         if self.jobs.running() is not None:
             self.feed.say("Another action is running; wait for it to finish.")
             self.sync_busy()
@@ -571,7 +660,7 @@ class MainWindow(QMainWindow):
         elif what == "enabled":
             _, name, enabled = key
             self.toggling = False
-            if self.closing_after_job and self.jobs.running() is None:
+            if self.closing_after_job and self.jobs.running() is None and not self.renaming:
                 self.close_now()                             # it was waited for: the window closes now
                 return
             if not message:
@@ -605,14 +694,21 @@ class MainWindow(QMainWindow):
         elif what == "folder":
             (self.feed if key[1] == "feed" else self.activity).say(
                 message or "The run's folder is open in a new window.")
+        else:
+            self._setup_errand(key, result, message)
 
     def sync_busy(self) -> None:
         """Enable actions only while nothing runs (here or on the page); refresh when an action ends; close
         when one was waited for."""
         job = self.jobs.running()
         busy = job is not None
-        idle = not busy and not self.closing_after_job
+        # A rename asked for waits for a reading of the site before its job starts: nothing else starts meanwhile
+        # (a pause begun then would be cut off by the move).
+        idle = not busy and not self.closing_after_job and not self.renaming
         self.connection.check_button.setEnabled(idle)
+        for page in (self.setup.form, self.connect_form, self.wizard, self.recipes):
+            page.set_idle(idle)
+        self.options.set_idle(idle and not self.toggling and not self.reviewing)    # a rename waits for both
         self.feed.set_idle(idle, reviewing=self.reviewing, toggling=self.toggling)
         self.preview_action.setEnabled(idle and not self.reviewing)
         if (busy and self.watcher is None and job.feed and job.kind in FEED_KINDS and not self.closing_after_job
@@ -627,7 +723,9 @@ class MainWindow(QMainWindow):
         if busy and not self.closing_after_job:
             self.say(f"Running: {_what(job)}. Other actions wait until it finishes.")
         if self.was_busy and not busy:
-            if self.closing_after_job and not self.toggling:
+            # A rename's job ends in its errand's thread a moment before the window hears how it went: the window
+            # closes from _renamed, once it has followed the folder (and remembered its new name).
+            if self.closing_after_job and not self.toggling and not self.renaming:
                 self.close_now()
                 return
             self.say(None)
@@ -697,7 +795,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt's naming
         job = self.jobs.running()
-        if self.quitting or (job is None and not self.toggling):
+        if self.quitting or (job is None and not self.toggling and not self.renaming):
             self.shut_down()
             event.accept()
             return
@@ -706,13 +804,15 @@ class MainWindow(QMainWindow):
             return
         if job is None:
             # A pause or resume is being written, in a thread that quitting would cut off between rewriting the
-            # feed file and recording it in the activity log. It is short: close as soon as it is written.
+            # feed file and recording it in the activity log; or a rename is starting or ending, and the window
+            # must follow the folder before it closes. Both are short: close as soon as they are done.
             self.closing_after_job = True
-            self.say("This window closes once the pause or resume is written.")
+            self.say("This window closes once the pause or resume is written." if self.toggling else
+                     "This window closes once the site folder is renamed.")
             self.sync_busy()
             return
         if self.ask_close_while_running(job) == "later":
-            if self.jobs.running() is None and not self.toggling:      # it ended while the question was open
+            if self.jobs.running() is None and not self.toggling and not self.renaming:   # it ended meanwhile
                 self.shut_down()
                 event.accept()
                 return

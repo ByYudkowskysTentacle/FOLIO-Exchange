@@ -191,6 +191,7 @@ def fill_folio(labels: dict[str, QLabel], folio: dict) -> None:
 
 class HomePage(Page):
     open_feed = Signal(str)
+    add_feed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -224,9 +225,12 @@ class HomePage(Page):
                            "Press Enter to open the feed.")
         self.table.cellActivated.connect(lambda row, _col: self._open(row))
         self.box.addWidget(self.table)
-        self.no_feeds = text("No feeds yet. Add one in the browser page: it starts as a dry run that sends "
-                             "nothing.", "No feeds")
+        self.no_feeds = text("No feeds yet. A feed sends one vendor a regular file of your library's records. Add one "
+                             "to start: it begins as a dry run that sends nothing.", "No feeds")
         self.box.addWidget(self.no_feeds)
+        self.add_button = button("&Add a vendor feed", "Add a vendor feed")
+        self.add_button.clicked.connect(self.add_feed.emit)
+        self.box.addLayout(actions_row(self.add_button))
         self.problems_title = heading("Files that do not load", 1.15)
         self.problems = lines_label("Files that do not load")
         self.box.addWidget(self.problems_title)
@@ -259,7 +263,7 @@ class HomePage(Page):
         self.attention.setVisible(bool(attention))
         self.calm.setVisible(not attention)
         fill_folio(self.folio, summary.get("folio") or {})
-        self.task.setText((summary.get("task") or {}).get("text") or "No feed runs on a schedule yet.")
+        self.task.setText(model.task_words(summary.get("task")))
         set_lines(self.warnings, model.warnings(summary), "Nothing to look at: every feed is set up to run on its own.")
         feeds = summary.get("feeds") or []
         fill_table(self.table, [[f["name"], f.get("title") or "", f.get("recipe") or "",
@@ -276,19 +280,24 @@ class HomePage(Page):
 
 class ConnectionPage(Page):
     check = Signal()
+    change = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.box.addWidget(heading("Connection"))
+        self.notice = text(about="Connection changed")
+        self.notice.hide()
+        self.box.addWidget(self.notice)
         form = QFormLayout()
         self.folio = folio_rows(form)
         self.box.addLayout(form)
         self.check_button = button("&Check the connection", "Check the connection")
         self.check_button.clicked.connect(self.check.emit)
-        row = QHBoxLayout()
-        row.addWidget(self.check_button)
-        row.addStretch(1)
-        self.box.addLayout(row)
+        self.change_button = button("Change connection or pass&word…", "Change the FOLIO connection or password")
+        self.change_button.clicked.connect(self.change.emit)
+        self.box.addLayout(actions_row(self.check_button, self.change_button))
+        self.form_slot = QVBoxLayout()
+        self.box.addLayout(self.form_slot)
         self.state = text(about="Check status")
         self.box.addWidget(self.state)
         self.log = QPlainTextEdit()
@@ -302,6 +311,33 @@ class ConnectionPage(Page):
 
     def show_site(self, summary: dict) -> None:
         fill_folio(self.folio, summary.get("folio") or {})
+
+    def set_form(self, form: QWidget) -> None:
+        """The "Change connection or password" form (setup.ConnectForm), shown by ``open_form``. Made after this
+        page, its fields are put straight after the buttons in the Tab order, where the form is."""
+        self.form = form
+        form.hide()
+        self.form_slot.addWidget(form)
+        before: QWidget = self.change_button
+        for w in (form.url, form.tenant, form.user, form.password, form.save_button, form.cancel_button):
+            QWidget.setTabOrder(before, w)
+            before = w
+
+    def open_form(self, folio: dict, keyring: bool) -> None:
+        self.say(None)                      # what the last change said ("Not saved: …") is over
+        self.form.fill(folio, keyring)
+        self.form.show()
+        self.change_button.hide()
+        self.form.url.setFocus()
+
+    def close_form(self) -> None:
+        self.form.password.clear()
+        self.form.hide()
+        self.change_button.show()
+
+    def say(self, message: str | None) -> None:
+        self.notice.setText(message or "")
+        self.notice.setVisible(bool(message))
 
     def started(self) -> None:
         self.log.clear()
@@ -347,52 +383,3 @@ class ConnectionPage(Page):
             parts.append("<p><b>Feed files that do not load</b> (their needs were not checked)</p><ul>"
                          + "".join(f"<li>{_esc(k)}: {_esc(v)}</li>" for k, v in problems.items()) + "</ul>")
         self.result.setText("".join(parts))
-
-
-class LaterPage(Page):
-    """A part of the app still to come: says so, and opens it on the browser page."""
-
-    open_in_page = Signal(str)
-
-    def __init__(self, view: str, title: str, about: str, mnemonic_caption: str) -> None:
-        super().__init__()
-        self.view = view
-        self.box.addWidget(heading(title))
-        self.box.addWidget(text(f"{about} It comes to this app in a later version; until then it is on the "
-                                "browser page.", f"About {title}"))
-        b = button(mnemonic_caption, f"Open {title} in the browser page")
-        b.clicked.connect(lambda: self.open_in_page.emit(self.view))
-        row = QHBoxLayout()
-        row.addWidget(b)
-        row.addStretch(1)
-        self.box.addLayout(row)
-
-
-class NotReadyPage(Page):
-    """A folder that is not a working site yet: what is wrong, and where to set it up."""
-
-    set_up = Signal()
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.title = heading("This site is not set up yet")
-        self.box.addWidget(self.title)
-        self.what = text(about="What is wrong")
-        self.box.addWidget(self.what)
-        self.set_up_button = button("Set it &up in the browser page", "Set up this site in the browser page")
-        self.set_up_button.clicked.connect(self.set_up.emit)
-        row = QHBoxLayout()
-        row.addWidget(self.set_up_button)
-        row.addStretch(1)
-        self.box.addLayout(row)
-        self.box.addWidget(text("Setting up a site in this app comes in a later version.", "Coming later"))
-
-    def show_state(self, state: dict) -> None:
-        if state.get("problem"):
-            self.title.setText("This site's settings do not load")
-            self.what.setText(f"{state['problem']}\n\nThe browser page shows the FOLIO connection so it can be "
-                              "put right, or correct site.yaml in a text editor.")
-        else:
-            self.title.setText("This site is not set up yet")
-            self.what.setText(f"{state.get('root')} has no site.yaml yet. The browser page starts with the "
-                              "connection to FOLIO, then a vendor feed.")
