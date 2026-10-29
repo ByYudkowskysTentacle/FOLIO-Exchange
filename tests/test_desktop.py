@@ -286,7 +286,10 @@ def test_a_check_right_after_a_rename_on_the_page_uses_the_new_folder(qtbot, sit
     res = siteops.rename_site(site, "renamed", via="ui")
     w.page.app.site_root = type(site)(res["root"])                    # as the page's rename does
     w.check_connection()                                               # no refresh in between
-    qtbot.waitUntil(lambda: w.connection.check_button.isEnabled(), timeout=30000)
+    # Wait for the check itself to end: just after it starts, the button can still be enabled for a moment
+    # (the window marks itself busy on its next look), which once let this read the "Logging in…" line.
+    qtbot.waitUntil(lambda: w.jobs.running() is None and w.watcher is None
+                    and w.connection.check_button.isEnabled(), timeout=30000)
     assert w.connection.state.text().startswith("Logged in"), w.connection.state.text()
     assert w.site_root.name == "renamed"
 
