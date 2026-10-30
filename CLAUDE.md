@@ -10,6 +10,7 @@ Start with:
 - `docs/spec.md`: the spec sheet (goals, roles, catalogue, requirements, recipe format, safety, roadmap, open questions).
 - `docs/design.md`: the v1 build contract – site and feed files, recipe format, every module's signatures, the CLI, testing, and what is deliberately left out. Keep code and this file in step in the same change.
 - `docs/notes.md`: decisions so far, lessons from folio-chq-extract, collectionHQ and FOLIO facts, and next steps.
+- `docs/wording.md`: how the desktop app's text reads – voice, habits to avoid, and the rules for control names, label in name and safety facts. Follow it for any text you add or change in the app.
 
 Code lives in `src/folio_exchange/` (bundled recipes in `recipes/<id>/<version>.yaml`, JSON Schemas in `schemas/`). Run the tests with `.venv/Scripts/python -m pytest -q` and lint with `.venv/Scripts/ruff check .` (dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -e ".[dev]"`).
 
@@ -45,3 +46,4 @@ cHQ FOLIO Exchange Recipe's `CLAUDE.md` lists the FOLIO API facts that code depe
 - Python 3.10+, type hints, small modules, no heavy dependencies without reason.
 - Tests run offline against a mock FOLIO; every bug fix gets a regression test.
 - Docs style: use en dashes ( – ) for asides, never em dashes.
+- App text style: plain US English with contractions, brief, per `docs/wording.md`.
