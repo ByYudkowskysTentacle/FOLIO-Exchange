@@ -853,9 +853,10 @@ function connectionForm({ folio, first, keyring, problem, synced, root, done, ca
   keyring ? null : h("div", { class: "notice notice-held" }, h("p", { text: "This computer has no Windows Credential Manager that " +
     "FOLIO-Exchange can use, so the password cannot be stored from this page. Whoever looks after this computer needs to set " +
     "the FOLIO_PASSWORD environment variable for this account; FOLIO-Exchange then uses it." })),
-  field(url, "API address", "On Eureka, the Kong gateway URL, starting https://. Your FOLIO administrator can tell you it."),
-  field(tenant, "Tenant id", "The FOLIO tenant this library uses."),
-  field(user, "User name", "A read-only service account, not a person's own login."),
+  field(url, "API address", "FOLIO shows it under Settings > Software versions, after \"On URL\". It is not the address of " +
+    "FOLIO's web pages."),
+  field(tenant, "Tenant id", "FOLIO shows it under Settings > Software versions, after \"For tenant\"."),
+  field(user, "User name", "A read-only service account your FOLIO administrator sets up, not a person's own login."),
   pw ? field(pw, "Password", first ? "Checked with FOLIO, then kept in Windows Credential Manager on this computer. It is never written to a file." +
     (folio.username ? " Leave it empty to use a password stored here before." : "")
     : "Leave empty to keep the stored password. A new one is checked with FOLIO before it replaces the old one.") : null,

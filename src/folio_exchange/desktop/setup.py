@@ -22,6 +22,12 @@ NO_KEYRING = ("Windows Credential Manager isn't available on this computer, so F
               "Ask your IT administrator to set the FOLIO_PASSWORD environment variable for your Windows account.")
 SYNCED = ("This folder is inside OneDrive or Dropbox. Keep the site in a folder that isn't synced, because syncing "
           "can copy half-written files and the run history between computers.")
+# Where FOLIO shows the address and tenant: its Software versions page, on Okapi and Eureka alike (stripes-core's
+# About page lists "For tenant <id>" and "On URL <address>").
+ADDRESS_HELP = ('FOLIO shows it under Settings > Software versions, after "On URL". It isn\'t the address of '
+                "FOLIO's web pages.")
+TENANT_HELP = 'FOLIO shows it under Settings > Software versions, after "For tenant".'
+USER_HELP = "A read-only service account your FOLIO administrator sets up, not someone's personal login."
 
 
 class ConnectForm(QWidget):
@@ -50,10 +56,9 @@ class ConnectForm(QWidget):
         self.tenant = edit("Tenant id")
         self.user = edit("User name")
         self.password = secret_box("FOLIO password")
-        self.rows.add("API &address:", self.url,
-                      "On Eureka, the Kong gateway URL, starting with https://. Ask your FOLIO administrator for it.")
-        self.rows.add("Te&nant id:", self.tenant, "The FOLIO tenant this library uses.")
-        self.rows.add("&User name:", self.user, "A read-only service account, not someone's personal login.")
+        self.rows.add("API &address:", self.url, ADDRESS_HELP)
+        self.rows.add("Te&nant id:", self.tenant, TENANT_HELP)
+        self.rows.add("&User name:", self.user, USER_HELP)
         self.password_caption = self.rows.add("&Password:", self.password, self._password_help())
         box.addLayout(form)
         self.problem = problem_label()

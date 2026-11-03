@@ -300,6 +300,17 @@ def test_the_connection_form_checks_what_it_can_before_logging_in(qtbot, tmp_pat
         assert form.password.text() == "" and w.jobs.current is None     # nothing went anywhere
 
 
+def test_the_connection_help_says_where_folio_shows_the_address_and_tenant(qtbot, tmp_path):
+    """A librarian can find the API address and tenant id in FOLIO itself, on Settings > Software versions."""
+    root = tmp_path / "new"
+    root.mkdir()
+    form = window(qtbot, root).setup.form
+    for field, line in ((form.url, '"On URL"'), (form.tenant, '"For tenant"')):
+        for said in (form.rows.help_labels[field].text(), field.accessibleDescription()):
+            assert "Settings > Software versions" in said and line in said
+    assert "FOLIO administrator" in form.rows.help_labels[form.user].text()
+
+
 def test_change_connection_keeps_the_stored_password_and_says_what_changed(qtbot, site, keyring, folio,  # noqa: F811
                                                                           monkeypatch):
     w = window(qtbot, site)
