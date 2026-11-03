@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import views
+from .. import version_text, views
 from ..errors import FxError
 from ..jobs import Job, Jobs
 from . import model, places, theme
@@ -230,8 +230,22 @@ class MainWindow(QMainWindow, SetupActions):
                   self.wizard, self.setup):
             self.stack.addWidget(w)
 
+        # Below the sidebar, as on the page: the version and commit, selectable so they can be copied for support.
+        # The commit gets a line of its own, so the narrow sidebar never wraps inside it.
+        self.version_label = QLabel(version_text().replace(" (commit ", "\n(commit "))
+        self.version_label.setObjectName("sidebarfoot")
+        self.version_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.version_label.setWordWrap(True)
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.version_label.setAccessibleDescription("Version")
+        column = QWidget()
+        side = QVBoxLayout(column)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(0)
+        side.addWidget(self.sidebar, 1)
+        side.addWidget(self.version_label)
         split = QSplitter()
-        split.addWidget(self.sidebar)
+        split.addWidget(column)
         split.addWidget(self.stack)
         split.setStretchFactor(1, 1)
         split.setSizes([240, 760])

@@ -381,6 +381,12 @@ def test_every_limit_is_kept_in_range(server, monkeypatch):
     assert status == 200 and j["log_total"] == len(j["log"])          # never a negative count
 
 
+def test_site_summary_names_the_version_and_installed_commit(server, monkeypatch):
+    monkeypatch.setattr(views, "installed_commit", lambda: "4d8082695058")
+    data = call(server, "/api/site")[1]
+    assert data["version"] == ui.__version__ and data["commit"] == "4d8082695058"   # the sidebar's foot shows both
+
+
 def test_site_summary_never_includes_the_password(server, site):
     status, data, _ = call(server, "/api/site")
     assert status == 200

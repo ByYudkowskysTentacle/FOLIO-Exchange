@@ -735,17 +735,16 @@ async function loadSite() {
 function applySite(s) {
   S.site = s;
   document.body.classList.toggle("first-run", !!s.setup);
+  $("sidebar-foot").textContent = `folio-exchange ${s.version}${s.commit ? ` (commit ${s.commit})` : ""}`;
   if (s.setup) {
     $("site-chip").textContent = "Not connected yet";
     $("site-chip").title = s.root;
-    $("sidebar-foot").textContent = `folio-exchange ${s.version}`;
     renderSetup(s.setup);
     return;
   }
   $("site-chip").textContent = `${s.name} · ${s.folio.tenant}`;
   $("site-chip").title = `${s.root}\n${s.folio.base_url} as ${s.folio.username}`;
   $("nav-connection-sub").textContent = s.folio.base_url.replace(/^https?:\/\//, "");
-  $("sidebar-foot").textContent = `folio-exchange ${s.version}`;
   renderSidebar();
   if (s.job && s.job.status === "running" && !S.job) follow(s.job);   // a reload or a second tab: reattach
 }
