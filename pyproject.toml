@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]   # 77 reads the SPDX license string below
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,11 +8,11 @@ version = "0.1.0.dev0"
 description = "Set up, test and run scheduled data exchanges between FOLIO and vendor platforms from shared recipes"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "FOLIO-Exchange contributors" }]
 keywords = ["FOLIO", "library", "collectionHQ", "MARC", "SFTP", "integration"]
 classifiers = [
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Intended Audience :: Education",
   "Topic :: Software Development :: Libraries",
