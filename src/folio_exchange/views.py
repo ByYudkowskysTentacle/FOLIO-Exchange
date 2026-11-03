@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__, credentials, delivery, feedops, reads, runner, schedule, setupops, sources
+from . import __version__, credentials, delivery, feedops, installed_commit, reads, runner, schedule, setupops, sources
 from .client import probe
 from .config import BUNDLED_RECIPES, Site, load_site, password_note
 from .errors import ConfigError, FxError
@@ -130,7 +130,7 @@ def site_summary(site_root: Path) -> dict:
         task = feedops.task_status(hist, feeds, now, lock_path=site.lock_path)
     return {
         "warnings": warnings, "task": task, "setup": None, "keyring": credentials.keyring_available(),
-        "version": __version__, "name": site.name, "root": str(site.root), "parent": str(site.root.resolve().parent),
+        "version": __version__, "commit": installed_commit(), "name": site.name, "root": str(site.root), "parent": str(site.root.resolve().parent),
         "folio": {"base_url": site.folio["base_url"], "tenant": site.folio["tenant"],
                   "username": site.folio["username"], "password": site.folio_password_source()},
         "alerts": {"on": site.alerts.get("on"), "webhook": bool(site.alerts.get("webhook")),

@@ -93,6 +93,16 @@ def test_the_window_shows_the_sites_feeds(qtbot, site):
     assert "vendor-drop" in w.feed.fields["delivery"].text()
 
 
+def test_the_sidebar_shows_the_version_and_commit(qtbot, site, monkeypatch):
+    monkeypatch.setattr(window_module, "version_text", lambda: "folio-exchange 0.1.0.dev0 (commit 4d8082695058)")
+    w = window(qtbot, site)
+    foot = w.version_label
+    assert foot.text() == "folio-exchange 0.1.0.dev0\n(commit 4d8082695058)"     # --version's text, on two lines
+    assert foot.isVisible() and foot.parentWidget() is w.sidebar.parentWidget()  # under the sidebar, as on the page
+    assert foot.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse    # to copy it for support
+    assert foot.accessibleDescription() == "Version"
+
+
 def test_every_control_has_an_accessible_name(qtbot, site):
     from PySide6.QtWidgets import (
         QAbstractButton,
