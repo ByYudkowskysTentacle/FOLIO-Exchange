@@ -36,6 +36,20 @@ Ask your FOLIO administrator or hosting provider for:
 
 Also check that the PC can reach the API: many FOLIO hosts accept API traffic only from known networks, so use a PC inside the library's network, or on its VPN.
 
+### Where to find these in FOLIO
+
+You can look up most of what setup asks for in FOLIO yourself. The [FOLIO documentation](https://docs.folio.org/) describes each page; it covers the newest release, and older releases have their own copy (such as `trillium.docs.folio.org`).
+
+- **API address and tenant id:** Settings > Software versions lists them as "On URL …" and "For tenant …". Anyone who can open any part of Settings can see that page ([docs](https://docs.folio.org/docs/settings/system_software_versions/system_software_versions/)).
+- **The service account:** your administrator creates it in the Users app ([Creating a user record manually](https://docs.folio.org/docs/users/#creating-a-user-record-manually)). On Eureka they give it the permissions above as capabilities in a role under Settings > Authorization roles; Settings > Developer > "I can haz capabilities?" finds the capability for each permission name ([docs](https://docs.folio.org/docs/settings/settings_authorization-roles/settings_authorization-roles/)).
+- **Locations to leave out:** Settings > Tenant > Location setup > Locations shows each location's code and library ([docs](https://docs.folio.org/docs/settings/settings_tenant/settings_tenant/#settings--location-setup--locations)). FOLIO-Exchange goes by each item's effective location ([Locations](https://docs.folio.org/docs/platform-essentials/locations/locations/)).
+- **Item statuses:** FOLIO's fixed list is on [Item status](https://docs.folio.org/docs/platform-essentials/item-status/itemstatus/).
+- **Migrated item notes:** Settings > Inventory > Item note types ([docs](https://docs.folio.org/docs/settings/settings_inventory/settings_inventory/#settings--inventory--item-note-types)).
+- **Time zone:** Settings > Tenant > Language and localization shows the library's time zone ([docs](https://docs.folio.org/docs/settings/settings_tenant/settings_tenant/#settings--tenant--language-and-localization)). Dates in the files use the feed's `timezone` option, which is UTC until you set it under `options:` in the feed file.
+- **Member tenants in a consortium (ECS):** if your tenant is a member of a consortium on ECS ([Settings > Consortium manager](https://docs.folio.org/docs/settings/settings_consortium-manager/settings_consortium-manager/)), add `srs_include_shared: true` under `folio:` in `site.yaml`.
+
+Setup reads the locations and note types from FOLIO and offers them as a list, so these pages are for deciding which to pick. The vendor's SFTP details and its server's fingerprint don't come from FOLIO; the vendor sends them.
+
 ### How the password should travel
 
 - **From the FOLIO administrator to you:** through the library's password manager, or a one-time share link (Bitwarden Send, 1Password, or similar). Not by plain email, chat or a shared document.
