@@ -4,15 +4,17 @@ Guidance for Claude Code (and humans) working in this repository.
 
 ## What this is
 
-FOLIO-Exchange is an open-source platform, with v1 in development, for scheduled data exchanges between the FOLIO library services platform and vendor platforms. collectionHQ comes first, followed by OCLC, other analytics tools and discovery layers. Each feed is a declarative **recipe**: a shared, versioned layout plus a library's local settings. Staff set feeds up and run them without code.
+FOLIO-Exchange is an open-source platform, with v1 in development, for scheduled data exchanges between the FOLIO library services platform and vendor platforms. collectionHQ comes first; OCLC, other analytics tools and discovery layers are candidates after it. Each feed is a declarative **recipe**: a shared, versioned layout plus a library's local settings. Staff set feeds up and run them without code.
 
 Start with:
 - `docs/spec.md`: the spec sheet (goals, roles, catalogue, requirements, recipe format, safety, roadmap, open questions).
 - `docs/design.md`: the v1 build contract – site and feed files, recipe format, every module's signatures, the CLI, testing, and what is deliberately left out. Keep code and this file in step in the same change.
 - `docs/notes.md`: decisions so far, lessons from folio-chq-extract, collectionHQ and FOLIO facts, and next steps.
 - `docs/wording.md`: how the desktop app's text reads – voice, habits to avoid, and the rules for control names, label in name and safety facts. Follow it for any text you add or change in the app.
+- `docs/README.md`: the docs index by reader, and the glossary of terms. Add new docs and terms there.
+- `CONTRIBUTING.md` and `SECURITY.md`: the ground rules and conventions below, written for outside contributors, and how to report a vulnerability. Keep them in step with this file.
 
-Code lives in `src/folio_exchange/` (bundled recipes in `recipes/<id>/<version>.yaml`, JSON Schemas in `schemas/`). Run the tests with `.venv/Scripts/python -m pytest -q` and lint with `.venv/Scripts/ruff check .` (dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -e ".[dev]"`).
+Code lives in `src/folio_exchange/` (bundled recipes in `recipes/<id>/<version>.yaml`, JSON Schemas in `schemas/`). Run the tests with `.venv/Scripts/python -m pytest -q` and lint with `.venv/Scripts/ruff check .` (dev setup: `py -3.12 -m venv .venv`, then `.venv/Scripts/python -m pip install -c constraints.txt -e ".[dev,desktop]"`; Qt needs a python.org Python).
 
 ## The live spec
 
@@ -36,9 +38,9 @@ cHQ FOLIO Exchange Recipe's `CLAUDE.md` lists the FOLIO API facts that code depe
 
 - **Eureka first.** Okapi-based FOLIO keeps working only while the same code serves both; no Okapi-only fixes, features or tests.
 - **Never read or export patron data** unless a recipe declares it and an admin approves it. Do not add user or patron endpoints casually.
-- **Secrets** come only from environment variables or the OS keyring. The one exception is an SFTP private key saved from the page: too large for Credential Manager, it is a file in the site's `keys` folder that only the Windows user can read. Never put secrets in recipes, config, logs, commits or chat. Tests never touch the real keyring.
+- **Secrets** come only from environment variables or the OS keyring. The one exception is an SFTP private key saved from the page or the desktop app: too large for Credential Manager, it is a file in the site's `keys` folder that only the Windows user can read. Never put secrets in recipes, config, logs, commits or chat. Tests never touch the real keyring.
 - **Signing in:** do not sign in to a production service (FOLIO tenant, vendor SFTP) with a password yourself. Give the person a command to run, and read only its output.
-- **This repo is public.** Never commit credentials, `config.yaml`, `.env`, cache data or output files, or personal names and emails. Commits use the GitHub noreply address.
+- **This repo is public.** Never commit credentials, a library's site files (`site.yaml`, `feeds/`, `keys/`), `config.yaml`, `.env`, cache data or output files, or personal names and emails. Commits use the GitHub noreply address.
 - **Recipes stay declarative:** no executable code in recipes.
 
 ## Conventions (carried over from folio-chq-extract)

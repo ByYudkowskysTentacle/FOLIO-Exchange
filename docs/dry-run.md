@@ -4,13 +4,13 @@ A dry run builds real collectionHQ files from your library's own FOLIO data and 
 
 Prefer not to use the command line? The [installer](../installer/README.md) sets FOLIO-Exchange up and opens a page where you connect to FOLIO and add the collectionHQ feed; a feed added there starts as a dry run, and the page's Preview and Run do what sections 3 and 4 below do. This guide takes the same route at the command line.
 
-You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing. The whole route to a live collectionHQ feed, from this dry run to the first delivery and the schedule, is the [setup guide](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe/blob/main/docs/setup.md).
+You run every step yourself, on a PC that can reach your FOLIO API. FOLIO-Exchange only reads from FOLIO, never reads user or patron records, and in a dry run uploads nothing. The whole route to a live collectionHQ feed, from this dry run to the first delivery and the schedule, is the [setup guide](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe/blob/main/docs/setup.md) in cHQ FOLIO Exchange Recipe, the repository that holds the collectionHQ recipe and its documentation.
 
 ## Before you start
 
 Ask your FOLIO administrator or hosting provider for:
 
-1. **The API address.** On Eureka this is the Kong gateway URL, which is not the address of the FOLIO web pages. It starts with `https://`.
+1. **The API address**, which is not the address of the FOLIO web pages. On Eureka, FOLIO's newer platform, it is the address of the API gateway (Kong); on older, Okapi-based FOLIO it is the Okapi address. It starts with `https://`.
 2. **The tenant id**, a short name such as `fs00001234`.
 3. **A dedicated, read-only service account** with these permissions (on Eureka, the matching capabilities with view access, in a role given to the account):
 
@@ -46,7 +46,7 @@ You can look up most of what setup asks for in FOLIO yourself. The [FOLIO docume
 - **Item statuses:** FOLIO's fixed list is on [Item status](https://docs.folio.org/docs/platform-essentials/item-status/itemstatus/).
 - **Migrated item notes:** Settings > Inventory > Item note types ([docs](https://docs.folio.org/docs/settings/settings_inventory/settings_inventory/#settings--inventory--item-note-types)).
 - **Time zone:** Settings > Tenant > Language and localization shows the library's time zone ([docs](https://docs.folio.org/docs/settings/settings_tenant/settings_tenant/#settings--tenant--language-and-localization)). Dates in the files use the feed's `timezone` option, which is UTC until you set it under `options:` in the feed file.
-- **Member tenants in a consortium (ECS):** if your tenant is a member of a consortium on ECS ([Settings > Consortium manager](https://docs.folio.org/docs/settings/settings_consortium-manager/settings_consortium-manager/)), add `srs_include_shared: true` under `folio:` in `site.yaml`.
+- **Member tenants in a consortium:** if your tenant is a member tenant of a consortium that uses ECS, FOLIO's Enhanced Consortial Support ([Settings > Consortium manager](https://docs.folio.org/docs/settings/settings_consortium-manager/settings_consortium-manager/)), add `srs_include_shared: true` under `folio:` in `site.yaml`, so the MARC records shared from the consortium's central tenant are fetched too.
 
 Setup reads the locations and note types from FOLIO and offers them as a list, so these pages are for deciding which to pick. The vendor's SFTP details and its server's fingerprint don't come from FOLIO; the vendor sends them.
 
@@ -58,7 +58,7 @@ Setup reads the locations and note types from FOLIO and offers them as a list, s
 
 ## 1. Install
 
-You need Python 3.10 or later (from python.org; it includes the `py` launcher) and Git.
+You need Python 3.10 or later (from python.org; it includes the `py` launcher) and Git. FOLIO-Exchange is not on PyPI, so it installs from GitHub.
 
 Install into your own Windows profile, under `%LOCALAPPDATA%\FOLIO-Exchange`, where only your Windows user can change the files. Anyone who can change the program or the site folder could make the hourly run do something else as you, and read the passwords it keeps. A folder such as `C:\FOLIO-Exchange` can be changed by every user of the PC. In PowerShell:
 
@@ -134,9 +134,9 @@ Prefer a page to the command line? `folio-exchange -s $env:LOCALAPPDATA\FOLIO-Ex
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary history
 ```
 
-It lists every run with a number; show one in full with `history --show <number>`.
+It lists the latest runs, each with a number; show one in full with `history --show <number>`.
 
-- **Counts:** bibs and items written, and items left out with the reason (location excluded, suppressed, no barcode). Do they match what you expect from FOLIO?
+- **Counts:** bibs and items written (in `history`), and items left out with the reason, such as `location excluded` or `suppressed` (under `items_skipped` in `run-report.json`, or *Items left out* in the page's *Summary* tab). Do they match what you expect from FOLIO?
 - **Locations and call numbers:** open the `.psv` in a text editor, or a copy of it in Excel (Data > From Text/CSV, delimiter `|`). Are the location names right? Do items show a call number?
 - **MARC:** open the `.mrc` in MarcEdit. Each record's 999 ff $i is the instance UUID, which collectionHQ uses to link items to bibs.
 - **Last circulation dates and loan counts:** spot-check a few items you know well.
@@ -151,16 +151,16 @@ If someone is helping you review the results, share the console output and `run-
 | `… FOLIO's certificate is not trusted by this computer` | Your campus or a network proxy probably issues its own certificates. In `site.yaml`, under `folio:`, add `ca_bundle: windows` to trust the certificates Windows trusts (as your web browser does), or ask IT for the certificate as a PEM file, save it in the site folder and add `ca_bundle: <file name>`. Do not set `verify_tls: false`: anyone on the network could then read the FOLIO password, and `check` warns about it. |
 | `FOLIO refused the login …` | Check the user name and tenant id; during setup run `init` again and answer **n** to "Keep it?" to type the password again (or, once setup is done, `folio-exchange -s … secret set folio`). FOLIO-Exchange tries a refused password only once per run, so it cannot lock the account. |
 | `DENIED … the account lacks …` | Send the listed permissions to your administrator. |
-| `Item note type … not found` | The legacy note type name does not match FOLIO; re-run `init` and pick it from the list. |
+| `Item note type … not found` | A note type named under `legacy:` in `feeds\chq.yaml` does not match FOLIO's; re-run `init` and pick it from the list. |
 | `WARNING  … notes (legacy.…) could not be read …` | Some migrated notes are not in a form FOLIO-Exchange reads, so those items carry FOLIO's own date or loan count. Dates need a day, a month and a year (`1998-03-15`, `3/15/1998`, or `Created: 1998-03-15`); counts need one whole number (`12`, `Checkouts: 1,234`). If your dates are written day first, add `date_format: "%d/%m/%Y"` under `legacy:` in `feeds\chq.yaml` (a label in it, as in `"Created: %d/%m/%Y"`, does no harm). The warning lists a few items to look at; on the page it is under *Warnings* in the run's *Summary* tab, for previews too. |
 | `FOLIO's login service did not answer as expected …` | FOLIO may be part way through an upgrade or restart; the password was not checked. Run again later (a scheduled run tries again at the next hourly start). If it continues, check the API address and ask your FOLIO host. |
 | `The disk is full …` | Free some space on the drive that holds the site folder (and on the system drive), then run again. The local cache is kept, so the next run carries on from it. |
 
 ## Afterwards
 
-Nothing is scheduled and nothing was sent. In `history` a dry run shows as `success (not sent: transport none)`, and `release` refuses the feed, because there is nothing to send. To undo everything, delete `%LOCALAPPDATA%\FOLIO-Exchange\mylibrary` and remove the entry whose name contains `folio-exchange/folio` from Windows Credential Manager (Control Panel > Credential Manager > Windows Credentials).
+Nothing is scheduled and nothing was sent. In `history`, the dry run from section 3 shows as `built`. A run of this feed without `--no-deliver`, or from Run on the page, shows as `success (not sent: transport none)`. `release` refuses the feed, because there is nothing to send. To undo everything, delete the `%LOCALAPPDATA%\FOLIO-Exchange` folder (the program and the site folder) and the desktop launcher if you made one, and remove the entry whose name contains `folio-exchange/folio` from Windows Credential Manager (Control Panel > Credential Manager > Windows Credentials).
 
-The same address, tenant and account also serve the legacy tool `folio-chq-extract` (in cHQ FOLIO Exchange Recipe), which stores its password separately, under `folio-chq-folio`.
+If you also run `folio-chq-extract`, the older collectionHQ tool kept in cHQ FOLIO Exchange Recipe's `legacy` folder, it can use the same address, tenant and account, but it stores its password separately, under `folio-chq-folio`.
 
 ## From dry run to first delivery
 
@@ -183,9 +183,10 @@ Your earlier answers are offered as defaults; press Enter to keep each one. Answ
 | --- | --- |
 | How are the files delivered | **1, upload to the vendor's SFTP server** |
 | SFTP server name, port, user name, folder | from the vendor |
-| Does it match the fingerprint the vendor gave you? | compare the `SHA256:` line on screen with the vendor's, character by character. **yes** only if they are the same. If you don't have the vendor's value yet, pick the second answer: the feed is saved but stays paused, and nothing logs in until you run `init` again and confirm it. If they differ, answer **no** and ask the vendor |
+| Does it match the fingerprint the vendor gave you? | compare the `SHA256:` line on screen with the vendor's, character by character. **1** (yes, it matches) only if they are the same. If you don't have the vendor's value yet, pick **2**: the feed is saved but stays paused, and nothing logs in until you run `init` again and confirm it. If they differ, pick **3** (no) and ask the vendor. If the server offers several keys, the question is which one matches, and those two answers come after the keys |
 | SFTP password | typed at the prompt (not shown); it goes into Windows Credential Manager |
 | When should it run | the vendor's schedule, for example `weekly` or `Sun 03:30` |
+| How should FOLIO-Exchange tell you when a run fails? | asked only while no alert is set up: email, or a chat webhook (see step 6) |
 
 Setup tests the login without uploading anything. If the test fails, or the key is not yet confirmed, it leaves the feed paused and says so.
 
@@ -211,7 +212,7 @@ The run builds the files as in the dry run, then stops before sending: the first
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary release chq
 ```
 
-It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Leaving the question open does not hold up scheduled runs; if a run happens meanwhile, `release` sends nothing and asks you to run it again, so you see what it would send now. Later runs to the same destination are sent without waiting, unless the item count drops sharply or rows are missing values the vendor needs (that run is blocked for you to look at; the message says what to fix, or you send it as it is with `release`), the recipe moves to a new major version, or the files' layout changes.
+It shows the files, their sizes, the item count and the destination, and asks `Send these files now?`. Answer **y** to upload them. Leaving the question open does not hold up scheduled runs; if a run happens meanwhile, `release` sends nothing and asks you to run it again, so you see what it would send now. Later runs to the same destination are sent without waiting, unless the item count drops sharply (below 90% of the last delivery) or rows are missing values the vendor needs (that run is blocked for you to look at; the message says what to fix, or you send it as it is with `release`), the recipe moves to a new major version, or the files' layout changes.
 
 **After changing columns or formats.** If you edit the `outputs` in `feeds\chq.yaml` (columns, headers, delimiter, date format, empty value, file names), the next delivery is held, and the hold message says what changed, for example `items file: columns changed: 'Item record ID' renamed to 'Item ID'`. Check the vendor expects the change, then send it with `release chq` as above.
 
@@ -229,15 +230,15 @@ Feeds only run on their schedule when Windows starts FOLIO-Exchange every hour. 
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary schedule
 ```
 
-It prints the command that registers the task, `schedule --register`, in two forms. Copy the one under **In PowerShell** (it starts `& '`) if you are in PowerShell, or the **Command Prompt** one if you are in a Command Prompt. Run it once, signed in to Windows as the person who stored the passwords, since Credential Manager entries belong to that Windows user. It asks for your Windows password, so the task can run while nobody is signed in. The task also runs on battery power, and catches up after the PC was off or asleep. (Below that, `schedule` also prints PowerShell lines that register the same task by hand, with the same settings, if you prefer to see each step.) Then check it with the `last result` command printed below it: "Task To Run" should show the folio-exchange.exe path and the `--site` folder, each in quotes.
+It prints the command that registers the task, `schedule --register`, in two forms. Copy the one under **In PowerShell** (it starts `& '`) if you are in PowerShell, or the **Command Prompt** one if you are in a Command Prompt. Run it once, signed in to Windows as the person who stored the passwords, since Credential Manager entries belong to that Windows user. It asks for your Windows password, so the task can run while nobody is signed in (if you sign in with a PIN, give the password of your Microsoft or work account). The task also runs on battery power, and catches up after the PC was off or asleep. (Below that, `schedule` also prints PowerShell lines that register the same task by hand, with the same settings, if you prefer to see each step.) Then check it with the `last result` command printed below it: "Task To Run" should show the folio-exchange.exe path and the `--site` folder, each in quotes.
 
-**When your Windows password changes,** the task stops starting, because it still holds the old password. A task registered by an earlier version of FOLIO-Exchange also never starts while a laptop runs on battery power. In either case, register it again:
+**When your Windows password changes,** the task stops starting, because it still holds the old password. Register it again:
 
 ```powershell
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary schedule --register
 ```
 
-**Noticing when the task stops.** `check` and `feeds` say when the task last ran. After more than two hours without a run, they and the page's Connection view warn that no feed has run and no alert could be sent since: the PC may be asleep, off or on battery (for a task registered by an earlier version), the task may be disabled in Task Scheduler, or the Windows password changed. They also warn when the task runs but fails, for example because the disk is full and the run history cannot be written, and when less than 1 GB of disk space is free. A scheduled pass that fails that way sends an alert itself, once per distinct error. A stopped task cannot send an alert itself, so you can also use a heartbeat monitor (a "dead man's switch" service, such as Healthchecks.io): it gives you a web address to call and emails you when the calls stop. FOLIO-Exchange calls the address when every hourly run starts and again when it ends. Set the monitor to expect a call every hour, with a grace time long enough for your longest run: the first full sync of a large catalogue can take several hours, with no call in between. While such a run is going, `check`, `feeds` and the Connection view say "A run has been going since …" instead of warning that the task stopped. After four hours they warn that one run has held the site that long, so any feed falling due is skipped, and if a feed was due meanwhile you get one alert saying scheduled runs are being skipped: a first full download can take that long, but the run may also be stuck. The address is a secret, so store it in Windows Credential Manager:
+**Noticing when the task stops.** `check` and `feeds` say when the task last ran. After more than two hours without a run, they and the page's Connection view warn that no feed has run and no alert could be sent since: the PC may be asleep or off, the task may be disabled in Task Scheduler, or the Windows password changed. They also warn when the task runs but fails, for example because the disk is full and the run history cannot be written, and when less than 1 GB of disk space is free. An hourly run that fails that way sends an alert itself, once per distinct error. A stopped task cannot send an alert itself, so you can also use a heartbeat monitor (a "dead man's switch" service, such as Healthchecks.io): it gives you a web address to call and emails you when the calls stop. FOLIO-Exchange calls the address when every hourly run starts and again when it ends. Set the monitor to expect a call every hour, with a grace time long enough for your longest run: the first full sync of a large catalogue can take several hours, with no call in between. While such a run is going, `check`, `feeds` and the Connection view say "A run has been going since …" instead of warning that the task stopped. After four hours they warn that one run has held the site that long, so any feed falling due is skipped, and if a feed was due meanwhile you get one alert saying scheduled runs are being skipped: a first full download can take that long, but the run may also be stuck. The address is a secret, so store it in Windows Credential Manager:
 
 ```powershell
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary secret set heartbeat
@@ -253,20 +254,20 @@ folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary check --alerts
 
 If you skipped alerts during the dry run, run `init` again and choose email or webhook at the alerts question.
 
-An alert that cannot be sent when it is raised (the PC's network was down, say) is kept and sent at the next hourly run that can reach the channel, starting `First raised <time>`, so it may arrive late. A test from `check --alerts` is never kept: if it fails, fix the channel and test again. When a feed's scheduled run fails on every attempt its slot allows (`runs.max_attempts_per_slot`, 3 by default), you get one alert saying the slot was given up and when the next one is; run the feed by hand once the problem is fixed.
+An alert that cannot be sent when it is raised (the PC's network was down, say) is kept and sent at the next hourly run that can reach the channel, starting `First raised <time>`, so it may arrive late. A test from `check --alerts` is never kept: if it fails, fix the channel and test again. When a feed's scheduled run fails on every attempt its slot (its scheduled time) allows (`runs.max_attempts_per_slot`, 3 by default), you get one alert saying the slot was given up and when the next one is; run the feed by hand once the problem is fixed.
 
 From now on, `folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary feeds` shows each feed's last run and next step, and `history` lists every run.
 
 ## Renaming the site folder
 
-The site folder's name is the site's name: the page shows it at the top, alert messages carry it, and the scheduled task and the desktop launcher are named after it. To give it a proper name (say, from `demo-eureka` to the library's name), use **Options** on the page, or `folio-exchange rename-site "Lakeside College Library"`. The folder stays where it is. Close every other FOLIO-Exchange window first, and wait for any run to finish: Windows will not rename a folder while a file in it is open, and you are told so if that happens (nothing is changed). The rename then:
+The site folder's name is the site's name: the page shows it at the top, alert messages carry it, and the scheduled task and the desktop launcher are named after it. To give it a proper name (say, from `mylibrary` to the library's name), use **Options** on the page, or `folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary rename-site "Lakeside College Library"`. The folder stays where it is. Close every other FOLIO-Exchange window first, and wait for any run to finish: Windows will not rename a folder while a file in it is open, and you are told so if that happens (nothing is changed). The rename then:
 
 - replaces the launcher on the desktop with one for the new name (a file you made yourself is left alone);
 - copies the webhook and heartbeat addresses stored in Windows Credential Manager to the new name;
-- tells you if the scheduled task still runs the old folder. Register it again, which asks for your Windows password, and delete the old task. `rename-site` in a Command Prompt offers to do both; on the page you get the two commands to run;
+- tells you if the scheduled task still runs the old folder. Register it again, which asks for your Windows password, and delete the old task. `rename-site` at the command line offers to do both; on the page you get the two commands to run;
 - tells you if `FOLIO_EXCHANGE_SITE` still names the old folder.
 
-The FOLIO and vendor passwords are stored by account, not by folder, so they carry on. Settings that name a place inside the folder by its full path (for example a `paths.data` of `C:\...\demo-eureka\data`) would still point at the old folder, so the rename refuses until they are changed to paths relative to the site folder.
+The FOLIO and vendor passwords are stored by account, not by folder, so they carry on. Settings that name a place inside the folder by its full path (for example a `paths.data` of `C:\...\mylibrary\data`) would still point at the old folder, so the rename refuses until they are changed to paths relative to the site folder.
 
 ## Moving the site folder
 
@@ -274,21 +275,22 @@ If you move the site folder somewhere else (for example into `%LOCALAPPDATA%\FOL
 
 - Register the hourly task again for the new folder with `schedule --register`. The task is named after the folder (`FOLIO-Exchange (mylibrary)`), so if the name changed, delete the old task in Task Scheduler.
 - Store the webhook and heartbeat addresses again with `secret set webhook` and `secret set heartbeat`: Windows Credential Manager keeps them under the folder's name, so after a rename they are not found. Until then `check` and the page warn that alerts or the heartbeat cannot be sent.
+- If you made a desktop launcher, make it again with `launcher`: it names the old folder. If the folder's name changed, delete the old launcher.
 - If you had set `FOLIO_EXCHANGE_SITE`, set it again with `setx` for the new folder.
 
 ## Updating FOLIO-Exchange
 
-A new release only replaces the program in `%LOCALAPPDATA%\FOLIO-Exchange\venv`. Everything else stays as it is: the site folder (`site.yaml`, the feed files in `feeds\`, the cache and run history in `data\`, the files in `out\`, the logs) and the passwords in Windows Credential Manager. The scheduled task keeps working, because it points at the same `folio-exchange.exe`.
+A new release only replaces the program in `%LOCALAPPDATA%\FOLIO-Exchange\venv`. Everything else stays as it is: the site folder (`site.yaml`, the feed files in `feeds\`, the cache and run history in `data\`, the files in `out\`, the logs) and the passwords in Windows Credential Manager. The scheduled task keeps working, because it points at the same `folio-exchange.exe`. (If you set FOLIO-Exchange up with the installer, the program is in `%LOCALAPPDATA%\FOLIO-Exchange\program` instead; to update it, run the installer again.)
 
-To update, in PowerShell, at a time when no run is due (in a new window, first make the command available as in section 1):
+To update, in PowerShell, at a time when no run is due and with the page closed (close its black window), since Windows cannot replace a program that is running. In a new window, first make the command available as in section 1:
 
 ```powershell
-& $env:LOCALAPPDATA\FOLIO-Exchange\venv\Scripts\python -m pip install --upgrade -c https://raw.githubusercontent.com/ByYudkowskysTentacle/FOLIO-Exchange/main/constraints.txt "folio-exchange @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@main"
+& $env:LOCALAPPDATA\FOLIO-Exchange\venv\Scripts\python -m pip install --upgrade --force-reinstall -c https://raw.githubusercontent.com/ByYudkowskysTentacle/FOLIO-Exchange/main/constraints.txt "folio-exchange @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@main"
 folio-exchange --version
 folio-exchange -s $env:LOCALAPPDATA\FOLIO-Exchange\mylibrary check
 ```
 
-`--version` should show the new version and commit, and `check` should end without problems. Right after updating from an earlier version, `check` may warn that the scheduled task has not run for some hours; the warning clears after the next hourly run.
+`--force-reinstall` is needed because successive copies from `main` can carry the same version number, and pip then keeps the copy it has. It also reinstalls the other packages, at the tested versions. `--version` should show the new commit, and `check` should end without problems.
 
 **Recipe updates.** The file layouts (recipes) come with the program. A feed names a range of recipe versions, such as `chq-academic@^1.0`. Fixes and small additions inside that range are used from the next run. A new major version (2.0 and up) changes the files the vendor receives, so it is never picked up on its own: `feeds` shows an `update` line saying the new version is available. To look at it and move to it:
 
