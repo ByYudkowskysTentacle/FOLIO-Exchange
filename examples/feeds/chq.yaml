@@ -7,7 +7,7 @@ title: collectionHQ (Main Library)
 enabled: true
 file_prefix: chq                 # -> chq_bibs_YYYYMMDD.mrc and chq_items_YYYYMMDD.psv
 
-filters:                         # any key of the recipe's selection
+filters:                         # changes to the recipe's selection; feed.schema.json lists every key
   exclude_location_codes: ["ONLINE"]   # quote codes that look like numbers, e.g. "0123"
 
 options:

@@ -215,7 +215,7 @@
               "type": "null"
             }
           ],
-          "description": "A dead-man's-switch monitor's ping URL (keyring or env:NAME), requested after every hourly run --due, so a monitor notices when the scheduled task stops running."
+          "description": "A dead-man's-switch monitor's ping URL (keyring or env:NAME), requested as every hourly run --due starts and again as it ends, so a monitor notices when the scheduled task stops running."
         }
       }
     },
