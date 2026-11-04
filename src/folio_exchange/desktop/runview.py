@@ -146,7 +146,7 @@ class RunView(QWidget):
         when = (f"Time {result['seconds']} s" if result.get("seconds") is not None else
                 model.when(run.get("started")))
         self.head.setText(" · ".join([
-            model.status_words(run.get("status") or result.get("status")), when,
+            model.status_words(run.get("status") or result.get("status"), run.get("not_sent")), when,
             f"Bibs {model.num(run.get('bibs') if run.get('bibs') is not None else b.get('bibs_written'))}",
             f"Items {model.num(run.get('items') if run.get('items') is not None else b.get('items_written'))}",
             f"Files {len(run.get('files') or [])}"]))

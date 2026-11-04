@@ -266,7 +266,8 @@ class HomePage(Page):
         set_lines(self.warnings, model.warnings(summary), "No warnings. Every feed is set up to run on its own.")
         feeds = summary.get("feeds") or []
         fill_table(self.table, [[f["name"], f.get("title") or "", f.get("recipe") or "",
-                                 "On" if f.get("enabled") else "Paused", model.status_words(f.get("last_status")),
+                                 "On" if f.get("enabled") else "Paused",
+                                 model.status_words(f.get("last_status"), f.get("last_not_sent")),
                                  model.when(f.get("last_started")) if f.get("last_started") else "",
                                  f.get("newer_recipe") or ""] for f in feeds])
         self.table.setVisible(bool(feeds))

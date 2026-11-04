@@ -222,6 +222,22 @@ def test_build_only_builds_and_sends_nothing(qtbot, site):
     assert shown(page.waiting) and "Built, not sent" in page.waiting_text.text()
 
 
+def test_a_run_of_a_feed_with_no_delivery_says_nothing_was_sent(qtbot, site):
+    """Regression: a run of a feed with no delivery (transport none) ends success, and the app said "Delivered."
+    and "Delivered" for it though nothing was sent."""
+    make_feed(site, "dry", file_prefix="dry", delivery={"transport": "none", "directory": None})
+    w = window(qtbot, site)
+    page = on_feed(qtbot, w, "dry")
+    qtbot.mouseClick(page.run_button, Qt.MouseButton.LeftButton)
+    settled(qtbot, w)
+    assert result(w, "dry")["status"] == "success" and page.notice.text() == "Built. Nothing was sent."
+    assert page.result.head.text().startswith("Built, not sent · ")
+    assert "dry – On, built, not sent" in sidebar(w)
+    qtbot.waitUntil(lambda: page.history.rowCount() == 1, timeout=15000)
+    assert page.history.item(0, 0).text() == "Built, not sent"
+    assert page.fields["last"].text().startswith("Built, not sent, ")
+
+
 def test_a_first_run_is_held_then_reviewed_and_sent(qtbot, site):
     w = window(qtbot, site)
     page = on_feed(qtbot, w)

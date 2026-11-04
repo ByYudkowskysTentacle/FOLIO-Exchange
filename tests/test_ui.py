@@ -868,3 +868,23 @@ def test_a_runs_summary_shows_its_warnings():
     summary = summary[:summary.index("\n}\n")]
     assert "rep.warnings.map(" in summary and "pageWords(w)" in summary and '"Warnings"' in summary
     assert "runSummary(run, rep)" in js and "const rep = R.report" in js       # previews and runs alike
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="needs Node.js to run the page's script")
+def test_a_run_that_sent_nothing_is_never_called_delivered_on_the_page():
+    # Regression: a run of a feed with no delivery (transport none) ends success, and the page labelled it
+    # "Delivered" with the toast "Delivered." though nothing was sent.
+    script = _pure_helpers() + """
+const dry = { status: "success", not_sent: true };
+const sent = { status: "success", not_sent: false };
+console.log(JSON.stringify({
+  labels: [runLabel(dry), runLabel(sent), runLabel({ status: "built" }), runLabel({ status: "held" })],
+  toasts: [doneToast({ status: "success", run: dry }), doneToast({ status: "success", run: sent }),
+           doneToast({ status: "preview", run: null })],
+}));
+"""
+    out = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    assert out["labels"] == ["Built, not sent", "Delivered", "Built, not sent", "Held for review"]
+    assert out["toasts"] == ["Built. Nothing was sent.", "Delivered.", "Preview ready."]
+    js = _web("app.js")
+    assert 'text: runLabel(run)' in js and "toast(doneToast(done.result))" in js       # the page uses them

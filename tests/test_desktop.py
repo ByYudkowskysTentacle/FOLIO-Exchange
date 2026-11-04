@@ -123,6 +123,23 @@ def test_every_control_has_an_accessible_name(qtbot, site):
     assert {"F5", "Ctrl+O", "Ctrl+N"} <= shortcuts
 
 
+def test_ctrl_q_quits_on_every_platform(qtbot, site):
+    """Regression: Quit had only the platform's standard key, and Windows has none, so Ctrl+Q did nothing there."""
+    from PySide6.QtGui import QKeySequence
+
+    w = window(qtbot, site)
+    quit_action = next(a for a in w.actions() if a.text() == "&Quit")
+    keys = [k.toString() for k in quit_action.shortcuts()]
+    standard = [k.toString() for k in QKeySequence.keyBindings(QKeySequence.StandardKey.Quit)]
+    assert keys[:len(standard)] == standard and "Ctrl+Q" in keys and len(keys) == len(set(keys))
+    every = [k.toString() for a in w.actions() for k in a.shortcuts()]
+    assert len(every) == len(set(every))                       # a key bound twice would do nothing
+    w.activateWindow()
+    qtbot.waitUntil(w.isActiveWindow, timeout=5000)            # shortcuts work in the active window
+    qtbot.keyClick(w, Qt.Key.Key_Q, Qt.KeyboardModifier.ControlModifier)
+    qtbot.waitUntil(lambda: not w.isVisible(), timeout=5000)
+
+
 def test_a_refresh_shows_changes(qtbot, site):
     w = window(qtbot, site)
     make_feed(site, "second", file_prefix="second",

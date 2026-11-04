@@ -309,3 +309,24 @@ def test_secrets_typed_in_setup_never_reach_the_audit(site, keyring):  # noqa: F
     setupops.store_sftp_password(s, lib, "chq", SFTP_PASSWORD, via="app")
     entries = audit(site)
     assert {"from": "app"}.items() <= entries[0]["detail"].items() and SFTP_PASSWORD not in json.dumps(entries)
+
+
+def test_a_run_of_a_feed_with_no_delivery_is_never_called_delivered(site):
+    """Regression: a run of a feed with no delivery (transport none) ends success, and the app and the page called
+    it "Delivered" though nothing was sent. The command line already said "not sent: transport none"."""
+    make_feed(site, delivery={"transport": "none", "directory": None})
+    res = views.run(site, "chq", deliver=True)
+    assert res["status"] == "success" and res["run"]["not_sent"] is True and not res["run"]["delivered"]
+    assert model.done_words(res) == "Built. Nothing was sent."
+    assert dict(model.run_summary(res["run"], res["report"], False))["Status"] == "Built, not sent"
+    snap = model.snapshot(site)
+    item = snap["summary"]["feeds"][0]
+    assert item["last_status"] == "success" and item["last_not_sent"] is True
+    assert model.feed_state(item) == "On, built, not sent"                 # the sidebar
+    assert model.feed_state(snap["feeds"]["chq"]) == "On, built, not sent"
+    assert model.last_run_words(snap["feeds"]["chq"]["last_run"]).startswith("Built, not sent, ")
+    assert snap["runs"]["chq"][0]["not_sent"] and snap["activity"]["runs"][0]["not_sent"]
+    # A run that did send keeps its word.
+    assert model.status_words("success", False) == "Delivered"
+    assert model.done_words({"status": "success", "run": {"not_sent": False}}) == "Delivered."
+    assert model.feed_state({"enabled": True, "last_status": "success", "last_not_sent": False}) == "On, delivered"

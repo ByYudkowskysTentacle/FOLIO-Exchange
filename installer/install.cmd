@@ -3,7 +3,7 @@ setlocal
 rem Double-click this file to install or update FOLIO-Exchange.
 rem It runs install.ps1 from the same folder and passes on any options, for example:
 rem   install.cmd -SiteName mylibrary -NoStart
-rem Run "powershell -File install.ps1 -?" or see README.md for the options.
+rem Run "powershell -ExecutionPolicy Bypass -File install.ps1 -?" or see README.md for the options.
 
 if not exist "%~dp0install.ps1" (
     echo install.ps1 is missing. It must be in the same folder as install.cmd.

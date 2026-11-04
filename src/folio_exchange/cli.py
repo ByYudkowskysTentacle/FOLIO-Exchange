@@ -21,7 +21,7 @@ from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError
 from .fields import FIELDS
-from .history import History
+from .history import History, not_sent
 from .logsetup import setup_logging
 from .recipe import (
     Feed,
@@ -101,7 +101,7 @@ def _yes(prompt: str) -> bool:
 
 def _not_sent(row: dict) -> str:
     """A marker for a successful run that sent nothing because its feed had no delivery (transport none)."""
-    return " (not sent: transport none)" if row.get("status") == "success" and row.get("destination") == "none" else ""
+    return " (not sent: transport none)" if not_sent(row) else ""
 
 
 def _when(iso: str | None) -> str:
@@ -1079,7 +1079,8 @@ def build_parser() -> argparse.ArgumentParser:
     fd = sub.add_parser("feeds", help="list feeds, or pause or resume one")
     fd.add_argument("action", nargs="?", choices=["list", "pause", "resume"], default="list")
     fd.add_argument("feed", nargs="?")
-    rc = sub.add_parser("recipes", help="list recipes, show one, validate a file, or print a layout summary")
+    rc = sub.add_parser("recipes", help="list recipes, show one, validate a file, print a layout summary, list the "
+                                        "vendor sources, or get new recipes from one")
     rc.add_argument("action", nargs="?", choices=["list", "show", "validate", "summary", "sources", "get"],
                     default="list")
     rc.add_argument("target", nargs="?", help="recipe id (id@range), feed name, a file to validate, or (for get) "

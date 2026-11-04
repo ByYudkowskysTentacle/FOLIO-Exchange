@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from sitekit import FOLIO_TEST_PASSWORD, make_feed
 
-from folio_exchange import __version__, cli, delivery, installed_commit, schedule, version_text
+from folio_exchange import __version__, cli, delivery, installed_commit, schedule, version_text, views
 from folio_exchange.cli import main
 from folio_exchange.wizard import ScriptedPrompter, run_wizard
 
@@ -60,6 +60,9 @@ def test_history_and_feeds_say_a_dry_run_sent_nothing(site, capsys):
     main(["-s", str(site), "feeds"])
     out = capsys.readouterr().out
     assert "success (not sent: transport none)" in out and "Dry run: nothing was sent" in out
+    # The page and the desktop app get the same fact, so neither calls the run delivered.
+    assert views.feed_runs(site, "chq")[0]["not_sent"] is True
+    assert views.site_summary(site)["feeds"][0]["last_not_sent"] is True
 
 
 def test_a_real_delivery_is_not_marked_as_not_sent(site, capsys):
@@ -68,6 +71,8 @@ def test_a_real_delivery_is_not_marked_as_not_sent(site, capsys):
     capsys.readouterr()
     main(["-s", str(site), "history"])
     assert "not sent" not in capsys.readouterr().out
+    assert views.feed_runs(site, "chq")[0]["not_sent"] is False
+    assert views.site_summary(site)["feeds"][0]["last_not_sent"] is False
 
 
 def test_check_delivery_explains_a_dry_run_feed(site, capsys):
@@ -298,3 +303,15 @@ def test_version_without_the_package_metadata(monkeypatch):
 
     monkeypatch.setattr(importlib.metadata, "distribution", missing)
     assert version_text() == f"folio-exchange {__version__}"
+
+
+def test_the_recipes_help_names_every_action():
+    """Regression: the help for `recipes` named list, show, validate and summary, but not sources or get."""
+    import argparse
+
+    sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    help_text = next(c.help for c in sub._choices_actions if c.dest == "recipes")
+    actions = next(a for a in sub.choices["recipes"]._actions if a.dest == "action").choices
+    assert set(actions) == {"list", "show", "validate", "summary", "sources", "get"}
+    for action in actions:
+        assert action in help_text, action

@@ -415,6 +415,7 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
     digests: list[dict] = []
     sent: list[str] = []
     would_hold: str | None = None          # why a delivery would wait; kept on built and blocked runs too
+    skipped: dict | None = None            # --force skipped the item-count check: audited however the run ends
     try:
         if sync_report is not None:
             report["sync"] = sync_report
@@ -455,7 +456,10 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         checks.required_fields(feed, rep)
         last = hist.last_delivered(feed.name, dest)
         report["last_delivered_items"] = last.get("items") if last else None
-        if not opts.force:
+        if opts.force:
+            skipped = {"run_dir": str(run_dir), "items": rep.items_written,
+                       "previous_items": last.get("items") if last else None}
+        else:
             checks.item_ratio(feed, rep.items_written, last.get("items") if last else None)
         if opts.no_deliver:
             status = "built"
@@ -512,9 +516,10 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         run_id, status, items=rep.items_written if rep else None, bibs=rep.bibs_written if rep else None,
         files=digests, delivered=sent, error=error, report=report,
     )
-    if opts.force and status in ("success", "built"):
-        hist.audit(None, feed.name, "safety check skipped (--force)",
-                   {"run_dir": str(run_dir), "items": rep.items_written if rep else None})
+    if skipped is not None:
+        # Every run that got past the check without it, whatever its status: a held run's release does not
+        # check the count again, so this is the only record that it was never checked.
+        hist.audit(None, feed.name, "safety check skipped (--force)", {**skipped, "status": status})
     _prune(site, feed, hist)
     res = RunResult(feed.name, status, code, run_dir if run_dir.exists() else None, report)
     _alert_run(site, feed, res, previous)
