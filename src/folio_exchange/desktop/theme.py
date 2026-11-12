@@ -99,6 +99,8 @@ QListWidget#sidebar::item {{ padding: 7px 8px; border-radius: 6px; color: {t['te
 QListWidget#sidebar::item:hover {{ background: {t['hover']}; }}
 QListWidget#sidebar::item:selected {{ background: {t['select']}; color: {t['text']};
   border-left: 3px solid {t['mark']}; }}
+QLabel#sidebarfoot {{ background: {t['bg']}; color: {t['muted']}; border: 0; border-top: 1px solid {t['line']};
+  border-right: 1px solid {t['line']}; padding: 10px 14px; }}
 
 QPushButton {{ background: {t['panel']}; color: {t['text']}; border: 1px solid {t['field_line']};
   border-radius: 6px; padding: 6px 14px; font-weight: 700; }}

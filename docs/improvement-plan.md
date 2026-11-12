@@ -1,12 +1,12 @@
 # Improvement plan
 
-_27 October 2026. Follows the design and function review in `docs/review-2026-10-27.md`; IDs refer to its findings. The "Fix now" group (27 findings) is done. This plans everything else._
+_The work planned after the design and function review of 27 October 2026 ([review-2026-10-27.md](review-2026-10-27.md)), in five batches. IDs such as SPEC-1 and SEC-3 refer to that review's findings. Its "Fix now" group (27 findings) is done (PR [#5](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/5)). Batches 1 and 2 are done, batch 3 is on hold, and batches 4 and 5 haven't started. Terms are explained in the [docs index](README.md#terms)._
 
 Each batch is one or a few pull requests, each with regression tests. Whenever the builders change, byte parity with the legacy tool is re-checked.
 
 ## Batch 1: safety and unattended running
 
-_Done on 27 October 2026 (branch `claude/batch-1`)._
+_Done on 27 October 2026 (PR [#11](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/11))._
 
 The changes most likely to prevent a bad delivery, or one that silently never happens. About two days.
 
@@ -22,13 +22,12 @@ Also done in this batch: the page opens only through a one-time link that it swa
 Left on purpose, or still to do:
 - **No release tag yet.** The guide and the installer still install `main`; `constraints.txt` pins the dependency versions, and CI pins its actions to commit SHAs. Tag a version, and point both at it, before a second library installs.
 - **The page shows the hourly task's age only as a warning** (after two hours, or when it never ran); `check` and `feeds` also print the age when all is well.
-- **`init`** still names `C:\FOLIO-Exchange\<tenant>` in its warning about synced folders; the guide now uses `%LOCALAPPDATA%\FOLIO-Exchange`.
 - **`administrativeNotes`** on instances and holdings stay in the cache (optional in SEC-6).
 - **Run reports** record the program version and the recipe's SHA-256, not the program's git commit.
 
 ## Batch 2: command line, page and the shared core under them
 
-_Done on 27 October 2026 (branch `claude/batch-2`)._
+_Done on 27 October 2026 (PR [#8](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/8))._
 
 Make daily use comfortable, and give the page the same operations as the command line without copying code. About three days.
 
@@ -40,7 +39,7 @@ Make daily use comfortable, and give the page the same operations as the command
 
 ## Batch 3: large catalogues
 
-_Tabled on 28 October 2026: the pilot library's catalogue is about 70,000 records. The desktop app (`docs/desktop-plan.md`) comes first._
+_Tabled on 28 October 2026: the pilot library's catalogue, about 70,000 records, doesn't need it yet. The desktop app ([desktop-plan.md](desktop-plan.md)) comes first._
 
 Measure first, then remove the full re-downloads that make a weekly run take hours. About three days.
 
@@ -52,6 +51,8 @@ Measure first, then remove the full re-downloads that make a weekly run take hou
 | 3.3 | **Smaller wins:**<br>- per-record-type refresh intervals (loans and MARC can wait longer);<br>- a retry window for missing MARC instead of retrying every sync;<br>- build progress in the log;<br>- `keep_local_runs: 2` by default, with a free-space check;<br>- a faster `from_srs`, a lighter loan-statistics table, and reading only the rows the page shows. | PERF-3, PERF-9, PERF-6, PERF-7, PERF-4, PERF-8, PERF-5 | Benchmark improves; byte parity holds. |
 
 ## Batch 4: tests, packaging and error types
+
+_Not started._
 
 Keeps the rest cheap to change. About one day.
 
@@ -66,7 +67,9 @@ Keeps the rest cheap to change. About one day.
 
 ## Batch 5: before a second recipe (gate 2)
 
-Decide these with the partner library when its vendor is chosen. Several change the recipe format, so they belong before more recipes and libraries depend on it.
+_Not started._
+
+Gate 2 is a second vendor's recipe that ships with no core code changes. Decide these with the library that needs that recipe, once its vendor is chosen. Several change the recipe format, so they belong before more recipes and libraries depend on it.
 
 | # | Change | Findings |
 | --- | --- | --- |
@@ -77,9 +80,9 @@ Decide these with the partner library when its vendor is chosen. Several change 
 
 ## Also: a second review round
 
-_Done on 27 October 2026: `docs/review-2026-10-27-round-2.md` (19 verified findings in four groups, none high). All 19 are fixed on the branch `claude/review-2` (27 October 2026), with regression tests in `tests/test_review2_*.py`; `docs/design.md` describes the changes._
+_Done on 27 October 2026: `docs/review-2026-10-27-round-2.md` (19 verified findings in four groups, none high). All 19 are fixed (PR [#12](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/12), 27 October 2026), with regression tests in `tests/test_review2_*.py`; `docs/design.md` describes the changes._
 
-The review's completeness check named four areas that the first round covered thinly. A focused round on these should run before or alongside batch 3:
+The first review's completeness check named four areas it covered thinly, and the second round covered them:
 - field values in the output files (`fields.py`, `dates.py`, the delimited writer, MARC built from instances);
 - unattended scheduled running on a Windows PC, end to end;
 - living with the tool over time: upgrades, stored state, recipe versions, renamed feeds;
@@ -91,5 +94,5 @@ The review's completeness check named four areas that the first round covered th
 - **Batch 2:** 2.1 comes before the page work in 2.3, which builds on it.
 - **Batch 3** is tabled until a library with a large catalogue needs it. It starts with the benchmark (3.0), so every change there is measured.
 - **Batch 4** can run alongside any other batch.
-- **Batch 5** waits for the partner library's choice of a second vendor, except 5.2 and the `requires` key in 5.3, which are cheap and safe now.
+- **Batch 5** waits for a library's choice of a second vendor, except 5.2 and the `requires` key in 5.3, which are cheap and safe now.
 - **cHQ FOLIO Exchange Recipe** (formerly FOLIOHQ) keeps the setup guide for gate 1 throughout.

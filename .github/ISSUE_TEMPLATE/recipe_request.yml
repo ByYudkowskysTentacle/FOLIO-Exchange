@@ -1,0 +1,37 @@
+name: Recipe request
+description: Ask for a feed to a vendor or platform that FOLIO-Exchange doesn't have a recipe for yet
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A recipe is the shared, versioned file layout for one vendor feed. Tell us what the vendor expects. **This issue is public**, so don't attach real library data or files the vendor marked confidential.
+  - type: input
+    id: vendor
+    attributes:
+      label: Vendor or platform
+      placeholder: OCLC WorldCat (Data Sync)
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: What the vendor needs
+      description: Which records (bibs, holdings, items, circulation counts) and how often.
+    validations:
+      required: true
+  - type: textarea
+    id: format
+    attributes:
+      label: Format and route
+      description: MARC, CSV or other delimited text; SFTP, API or other; file names; full or changed records only.
+  - type: textarea
+    id: spec
+    attributes:
+      label: Layout documentation
+      description: Links to the vendor's public specs, or a description of the columns and fields. Mention whether you have a sample file you could share privately.
+  - type: textarea
+    id: today
+    attributes:
+      label: How you do it today
+      description: A script, a manual export, nothing yet.

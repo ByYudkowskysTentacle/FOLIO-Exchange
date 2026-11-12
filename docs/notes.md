@@ -1,17 +1,18 @@
 # Working notes
 
-_Last updated: 27 October 2026, after the second review round's fixes. Read with `docs/spec.md` and `docs/design.md`._
+_The project's running record: where things stand, the decisions so far and why, and what's been learned about FOLIO and collectionHQ. Last updated 3 November 2026. Goals and scope are in [spec.md](spec.md), how v1 is built is in [design.md](design.md), and terms are explained in the [docs index](README.md#terms)._
 
 ## Where things stand
 
-- **FOLIO-Exchange** v1 is built and tested offline (see below); not yet released or run against a real tenant. The spec sheet is `docs/spec.md`.
+- **FOLIO-Exchange** v1 is built and tested offline, and has run against FOLIO's public Eureka test system (see below). It isn't released yet, and hasn't run against a library's own tenant.
+- **The desktop app:** phases D1 to D3 of [desktop-plan.md](desktop-plan.md) are built (PRs [#17](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/17) to [#19](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/19), 28 and 29 Oct 2026) and usable as a preview. D4, the tray icon and notifications, is next.
 - **[cHQ FOLIO Exchange Recipe](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe)** (called FOLIOHQ until 28 Oct 2026) is, since 27 Oct 2026, the home of the `chq-academic` recipe and the collectionHQ Academic setup guide (`docs/setup.md`) and file layout (`docs/layout.md`). Its `docs/HANDOFF.md` has the collectionHQ status and open questions.
 - **Phase 0, `folio-chq-extract`**, the one-vendor tool this platform generalizes, moved to that repository's `legacy/` folder. It stays installable and tested as a fallback until FOLIO-Exchange makes its first real delivery. Its status:
   - Tested end to end against FOLIO's public reference systems (Okapi and Eureka).
   - The cHQ Academic file layout is implemented.
   - The cHQ SFTP login is verified.
   - It has **not** yet run against the library's own tenant, and nothing has been uploaded to cHQ.
-- **The first library's tenant is on Eureka.**
+- **The pilot library**, the first library setting up FOLIO-Exchange (not named in these docs), **is on Eureka.**
 
 ## v1 build (26 Oct 2026)
 
@@ -23,10 +24,10 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 - A design and function review on 27 Oct (`docs/review-2026-10-27.md`) verified 71 findings; the 27 in "Fix now" are fixed, and the rest are planned in `docs/improvement-plan.md`.
 - Batch 1 of the plan is done: any change to a feed's delivered layout holds the next delivery and says what changed; `check`, `feeds` and the page warn when the hourly task has not run for two hours, and an optional heartbeat URL tells an outside monitor; `check` warns about folders other Windows users can change, and the guide installs under `%LOCALAPPDATA%`; `folio.ca_bundle` (a PEM file or the Windows certificate store) replaces turning TLS checks off; the page opens only through a one-time link; staff data is dropped from cached records; dependencies are pinned in `constraints.txt`. No release tag yet: the guide and installer still install `main`.
 - Batch 2 of the plan is done: a shared feed-operations core (`feedops.py`), paused and dry-run feeds handled plainly on the command line, a schedule command that works in PowerShell, guide sections for going live and updating, and a keyboard-usable, self-refreshing page.
-- A second review round on 27 Oct (`docs/review-2026-10-27-round-2.md`) verified 19 findings in the areas the first covered thinly: values in the files, unattended runs, living with the tool over time, and settings as a safety boundary. All 19 are fixed on the branch `claude/review-2`: legacy notes read strictly, a hold on the first delivery from another FOLIO, alerts for failing or given-up passes, a task that runs on battery, typed SFTP key pins, and a fuller settings audit among them.
+- A second review round on 27 Oct (`docs/review-2026-10-27-round-2.md`) verified 19 findings in the areas the first covered thinly: values in the files, unattended runs, living with the tool over time, and settings as a safety boundary. All 19 are fixed (PR [#12](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/12)): legacy notes read strictly, a hold on the first delivery from another FOLIO, alerts for failing or given-up passes, a task that runs on battery, typed SFTP key pins, and a fuller settings audit among them.
 - A final review found 14 bugs (each reproduced) and an operator walkthrough found 15 usability problems; all are fixed, with regression tests (`test_regressions.py`, `test_walkthrough.py`).
 - `chq-academic` 1.0.0 writes byte-identical `.mrc` and `.psv` files to folio-chq-extract from the same data. Since 27 Oct 2026, the CI of cHQ FOLIO Exchange Recipe checks it on every change.
-- 202 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR #1.
+- At that point, 202 offline tests (`pytest`), `ruff` clean, JSON Schemas and commented examples. CI passes on Linux (Python 3.10 to 3.13) and Windows, with a gitleaks secret scan. Merged to `main` in PR [#1](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/pull/1).
 
 **Eureka trial (26 Oct 2026).** Run against the public Eureka Snapshot reference system (`https://folio-etesting-snapshot-kong.ci.folio.org`, tenant `diku`, the published demo login), delivering to a local folder:
 - `check`: login and every endpoint readable (10,042 instances, 27 holdings, 33 items, 15 loans, ten reference tables).
@@ -49,7 +50,7 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 | --- | --- | --- |
 | 2026-10-26 | Eureka first; Okapi kept only while the same code covers it, with no Okapi-only work | FOLIO is moving to Eureka, and the first library is already on it |
 | 2026-10-26 | New repo FOLIO-Exchange; FOLIOHQ stays as phase 0 | Keep the working cHQ tool stable while the platform is designed |
-| 2026-10-26 | The operator is a systems librarian: v1 is a guided command line plus recipes; the web UI is phase 2 | Matches who will actually run it |
+| 2026-10-26 | The operator is a systems librarian: v1 is a guided command line plus recipes; the web UI is phase 2 (superseded by the local page and the desktop app, below) | Matches who will actually run it |
 | 2026-10-26 | It runs on each library's own PC or server, inside its network | FOLIO hosts usually accept API traffic only from known networks |
 | 2026-10-26 | Outbound feeds after cHQ are unranked candidates | The second recipe is whichever a partner library needs first |
 | 2026-10-26 | Writing into FOLIO (inbound loads) waits for v2, behind a separate account and a second approver | Writes carry far more risk than reads |
@@ -63,10 +64,10 @@ The contract is `docs/design.md`; it was revised after a three-lens design revie
 | 2026-10-27 | Legacy item notes are read strictly here (ISO 8601, `legacy.date_format`, or free text with a day, month and year; dates from 1800 to tomorrow; one whole number for counts), while FOLIOHQ's legacy tool still reads them leniently. FOLIOHQ's setup docs should state the accepted note formats, and add `host_key_type: ssh-rsa` to collectionHQ's pin | Lenient reading sent wrong dates and counts with no warning (second review round). The legacy tool is a fallback, not worth changing; byte parity runs without legacy settings, so it still holds. collectionHQ's server key is RSA, and a typed pin keeps deliveries working if the server adds a newer key type |
 | 2026-10-28 | FOLIOHQ renamed cHQ FOLIO Exchange Recipe (`ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe`); the recipe source keeps the id `foliohq` | The name says what the repository now holds. GitHub redirects the old name, and installed sites keep their record of where their recipes came from |
 | 2026-10-28 | Batch 3 (large catalogues) tabled; a desktop app planned in `docs/desktop-plan.md` | The pilot library's catalogue is about 70,000 records. A window of its own and a one-file installer remove the steps where staff get stuck |
-| 2026-10-28 | The desktop app is a native PySide6 (Qt) app, built now, with a tray icon and notifications in the first build; a self-contained Windows installer first, with the pip route kept for IT staff; signed through SignPath Foundation, unsigned for the pilot until accepted; Windows only. The browser page is retired once the app matches it | One language with the core, no local web server to defend, mature screen reader support. A page in a native window, Rust, wxPython, Tkinter, Flet and C# were compared (`docs/desktop-plan.md`). SignPath is free for open source; the Azure nonprofit grant with Artifact Signing is the fallback |
+| 2026-10-28 | The desktop app is a native PySide6 (Qt) app, built now, with a tray icon and notifications in the first build; a self-contained Windows installer first, with the pip route kept for IT staff; signed through SignPath Foundation, unsigned for the pilot until accepted; Windows only. The browser page is retired once the app matches it | One language with the core, no local web server to defend, mature screen reader support. A page in a native window, Rust, wxPython, Tkinter, Flet and C# were compared (`docs/desktop-plan.md`). SignPath is free for open source; Azure Artifact Signing, a paid service, is the fallback |
 | 2026-11-03 | Naming: **site** stays the name of the local folder (one FOLIO tenant's connection, shared cache, run history and alerts; it holds feeds to many services). A **service** is a third-party platform the library sends data to (collectionHQ, OCLC, discovery layers). A **destination** is where a service receives the data: today an SFTP server, folder and account with a pinned server key, or a local folder; later, API endpoints. **Tenant** appears in app text only for the FOLIO tenant itself ("FOLIO tenant fs00001234"). Renaming site to service, or to tenant, was rejected. Making services and destinations objects of their own is planned in `docs/services-plan.md` | A site shares one FOLIO login and cache across services, so one folder per service would mean a full catalog sync per vendor. "Set up / Rename / Delete tenant" would read like FOLIO platform operations. Naming the far end now keeps "data from FOLIO, through feeds, to services" clear once vendors offer automatic setup (API keys, OAuth, provisioning links) |
 
-Still open: patron data, upkeep and funding, a proposal to the FOLIO community (Reporting SIG), and the name check.
+Still open: patron data, upkeep and funding, a proposal to the FOLIO community (its Reporting SIG, a special interest group), and the name check.
 
 ## Lessons carried over from folio-chq-extract
 
@@ -96,11 +97,10 @@ Still open: patron data, upkeep and funding, a proposal to the FOLIO community (
 **Secrets and accounts**
 - Passwords come from environment variables or the OS keyring (`keyring` package; Windows Credential Manager on Windows). folio-chq-extract uses the services `folio-chq-folio` and `folio-chq-sftp`, keyed by username.
 - Tests must never touch a developer's real credential store. folio-chq-extract's tests block the real keyring with an autouse fixture.
-- AI assistants on this project do not sign in to production services with a password, even when allowed to. They hand the person a command to run, and never read, print or write the password.
+- Nobody working on the project, AI assistants included, signs in to a library's production FOLIO tenant or vendor server with that library's password. They hand the library's operator a command to run, and never read, print or write the password.
 - A credentials text file nearly got committed to a public repo. Ignore credential-looking files by default (see `.gitignore`).
 
 **GitHub**
-- On this account, GitHub Actions in private repos is blocked by billing; public repos run free.
 - Current Node 24 action versions (Oct 2026): `actions/checkout@v7`, `actions/setup-python@v7`, `actions/cache@v6`, `actions/upload-artifact@v7`. CI pins each action to the full commit SHA of its tag, with the tag in a comment; look the commit up read-only with `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha` when moving to a new version.
 - Commits use the GitHub noreply address, so no personal email is published.
 
@@ -116,9 +116,4 @@ Still open: patron data, upkeep and funding, a proposal to the FOLIO community (
    - **Analyze:** review locations, call numbers and counts in that output.
    - **Agree with cHQ:** the remote folder and host key, plus a sample for their approval.
    - **First delivery:** `run chq`, then `release chq`. cHQ accepting it is gate 1. If FOLIO-Exchange is blocked, the legacy tool sends the same files.
-2. **Here, in parallel:**
-   - ~~Decide the license~~: MIT, 26 Oct 2026.
-   - ~~Turn the recipe example in the spec into a draft recipe schema~~: `schemas/recipe.schema.json`, 26 Oct 2026.
-   - ~~Plan how FOLIOHQ's core splits into reusable parts~~: done in the v1 build, 26 Oct 2026.
-3. **Keep the spec current:** edit the live copy, then refresh `docs/spec.md` from it.
-4. **Services and destinations** (`docs/services-plan.md`): after the desktop app's D4 (tray and notifications), make services and destinations objects of their own. Phases S1 to S4 come before a second service, and S5 (service definitions from vendors) before the first automatic integration. Its open questions wait on the user, and its suggested text for the live spec's terms and roadmap waits on the maintainer.
+2. **Services and destinations** (`docs/services-plan.md`): after the desktop app's D4 (tray and notifications), make services and destinations objects of their own. Phases S1 to S4 come before a second service, and S5 (service definitions from vendors) before the first automatic integration. Its open questions, and its suggested text for the spec's terms and roadmap, wait on the maintainer.

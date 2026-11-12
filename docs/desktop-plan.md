@@ -1,6 +1,6 @@
 # Desktop app plan
 
-_29 October 2026. Decisions taken; D1 (groundwork and shell), D2 (feeds and activity) and D3 (setup, recipes and options) are built, D4 is next. Batch 3 (large catalogues) is tabled, because the pilot library's catalogue is about 70,000 records._
+_The plan for FOLIO-Exchange's Windows desktop app, which is to replace the local browser page. Status on 29 October 2026: the decisions below are taken, phases D1 to D3 are built and usable as a preview, and D4, the tray icon, is next. "The pilot" is the first library to use the app. Large-catalogue work (batch 3 of [improvement-plan.md](improvement-plan.md)) is on hold, because the pilot library's catalogue of about 70,000 records doesn't need it yet._
 
 ## Why
 
@@ -17,7 +17,7 @@ A desktop app should:
 | --- | --- | --- | --- |
 | 1 | How to build it | **A native Python app with PySide6 (Qt), now.** The browser page stays usable until the app matches it. | One language (the core is about 11,100 lines of tested Python). Mature screen reader support, native dialogs, tray and notifications built in. No local web server, so no localhost attack surface to defend. Compared with a page in a native window (pywebview: fast, but keeps the web code and server), a Rust interface over the Python core (two languages, still ships Python), a full Rust rewrite (4 to 6 months and byte parity re-proved), wxPython, Tkinter (weak accessibility), Flet and C#/WinUI. |
 | 2 | How to install it | **Both, installer first.** A self-contained installer for library staff; the PowerShell and pip route stays, documented, for IT staff and developers. | No Python, winget or pip on a library PC. |
-| 3 | Code signing | **SignPath Foundation** (free signing for open source projects). The pilot ships unsigned until SignPath accepts the project. | Free, and fits a public MIT project built on GitHub Actions. Windows names "SignPath Foundation" as the publisher. Azure Artifact Signing paid from the Microsoft for Nonprofits Azure grant remains the route to the organisation's own name later. |
+| 3 | Code signing | **SignPath Foundation** (free signing for open source projects). The pilot ships unsigned until SignPath accepts the project. | Free, and fits a public MIT project built on GitHub Actions. Windows names "SignPath Foundation" as the publisher. Azure Artifact Signing, a paid service, is the route to signing under the project's own name later. |
 | 4 | Platforms | **Windows only** for the installer. | The pilot runs Windows. PySide6 still runs from a pip install on Mac and Linux, untested. |
 | 5 | Tray icon and notifications | **Now, in the first build.** | Failed, held and waiting runs show up without the app open. |
 
@@ -53,6 +53,6 @@ About five weeks to D7. D1 to D4 can be used from a pip install (`pip install "f
 - **Antivirus false positives** on PyInstaller builds: the one-folder build (not one-file) and signing (D6) cut them down; until SignPath accepts the project, pilot IT may need to allow the program.
 - **Two interfaces for a while:** the shared module (D1) keeps their facts the same, and features freeze on the page.
 - **The scheduled task's program path** changes when a pip install moves to the installed app: the installer offers to register the task again. If that is missed, the existing warning (no scheduled run for two hours) still catches it.
-- **CLAUDE.md asks for no heavy dependencies without reason.** PySide6 is the reason here, so it lives in the `desktop` extra and the core and command line do not import it.
-- **SignPath's terms** require builds from the public repository on CI and a published signing policy; it may decline or take weeks. Azure Artifact Signing through the nonprofit grant is the fallback.
-- **The spec** says the web UI comes in phase 2. A native desktop app replaces it, so the live spec's roadmap needs updating.
+- **The project's conventions ask for no heavy dependencies without reason** ([CONTRIBUTING.md](../CONTRIBUTING.md)). PySide6 is the reason here, so it lives in the `desktop` extra and the core and command line do not import it.
+- **SignPath's terms** require builds from the public repository on CI and a published signing policy; it may decline or take weeks. Azure Artifact Signing is the fallback.
+- **The spec** says the web UI comes in phase 2. A native desktop app replaces it, so the spec's roadmap ([spec.md](spec.md) and the working copy it's made from) needs updating.

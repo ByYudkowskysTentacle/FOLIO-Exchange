@@ -52,7 +52,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
-from . import __version__, setupops, siteops, sources, views
+from . import __version__, installed_commit, setupops, siteops, sources, views
 from .config import SITE_FILE, load_site
 from .errors import ConfigError, FxError
 from .jobs import Jobs
@@ -273,7 +273,8 @@ class App:
             job = self.jobs.running()
             state = setupops.site_state(root)
             if not state["ready"]:                      # first run, or a site.yaml that does not load
-                return {"setup": state, "version": __version__, "root": str(root), "job": None}
+                return {"setup": state, "version": __version__, "commit": installed_commit(), "root": str(root),
+                        "job": None}
             return {**views.site_summary(root), "job": job.as_dict() if job else None}
         if path == "/api/setup":
             return setupops.site_state(root)

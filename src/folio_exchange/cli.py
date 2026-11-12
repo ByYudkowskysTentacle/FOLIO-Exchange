@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, credentials, delivery, feedops, notify, reads, runner, schedule, siteops
+from . import credentials, delivery, feedops, notify, reads, runner, schedule, siteops, version_text
 from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError
@@ -1026,18 +1026,6 @@ def cmd_init(args) -> int:
 
 
 # ------------------------------------------------------------------ main
-def _version_text() -> str:
-    """The version, and the git commit when pip recorded one (an install from git+https://...)."""
-    try:
-        from importlib.metadata import distribution
-
-        info = json.loads(distribution("folio-exchange").read_text("direct_url.json") or "{}")
-        commit = (info.get("vcs_info") or {}).get("commit_id")
-    except Exception:  # noqa: BLE001 - the version is enough when the commit cannot be known
-        commit = None
-    return f"folio-exchange {__version__}" + (f" (commit {commit[:12]})" if commit else "")
-
-
 class _Parser(argparse.ArgumentParser):
     """Usage mistakes exit 1: exit code 2 means a blocked or held run, and a scheduler must not mistake one
     for the other."""
@@ -1052,7 +1040,7 @@ def build_parser() -> argparse.ArgumentParser:
                                 description="Scheduled, recipe-driven exports from FOLIO to vendors.")
     p.add_argument("-s", "--site", help="the site folder (default: FOLIO_EXCHANGE_SITE, else the current folder)")
     p.add_argument("-v", "--verbose", action="store_true")
-    p.add_argument("--version", action="version", version=_version_text())
+    p.add_argument("--version", action="version", version=version_text())
     sub = p.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     i = sub.add_parser("init", help="guided setup: connect to FOLIO, choose a recipe, preview, deliver, schedule")

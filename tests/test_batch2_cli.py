@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from sitekit import FOLIO_TEST_PASSWORD, make_feed
 
-from folio_exchange import cli, delivery, schedule
+from folio_exchange import __version__, cli, delivery, installed_commit, schedule, version_text
 from folio_exchange.cli import main
 from folio_exchange.wizard import ScriptedPrompter, run_wizard
 
@@ -255,3 +255,46 @@ def test_upgrade_help_says_it_does_not_update_the_program(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])
     assert "not an update of FOLIO-Exchange itself" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ the version and the commit it was installed from
+GIT_INSTALL = json.dumps({"url": "https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git",
+                          "vcs_info": {"vcs": "git", "requested_revision": "main",
+                                       "commit_id": "4d808269505810b4ab31f94b74e617f9cec9660b"}})
+
+
+def installed_as(monkeypatch, direct_url: str | None) -> None:
+    """Pretend pip installed this copy with ``direct_url`` as its direct_url.json (None: there is none)."""
+    import importlib.metadata
+    import types
+
+    fake = types.SimpleNamespace(read_text=lambda name: direct_url if name == "direct_url.json" else None)
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: fake)
+
+
+def test_version_names_the_commit_of_a_git_install(monkeypatch, capsys):
+    installed_as(monkeypatch, GIT_INSTALL)
+    assert installed_commit() == "4d8082695058"
+    assert version_text() == f"folio-exchange {__version__} (commit 4d8082695058)"
+    with pytest.raises(SystemExit) as stop:
+        main(["--version"])
+    assert stop.value.code == 0
+    assert capsys.readouterr().out.strip() == f"folio-exchange {__version__} (commit 4d8082695058)"
+
+
+@pytest.mark.parametrize("direct_url", [None, '{"url": "file:///D:/FOLIO-Exchange", "dir_info": {}}', "not json"],
+                         ids=["no file", "folder install", "unreadable"])
+def test_version_is_the_number_alone_without_a_recorded_commit(monkeypatch, direct_url):
+    installed_as(monkeypatch, direct_url)
+    assert installed_commit() is None
+    assert version_text() == f"folio-exchange {__version__}"
+
+
+def test_version_without_the_package_metadata(monkeypatch):
+    import importlib.metadata
+
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", missing)
+    assert version_text() == f"folio-exchange {__version__}"

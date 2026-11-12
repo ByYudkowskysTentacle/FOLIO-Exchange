@@ -1,6 +1,6 @@
-# FOLIO Integration Platform – Spec Sheet
+# FOLIO-Exchange – Spec Sheet
 
-_Snapshot of the working spec as of 27 Oct 2026. The live, editable copy is a Claude Docs document (see `CLAUDE.md`); when the two differ, the live copy wins until this file is refreshed._
+_The project's goals, scope, safety rules and roadmap, as a snapshot of 4 Nov 2026. The maintainer keeps a working copy and refreshes this file from it, so suggest changes in an issue. The [working notes](notes.md) have the current status, [design.md](design.md) says how v1 is built, and terms are explained in the [docs index](README.md#terms)._
 
 An open-source platform that lets library staff set up, test and run scheduled data exchanges between FOLIO and outside platforms – collectionHQ first – from tested recipes, without writing code. It generalizes what folio-chq-extract already does for one vendor, and keeps its safeguards.
 
@@ -18,7 +18,7 @@ v1 succeeds when a library can stand up a vendor feed from a shared recipe in un
 **v1 goals**
 
 1. **Recipes:** one shared, versioned definition per vendor feed (fields, format, schedule, delivery) that any library reuses and adjusts.
-2. **Guided setup:** connect to FOLIO, pick a recipe, preview real output, test the vendor login and schedule it, from a guided command line in v1 and a browser from phase 2.
+2. **Guided setup:** connect to FOLIO, pick a recipe, preview real output, test the vendor login and schedule it, in v1 from a guided command line, a local browser page or a desktop app, and from phase 2 in a web UI for more staff.
 3. **Unattended runs:** incremental sync, safety checks, run history and failure alerts.
 4. **Safe by default:** read-only FOLIO account, no patron data unless a recipe needs it and an admin approves, secrets never in files.
 5. **Community upkeep:** libraries on the same vendor share and validate one recipe.
@@ -31,7 +31,7 @@ v1 succeeds when a library can stand up a vendor feed from a shared recipe in un
 
 ## At a glance
 
-![Every feed runs one pipeline; only the recipe changes. The data path runs FOLIO on Eureka, connector and sync, local cache, recipe engine, checks, delivery, vendor platform. Beside it, the scheduler starts runs, the web UI (phase 2) edits the recipe library, the recipe library shapes the engine, secrets serve sync and delivery, and delivery logs to run history and audit.](images/architecture.png)
+![Every feed runs one pipeline; only the recipe changes. The data path runs FOLIO on Eureka, connector and sync, local cache, recipe engine, checks, delivery, vendor platform. Beside it, the scheduler starts runs, the command line, page and app edit the recipe library, the recipe library shapes the engine, secrets serve sync and delivery, and delivery logs to run history and audit.](images/architecture.png)
 
 Data moves down the left column on every run. The right column starts, shapes and records each run, and only the recipe differs from one vendor feed to the next.
 
@@ -42,7 +42,7 @@ Four roles inside the library and one outside it; at a small library one person 
 | Role | Typical person | Does | Needs from the platform |
 | --- | --- | --- | --- |
 | Integration admin | Systems librarian or campus IT | Installs it, connects FOLIO, stores secrets, approves recipes that touch patron data | Install wizard, approval gates, audit log |
-| Operator | The systems librarian in v1; collections or circulation staff once the web UI ships | Picks a recipe, adjusts filters and columns, previews output, sets the schedule | A guided command line and instant preview in v1; screens and a field picker in phase 2 |
+| Operator | The systems librarian in v1; collections or circulation staff once the phase 2 web UI ships | Picks a recipe, adjusts filters and columns, previews output, sets the schedule | In v1, a guided command line, a browser page and a desktop app, each with instant preview; screens and a field picker for more staff in phase 2 |
 | Recipe author | A library in the community, sometimes with the vendor | Turns a vendor's spec into a tested recipe | Recipe format, validator that checks output against vendor samples, mock FOLIO test kit |
 | Watcher | Anyone on the alert list | Gets success and failure notices, reads run history | Email, Teams or Slack alerts; a run history page |
 | Vendor contact (outside) | The vendor's implementation team | Receives files, confirms the layout | A sample file and a one-page summary of the layout, generated from the recipe |
@@ -53,7 +53,7 @@ Of nine candidate feeds, the platform should own the five outbound file feeds FO
 
 | Platform | What flows | Direction | Usual format and route | What FOLIO already does | Status |
 | --- | --- | --- | --- | --- | --- |
-| collectionHQ Academic | Bibs, items, loan and renewal counts | Out | MARC plus pipe-delimited items, SFTP | Nothing built in | First – recipe chq-academic, kept in FOLIOHQ |
+| collectionHQ Academic | Bibs, items, loan and renewal counts | Out | MARC plus pipe-delimited items, SFTP | Nothing built in | First – recipe chq-academic, kept in cHQ FOLIO Exchange Recipe |
 | Other collection-analysis tools (e.g. GreenGlass) | Bibs, items, circulation | Out | MARC plus CSV, SFTP | Data Export builds MARC; no schedule or delivery documented | Candidate – same shape as cHQ |
 | OCLC WorldCat holdings (Data Sync) | Bibs with holdings | Out | MARC, SFTP | Data Export builds MARC; no schedule or delivery documented | Candidate |
 | Discovery layers that need pushed files (EDS, Primo, Summon) | Full and changed MARC, plus deletes | Out | MARC, SFTP | OAI-PMH feed with `marc21_withholdings` for systems that harvest | Candidate – only where the vendor cannot harvest |
@@ -76,7 +76,7 @@ Nineteen requirements across seven stages; 15 are Must for v1. Each Why cites wh
 | SYN-1 | Incremental sync into a local cache: keyset paging, deletion detection, scheduled full refresh | Must | Offset paging degrades on large tenants; deltas keep weekly runs short |
 | SYN-2 | ECS consortium support, including shared records | Should | Member tenants need shared MARC from the central tenant |
 | MAP-1 | One field registry: every output field defined once, with a plain description | Must | cHQ needed five new fields; each was one entry |
-| MAP-2 | Column settings (headers, order, date format, empty-value text, delimiter) edited in local settings with instant preview; a visual editor arrives with the web UI | Must | cHQ's layout differed from ours on all five |
+| MAP-2 | Column settings (headers, order, date format, empty-value text, delimiter) edited in local settings with instant preview; a visual editor arrives with the phase 2 web UI | Must | cHQ's layout differed from ours on all five |
 | MAP-3 | Output builders for MARC 21 (ISO 2709, size limits handled) and delimited text | Must | Records over 99,999 bytes and fields over 9,999 bytes occur |
 | MAP-4 | Link identifiers set per vendor (999 ff $i, 001, a 9XX barcode) and enforced on every record | Must | cHQ links on 999 ff $i; we had assumed 001 |
 | MAP-5 | More builders: MARCXML, JSON, KBART | Could | Asked for by discovery and e-resource vendors |
@@ -99,7 +99,7 @@ A recipe is two files: a shared one that describes the vendor's layout, and a lo
 
 ```yaml
 recipe: chq-academic
-version: 1.2.0            # minor = new optional column; major = layout the vendor must re-accept
+version: 1.2.0            # minor or patch = the files never change; major = any layout change, which the vendor accepts again
 vendor: collectionHQ
 title: collectionHQ Academic – bibs and items
 spec_source: cHQ implementation team, Oct 2026 (Library of Michigan layout)
@@ -144,9 +144,9 @@ No patron data leaves by default: a recipe must declare it, an admin must approv
 
 | Area | Rule |
 | --- | --- |
-| Patron data | A recipe declares `patron_data` and lists the exact fields. Anything but `none` needs admin approval and is limited to that list. Loans are read only for item, dates and counts. |
+| Patron data | A recipe declares `patron_data` and lists the exact fields. Anything but `none` needs admin approval and is limited to that list. Loans are read only for item, dates and counts. Until the open question on patron data is answered, v1 refuses every recipe that asks for it. |
 | FOLIO account | A read-only service account, given access through a Eureka authorization role. The connection test lists the exact capabilities the enabled recipes need, and no more. Writes (v2) need a separate account and a second approver. |
-| Secrets | Never in recipes, settings files or logs. The OS keyring on a desktop; a secrets manager or environment variables on servers and in containers. Screens show where a secret comes from, never its value. |
+| Secrets | Never in recipes, settings files or logs. The OS keyring on a desktop; environment variables on servers and in containers. The one exception is an SFTP private key: too large for Windows Credential Manager, it's a file only that Windows user can read. Screens show where a secret comes from, never its value. |
 | Vendor servers | Host keys pinned and confirmed with the vendor; plain FTP refused; unknown keys never auto-accepted. |
 | Bad data at the vendor | Count and required-field checks; a preview approved before the first delivery; the first run held until a person releases it. |
 | Audit | Who changed which recipe setting, and what each run sent: where, file names, hashes and counts. Kept 12 months by default. |
@@ -160,30 +160,30 @@ It runs on one modest machine inside the library's network and handles a collect
 | --- | --- |
 | Scale | First full sync of 1 million items in 6 hours or less on a typical hosted tenant; a weekly incremental run in 15 minutes or less. The build step already does about 100,000 bibs and 200,000 items in 30 seconds. |
 | FOLIO versions | Eureka: the current flower release and the one before (Trillium and Sunflower as of Oct 2026). Okapi-based FOLIO keeps working while the same code serves both, with no Okapi-only fixes or tests. |
-| Deployment | One Docker image; a Windows installer for single-PC libraries; a Linux service. It runs where FOLIO accepts its API traffic, usually inside the library network. |
+| Deployment | A Windows installer for single-PC libraries; a cron job on Linux; later, one Docker image. It runs where FOLIO accepts its API traffic, usually inside the library network. |
 | Footprint | 2 GB RAM and 10 GB disk for 1 million items (target, to be measured). |
 | Resilience | Batch, not always-on: a missed run catches up at the next start, and an interrupted sync forces a clean full sync, never a partial file. |
-| Accessibility | The phase 2 web UI meets WCAG 2.2 AA and works by keyboard alone. |
+| Accessibility | The browser page, the desktop app and the phase 2 web UI meet WCAG 2.2 AA and work by keyboard alone. |
 | Languages | English first; every UI string translatable. |
-| Testing | Every recipe ships a fixture test against a mock FOLIO. CI runs the recipes weekly against FOLIO's public Eureka reference systems; an Okapi run, while one exists, only warns. |
+| Testing | Every recipe ships a fixture test against a mock FOLIO. CI runs the offline tests on every change; the target is a weekly run of the recipes against FOLIO's public Eureka reference systems, where an Okapi run, while one exists, only warns. |
 
 ## Roadmap
 
-![cHQ goes live first; a second vendor proves the design before the UI. Phases: 0 Ship cHQ (now), 1 Generalize, 2 Guided setup, 3 Community, 4 Inbound (v2). Gates between them: first cHQ delivery accepted by cHQ; second recipe with no core code change; a non-developer sets up a feed unaided; three libraries in production.](images/roadmap.png)
+![cHQ goes live first; a second vendor proves the design before the web UI. Phases: 0 Ship cHQ (now), 1 Generalize, 2 Guided setup, 3 Community, 4 Inbound (v2). Gates between them: first cHQ delivery accepted by cHQ; second recipe with no core code change; a non-developer sets up a feed unaided; three libraries in production.](images/roadmap.png)
 
-No phase starts until the gate before it is met. Dates wait on the first four open questions below.
+No phase starts until the gate before it is met, with two exceptions so far. Phase 1's recipe format and field registry are built, and since 27 Oct 2026 gate 1 runs on them, with folio-chq-extract as the fallback. A simple UI for one person, the browser page and then the desktop app, came before gate 1. No dates are set; gate 1 is next.
 
 ## Open questions
 
 The four scope questions were settled on 26 Oct 2026; the rest can wait for the first partner library.
 
-- [x] **Operator:** a systems librarian. v1 ships as a guided command line with recipes; the web UI follows in phase 2.
+- [x] **Operator:** a systems librarian. v1 ships as a guided command line with recipes. A browser page and then a desktop app, for one person on one computer, were added on 26 and 28 Oct 2026; a web UI for more staff follows in phase 2.
 - [x] **Where it runs:** on each library's own PC or server, inside its network.
 - [x] **Next feeds:** every outbound candidate stays open, unranked. Phase 1's second recipe is whichever a partner library needs first.
 - [x] **Writing into FOLIO:** in v2, behind a separate account and a second approver.
-- [x] **Your tenant:** on Eureka, so phase 0 ships and is tested on Eureka.
+- [x] **The pilot library's tenant:** on Eureka, so phase 0 ships and is tested on Eureka.
 - [ ] **Patron data:** does any feed you need carry it, and under what agreement?
-- [x] **Home:** a new repo, FOLIO-Exchange. Since 27 Oct 2026 FOLIOHQ holds the collectionHQ Academic recipe and its setup guide, and keeps its phase 0 tool as a fallback until the first delivery through FOLIO-Exchange. Proposing it to the FOLIO community (Reporting SIG) is still open.
-- [ ] **License:** keep MIT, or move to Apache-2.0, which FOLIO's own modules use?
+- [x] **Home:** a new repo, FOLIO-Exchange. Since 27 Oct 2026 cHQ FOLIO Exchange Recipe (called FOLIOHQ until 28 Oct) holds the collectionHQ Academic recipe and its setup guide, and keeps its phase 0 tool as a fallback until the first delivery through FOLIO-Exchange. Proposing it to the FOLIO community (Reporting SIG) is still open.
+- [x] **License:** MIT, the same as cHQ FOLIO Exchange Recipe (decided 26 Oct 2026).
 - [ ] **Name:** FOLIO-Exchange for now. Before announcing it, check FOLIO's trademark guidance so the name does not imply the FOLIO project endorses it.
 - [ ] **Upkeep:** whose staff time or funding maintains it, and which partner libraries test recipes?

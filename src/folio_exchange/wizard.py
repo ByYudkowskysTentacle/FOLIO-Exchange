@@ -269,8 +269,8 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         p.say(f"Found site.yaml: {effective['base_url']} (tenant {effective['tenant']}, user {effective['username']}).")
     before = dict(effective) if effective else None
     if not effective or p.confirm("Change the FOLIO connection?", False):
-        p.say("\nFOLIO connection. Ask your FOLIO host for the API address (on Eureka, the Kong gateway), the "
-              "tenant id, and a read-only service account.")
+        p.say("\nFOLIO connection. FOLIO shows the API address and tenant id under Settings > Software versions "
+              "(\"On URL\" and \"For tenant\"). Ask your FOLIO administrator for a read-only service account.")
         folio["base_url"] = p.ask("FOLIO API address", folio.get("base_url"), _url_problem).rstrip("/")
         folio["tenant"] = p.ask("Tenant id", folio.get("tenant"), _required)
         folio["username"] = p.ask("Service account user name", folio.get("username"), _required)
