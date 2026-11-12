@@ -24,6 +24,7 @@
 - [Spec sheet](spec.md) – goals, who it's for, the feeds it aims to cover, requirements, safety rules and roadmap. It's a snapshot of a working copy; the working notes have the current status.
 - [Working notes](notes.md) – where things stand, the decisions so far and why, and what's been learned about FOLIO and collectionHQ.
 - [Desktop app plan](desktop-plan.md) – why and how a Windows app replaces the browser page, in phases D1 to D8.
+- [Services and destinations plan](services-plan.md) – a proposal, not started, to make the services a library sends data to, and the places they receive it, objects of their own, in phases S1 to S5.
 - [Improvement plan](improvement-plan.md) – the work planned after the October 2026 review, in batches, with what's done.
 
 ## History
@@ -36,6 +37,8 @@
 - **Site** – a folder that holds one FOLIO tenant's connection settings, its feeds, a local cache, run history and alerts.
 - **Feed** – one scheduled export to one vendor, set up from a recipe plus the library's own choices.
 - **Recipe** – a vendor's file layout, shared and versioned, such as `chq-academic@^1.0`. A recipe is declarative: it holds no code.
+- **Service** – a third-party platform the library sends data to, such as collectionHQ.
+- **Destination** – where a service receives the data: today an SFTP server, folder and account, or a local folder.
 - **Dry run** – a run that builds and checks files but sends nothing: a feed with no delivery set up yet, or `run --no-deliver`.
 - **Held delivery, release** – the first delivery to a destination, or the first after a change to the files' layout, waits until a person reviews and releases it.
 - **The page, the app** – the local browser page (`folio-exchange ui`) and the desktop app (`folio-exchange-app`) that is to replace it.
