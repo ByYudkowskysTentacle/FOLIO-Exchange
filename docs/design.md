@@ -810,4 +810,4 @@ Reviewed and left for later, each with a reason:
 - **Quoting options for delimited files** – v1 uses minimal quoting (folio-chq-extract's), which every current vendor accepts.
 - **A Docker image and a `serve` loop** – containers have neither a scheduler nor a keyring; a later image will run `run --due` hourly with `env:` secrets.
 - **Translated messages** – strings are plain English; routing them through `gettext` waits for phase 2.
-- **Signed releases, a release tag for installs, and CI against the public reference systems** – after gate 1 (collectionHQ accepts the first delivery; see the spec's roadmap). Until then the guide and the installer install `main`, with `constraints.txt` fixing the dependency versions.
+- **Signed releases, installs from a release tag by default, and CI against the public reference systems** – after gate 1 (collectionHQ accepts the first delivery; see the spec's roadmap). Until then the guide and the installer install `main`, with `constraints.txt` fixing the dependency versions; a tag such as `v0.2.0`, the first pre-release, installs on request (the installer's `-Ref`).

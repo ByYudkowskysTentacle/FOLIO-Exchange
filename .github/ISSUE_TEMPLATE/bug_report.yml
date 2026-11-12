@@ -37,7 +37,7 @@ body:
     attributes:
       label: Version
       description: The output of `folio-exchange --version`.
-      placeholder: folio-exchange 0.1.0.dev0 (commit 4d80826...)
+      placeholder: folio-exchange 0.2.0 (commit 8efa45ed9a4e)
     validations:
       required: true
   - type: input

@@ -1,7 +1,7 @@
 """FOLIO-Exchange: scheduled data exchanges between FOLIO and vendor platforms, driven by recipes."""
 from __future__ import annotations
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.2.0"
 
 
 def installed_commit() -> str | None:
@@ -19,6 +19,6 @@ def installed_commit() -> str | None:
 
 
 def version_text() -> str:
-    """``folio-exchange 0.1.0 (commit 4d8082695058)``: what ``--version`` prints and the app and page show."""
+    """``folio-exchange 0.2.0 (commit 4d8082695058)``: what ``--version`` prints and the app and page show."""
     commit = installed_commit()
     return f"folio-exchange {__version__}" + (f" (commit {commit})" if commit else "")

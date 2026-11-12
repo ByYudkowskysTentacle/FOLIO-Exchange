@@ -4,7 +4,7 @@ FOLIO-Exchange holds a library's FOLIO login and vendor SFTP credentials, and se
 
 ## Supported versions
 
-There's no release yet. Fixes go to the `main` branch, and installs from the [installer](installer/README.md) or the guides take `main`. Once there are release tags, this section will say which ones get fixes.
+The only release is 0.2.0, a pre-release. Fixes go to the `main` branch and into the next release, not into 0.2.0. Installs from the [installer](installer/README.md) or the guides take `main` unless given a tag. Once there are full releases, this section will say which ones get fixes.
 
 ## Reporting a vulnerability
 
