@@ -67,7 +67,7 @@ py -3 -m venv $env:LOCALAPPDATA\FOLIO-Exchange\venv
 & $env:LOCALAPPDATA\FOLIO-Exchange\venv\Scripts\python -m pip install -c https://raw.githubusercontent.com/ByYudkowskysTentacle/FOLIO-Exchange/main/constraints.txt "folio-exchange @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@main"
 ```
 
-The `-c` part installs the other packages FOLIO-Exchange needs at the versions it was tested with.
+The `-c` part installs the other packages FOLIO-Exchange needs at the versions it was tested with. This installs the newest code. To install a release instead, replace both `main`s with its tag, such as `v0.2.0`.
 
 Then, in each new PowerShell window, make the command available:
 

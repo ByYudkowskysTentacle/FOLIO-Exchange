@@ -20,7 +20,7 @@ The changes most likely to prevent a bad delivery, or one that silently never ha
 Also done in this batch: the page opens only through a one-time link that it swaps for a cookie (SEC-2's "next" step), webhook and heartbeat URLs must be https and are never redirected (SEC-4), and `--version` and the installer show the git commit (SEC-5).
 
 Left on purpose, or still to do:
-- **No release tag yet.** The guide and the installer still install `main`; `constraints.txt` pins the dependency versions, and CI pins its actions to commit SHAs. Tag a version, and point both at it, before a second library installs.
+- **The first tag is `v0.2.0`**, a pre-release (12 November 2026). The guide and the installer still install `main` by default; `constraints.txt` pins the dependency versions, and CI pins its actions to commit SHAs. Point both at a tag before a second library installs.
 - **The page shows the hourly task's age only as a warning** (after two hours, or when it never ran); `check` and `feeds` also print the age when all is well.
 - **`administrativeNotes`** on instances and holdings stay in the cache (optional in SEC-6).
 - **Run reports** record the program version and the recipe's SHA-256, not the program's git commit.
