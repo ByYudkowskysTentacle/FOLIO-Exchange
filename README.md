@@ -22,7 +22,7 @@ A **site** folder holds one FOLIO tenant's settings (`site.yaml`) and one file p
 - **FOLIO**, preferably on Eureka, and a FOLIO user that can read inventory, loans and reference data. `folio-exchange check` lists the permissions it needs and tests them.
 - **A PC** that your FOLIO accepts API traffic from (usually one inside the library's network) and that's on when runs are due. Windows 10 or 11 is the main target, with an installer and an hourly Windows scheduled task. On Linux, and untested on macOS, it runs from the command line, and `schedule` prints a crontab line instead.
 - **Python 3.10 or later.** The Windows installer can add it for you.
-- **The vendor's SFTP account** and its server key fingerprint, for real deliveries. A dry run needs neither.
+- **The vendor's SFTP account**, and its server key fingerprint if the vendor gives one, for real deliveries. A dry run needs neither.
 
 **Feeds today:** collectionHQ Academic – full MARC 21 bibs and a pipe-delimited item file with loan and renewal counts, over SFTP (the [file layout](https://github.com/ByYudkowskysTentacle/cHQ-FOLIO-Exchange-Recipe/blob/main/docs/layout.md) lists every column). Other feeds, such as OCLC WorldCat holdings and discovery layers, are candidates ([integration catalogue](docs/spec.md#integration-catalogue)). To ask for one, open a [recipe request](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/issues/new?template=recipe_request.yml).
 

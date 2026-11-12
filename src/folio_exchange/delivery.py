@@ -201,13 +201,9 @@ def _connect(d: dict):
         raise ConfigError("delivery.host is not set")
     if not (d.get("username") or "").strip():
         raise ConfigError("delivery.username is not set")
+    # A pin kept unconfirmed (``host_key_confirmed: false``) was read from the server when the delivery was saved,
+    # with no vendor fingerprint to compare. It is enforced like any other: only that key is accepted.
     expected = (d.get("host_key_fingerprint") or "").strip()
-    if d.get("host_key_confirmed") is False:
-        raise ConfigError(
-            f"The key of {host} ({expected}) has not been confirmed with the vendor yet, so FOLIO-Exchange will not "
-            "log in to it. Once the vendor confirms their fingerprint, run `folio-exchange init` again and answer "
-            "that it matches."
-        )
     key_path = (d.get("private_key") or "").strip()
     secret = _secret(d)
     if not key_path and not secret:

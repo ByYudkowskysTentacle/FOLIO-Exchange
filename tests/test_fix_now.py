@@ -10,7 +10,6 @@ from folio_exchange import client as client_mod
 from folio_exchange import delivery
 from folio_exchange.cli import main
 from folio_exchange.client import FolioError, probe
-from folio_exchange.errors import ConfigError
 from folio_exchange.wizard import Prompter, ScriptedPrompter, run_wizard
 
 
@@ -145,7 +144,9 @@ def test_blank_secrets_mean_later_and_no_keyring_means_an_env_reference(tmp_path
     assert email["username"] == "mailer" and email["secret"] == "env:FX_MAIL"
 
 
-def test_an_unconfirmed_host_key_never_logs_in(tmp_path, folio, monkeypatch):
+def test_an_unconfirmed_host_key_is_pinned_and_tested(tmp_path, folio, monkeypatch):
+    """Regression: without the vendor's fingerprint, init kept the feed paused and skipped the test, and every
+    login was refused. The server's key is pinned unconfirmed and the destination is tested with it."""
     monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
     called = []
     monkeypatch.setattr(delivery, "check_delivery", lambda d: called.append(d) or [])
@@ -154,10 +155,31 @@ def test_an_unconfirmed_host_key_never_logs_in(tmp_path, folio, monkeypatch):
                           None, "u", None, "unconfirmed", None, None, "none"])
     assert run_wizard(root, p, read_host_key=lambda h, port: "SHA256:" + "k" * 43) == 0, "\n".join(p.transcript)
     feed = yaml.safe_load((root / "feeds" / "chq.yaml").read_text(encoding="utf-8"))
-    assert feed["delivery"]["host_key_confirmed"] is False and feed["enabled"] is False
-    assert called == []
-    with pytest.raises(ConfigError, match="has not been confirmed"):
-        delivery.deliver([], {**feed["delivery"], "secret": "env:X"}, "chq")
+    assert feed["delivery"]["host_key_confirmed"] is False
+    assert feed["delivery"]["host_key_fingerprint"] == "SHA256:" + "k" * 43
+    assert feed["enabled"] is True                           # the unconfirmed key no longer keeps it paused
+    assert [d["host_key_fingerprint"] for d in called] == ["SHA256:" + "k" * 43]
+    assert "any other key is refused" in "\n".join(p.transcript)
+
+
+def test_init_never_takes_a_changed_key_without_the_vendor(tmp_path, folio, monkeypatch):
+    """A key pinned without the vendor is trusted on first use only: when the server later shows another key,
+    init no longer offers to use it without the vendor's fingerprint."""
+    monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
+    monkeypatch.setattr(delivery, "check_delivery", lambda d: [])
+    root = tmp_path / "site"
+    first, second = "SHA256:" + "k" * 43, "SHA256:" + "z" * 43
+    p = ScriptedPrompter([folio.url, "diku", "fx_reader", None, None, [], [], False, False, "sftp", "h.example",
+                          None, "u", None, "unconfirmed", None, None, "none"])
+    assert run_wizard(root, p, read_host_key=lambda h, port: first) == 0, "\n".join(p.transcript)
+    again = [False, None, None, None, None, None, False, None, None, None, None, None]   # every default kept
+    with pytest.raises(AssertionError, match="is not one of"):
+        run_wizard(root, ScriptedPrompter(again + ["unconfirmed"]), read_host_key=lambda h, port: second)
+    p = ScriptedPrompter(again + [None])                     # the default answer is "no"
+    assert run_wizard(root, p, read_host_key=lambda h, port: second) == 1, "\n".join(p.transcript)
+    assert f"not the key saved for this server before ({first})" in "\n".join(p.transcript)
+    feed = yaml.safe_load((root / "feeds" / "chq.yaml").read_text(encoding="utf-8"))
+    assert feed["delivery"]["transport"] == "none" and "host_key_fingerprint" not in feed["delivery"]
 
 
 def test_end_of_input_stops_the_wizard_instead_of_looping(monkeypatch):

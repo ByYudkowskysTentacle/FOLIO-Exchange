@@ -233,8 +233,8 @@ def warning_text(w: dict, on_feed_page: bool = False, newer: str | None = None) 
     if code == "ratio-off":
         return "The item count check is off. A sudden drop in items would be sent without being blocked for review."
     if code == "host-key-unconfirmed":
-        return ("The vendor's SFTP server key isn't confirmed yet, so nothing is sent. Enter the vendor's fingerprint "
-                "under Change delivery… on the feed's Delivery tab.")
+        return ("The vendor's SFTP server key isn't confirmed yet. Files are sent, and a different key is refused. To "
+                "confirm it, enter the vendor's fingerprint under Change delivery… on the feed's Delivery tab.")
     if code == "task-never":
         return task_words({"state": "never", "text": w.get("text")})
     return page_words(w.get("text"))
@@ -346,8 +346,8 @@ def delivery_rows(d: dict) -> list[tuple[str, str]]:
         if d.get("host_key_fingerprint"):
             key = f"{d['host_key_fingerprint']}. " + (
                 "Confirmed. It matches the vendor's fingerprint." if d.get("host_key_confirmed") else
-                "Not confirmed yet. Enter the vendor's fingerprint under Change delivery… before the feed can "
-                "connect.")
+                "Not confirmed yet. It's the key the server gave when the delivery was saved, and a different key is "
+                "refused. Use Change delivery… to enter the vendor's fingerprint.")
         else:
             key = "not read yet"
         login = ("With a private key in this site's keys folder. Only this Windows user can read it."

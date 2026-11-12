@@ -214,27 +214,12 @@ def cmd_check_delivery(args) -> int:
             else:
                 secret = "password: " + credentials.source(
                     d.get("secret"), credentials.SFTP_SERVICE, credentials.sftp_account(d["username"], d["host"]))
-            if d.get("host_key_confirmed") is False:
-                print(f"  Key not yet confirmed with the vendor; stored {d.get('host_key_fingerprint')}. "
-                      "Nothing logs in until it is.")
-                try:
-                    read = delivery.host_key_fingerprints(d["host"], int(d.get("port") or 22))
-                    offered = read.get("keys") or [read]
-                    same = [k for k in offered if k["sha256"] == d.get("host_key_fingerprint")]
-                    same.sort(key=lambda k: k["type"] != d.get("host_key_type"))     # the stored type first
-                    if same:
-                        print(f"  The server offers it as its {same[0]['type']} key (the same).")
-                    else:
-                        print("  The server offers none like it (DIFFERENT: ask the vendor). It offers:")
-                        for k in offered:
-                            print(f"    {k['type']}: {k['sha256']}")
-                except Exception as exc:  # noqa: BLE001 - network errors of every kind
-                    print(f"  Could not read the server's key: {type(exc).__name__}: {str(exc)[:160]}")
-                print("  Compare it with the vendor's fingerprint, then run `folio-exchange init` again to confirm it.")
-                worst = 1
-                continue
             print(f"  Connecting to {d['host']}:{d.get('port') or 22} as {d['username']}")
             print(f"  host key {pin}; {secret}")
+            if d.get("host_key_confirmed") is False:
+                print("  The host key was read from the server, not confirmed with the vendor; any other key is "
+                      "refused. To confirm it, compare it with the vendor's fingerprint and run `folio-exchange init` "
+                      "again.")
         elif d["transport"] == "none":
             print("  Nothing to test: this feed has no delivery set up (a dry run). When the vendor's details "
                   "are ready, run `folio-exchange init` again and choose how the files are delivered.")

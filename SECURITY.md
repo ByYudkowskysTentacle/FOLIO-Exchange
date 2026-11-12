@@ -20,7 +20,7 @@ Anything that could, for example:
 
 - expose a password, token or private key (in files, logs, run history, alerts or the app);
 - read patron or user data from FOLIO, or write anything to FOLIO;
-- send files to a destination, or trust an SFTP server key, that the library didn't set up and confirm;
+- send files to a destination the library didn't set up, or log in to an SFTP server whose key isn't the one pinned for it;
 - get a delivery past the first-delivery or layout-change hold, or the checks that block a run;
 - let another user or a web page on the same computer use the local browser page or the desktop app;
 - let a shared recipe run code or change where files go.

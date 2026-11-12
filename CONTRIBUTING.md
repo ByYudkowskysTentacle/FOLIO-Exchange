@@ -55,7 +55,7 @@ These keep FOLIO-Exchange safe to run unattended against a library's data. A cha
 - **Read-only, and no patron data.** The FOLIO client reads only the records a recipe names. Don't add user or patron endpoints; patron data waits for a recipe that declares it and an admin who approves it.
 - **Secrets** come only from environment variables or the system keyring (Windows Credential Manager). The one exception is an SFTP private key saved from the app, which is an owner-only file in the site's `keys` folder. Never put secrets in recipes, settings, logs or test fixtures.
 - **Recipes stay declarative.** A recipe is data: no executable code, and it can't choose where files go or which server key to trust.
-- **Nothing reaches a vendor unchecked.** Don't weaken the first-delivery hold, the layout-change hold, the drop-in-items check or the SFTP server key check.
+- **Nothing reaches a vendor unchecked.** Don't weaken the first-delivery hold, the layout-change hold, the drop-in-items check or the SFTP server key pin. A key may be pinned on first use when the vendor gives no fingerprint, but a login never accepts a key other than the pinned one.
 
 ## Making a change
 

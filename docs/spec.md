@@ -1,6 +1,6 @@
 # FOLIO-Exchange – Spec Sheet
 
-_The project's goals, scope, safety rules and roadmap, as a snapshot of 4 Nov 2026. The maintainer keeps a working copy and refreshes this file from it, so suggest changes in an issue. The [working notes](notes.md) have the current status, [design.md](design.md) says how v1 is built, and terms are explained in the [docs index](README.md#terms)._
+_The project's goals, scope, safety rules and roadmap, as a snapshot of 12 Nov 2026. The maintainer keeps a working copy and refreshes this file from it, so suggest changes in an issue. The [working notes](notes.md) have the current status, [design.md](design.md) says how v1 is built, and terms are explained in the [docs index](README.md#terms)._
 
 An open-source platform that lets library staff set up, test and run scheduled data exchanges between FOLIO and outside platforms – collectionHQ first – from tested recipes, without writing code. It generalizes what folio-chq-extract already does for one vendor, and keeps its safeguards.
 
@@ -147,7 +147,7 @@ No patron data leaves by default: a recipe must declare it, an admin must approv
 | Patron data | A recipe declares `patron_data` and lists the exact fields. Anything but `none` needs admin approval and is limited to that list. Loans are read only for item, dates and counts. Until the open question on patron data is answered, v1 refuses every recipe that asks for it. |
 | FOLIO account | A read-only service account, given access through a Eureka authorization role. The connection test lists the exact capabilities the enabled recipes need, and no more. Writes (v2) need a separate account and a second approver. |
 | Secrets | Never in recipes, settings files or logs. The OS keyring on a desktop; environment variables on servers and in containers. The one exception is an SFTP private key: too large for Windows Credential Manager, it's a file only that Windows user can read. Screens show where a secret comes from, never its value. |
-| Vendor servers | Host keys pinned and confirmed with the vendor; plain FTP refused; unknown keys never auto-accepted. |
+| Vendor servers | Host keys pinned: the one matching the vendor's fingerprint, or, when the vendor gives none, the key the server shows at setup (trust on first use, confirmed with the vendor later); a login never accepts any other key; plain FTP refused. |
 | Bad data at the vendor | Count and required-field checks; a preview approved before the first delivery; the first run held until a person releases it. |
 | Audit | Who changed which recipe setting, and what each run sent: where, file names, hashes and counts. Kept 12 months by default. |
 | Releases and recipes | Signed releases with pinned dependencies. Recipes reviewed before they join the shared library. Secret scanning in CI, and credential-looking files ignored by default. |

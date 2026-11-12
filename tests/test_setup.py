@@ -186,8 +186,6 @@ def test_sftp_delivery_pins_the_key_only_when_it_matches_the_vendors(site):
         setupops.save_delivery(s, lib(s), "chq", sftp_form(vendor_fingerprint="SHA256:somethingElse"), version=v,
                                read_keys=lambda h, p: KEYS)
     assert path.read_bytes() == before
-    with pytest.raises(ConfigError, match="or choose to confirm it later"):
-        setupops.save_delivery(s, lib(s), "chq", sftp_form(), version=v, read_keys=lambda h, p: KEYS)
     out = setupops.save_delivery(s, lib(s), "chq", sftp_form(vendor_fingerprint=KEYS["sha256"][7:] + "="),
                                  version=v, read_keys=lambda h, p: KEYS)
     d = read_yaml(path)["delivery"]
@@ -207,28 +205,55 @@ def test_an_md5_fingerprint_from_the_vendor_is_accepted(site):
     assert read_yaml(site / "feeds" / "chq.yaml")["delivery"]["host_key_fingerprint"] == KEYS["sha256"]
 
 
-def test_confirming_later_pauses_the_feed_and_keeps_the_key_unconfirmed(site):
+def test_without_the_vendors_fingerprint_the_servers_key_is_pinned_unconfirmed(site):
+    """Regression: with only a password from the vendor, an unconfirmed key paused the feed and blocked every
+    delivery. Now the key the server gives is pinned (trust on first use) and the feed keeps its state."""
     s = load_site(site)
+    path = site / "feeds" / "chq.yaml"
+    enabled = read_yaml(path).get("enabled", True)
     v = setupops.feed_settings(s, lib(s), "chq")["version"]
-    out = setupops.save_delivery(s, lib(s), "chq", sftp_form(confirm_later=True), version=v,
-                                 read_keys=lambda h, p: KEYS)
-    raw = read_yaml(site / "feeds" / "chq.yaml")
-    assert raw["enabled"] is False and raw["delivery"]["host_key_confirmed"] is False
-    assert out["delivery"]["host_key_confirmed"] is False
+    out = setupops.save_delivery(s, lib(s), "chq", sftp_form(), version=v, read_keys=lambda h, p: KEYS)
+    raw = read_yaml(path)
+    assert raw.get("enabled", True) == enabled                         # not paused
+    assert raw["delivery"]["host_key_fingerprint"] == KEYS["sha256"] and raw["delivery"]["host_key_confirmed"] is False
+    assert out["delivery"]["host_key_confirmed"] is False and out["server_key"] == KEYS
     assert any(a["detail"].get("host_key") == "not confirmed" for a in audit(s, "chq"))
+    # saving the same server again without a vendor value keeps the pin, still unconfirmed
+    out = setupops.save_delivery(s, lib(s), "chq", sftp_form(remote_dir="in"), version=out["version"],
+                                 read_keys=lambda h, p: KEYS)
+    d = read_yaml(path)["delivery"]
+    assert d["remote_dir"] == "in" and d["host_key_fingerprint"] == KEYS["sha256"] and d["host_key_confirmed"] is False
+    # the vendor's fingerprint confirms it later
+    setupops.save_delivery(s, lib(s), "chq", sftp_form(vendor_fingerprint=KEYS["sha256"]), version=out["version"],
+                           read_keys=lambda h, p: KEYS)
+    assert "host_key_confirmed" not in read_yaml(path)["delivery"]
 
 
-def test_a_feed_with_an_unconfirmed_key_cannot_be_resumed(site, capsys):
+def test_a_changed_server_key_needs_the_vendors_fingerprint(site):
+    """Trust on first use only: once a key is pinned for a server, a different one is never taken silently."""
+    s = load_site(site)
+    path = site / "feeds" / "chq.yaml"
+    other = {"sha256": "SHA256:" + "z" * 43, "md5": "cd:" * 15 + "cd", "type": "ssh-ed25519"}
+    v = setupops.feed_settings(s, lib(s), "chq")["version"]
+    out = setupops.save_delivery(s, lib(s), "chq", sftp_form(), version=v, read_keys=lambda h, p: KEYS)
+    before = path.read_bytes()
+    with pytest.raises(ConfigError, match="no longer offers the key saved for it") as err:
+        setupops.save_delivery(s, lib(s), "chq", sftp_form(), version=out["version"], read_keys=lambda h, p: other)
+    assert "nothing was saved" in str(err.value) and other["sha256"] in str(err.value)
+    assert path.read_bytes() == before
+    setupops.save_delivery(s, lib(s), "chq", sftp_form(vendor_fingerprint=other["sha256"]), version=out["version"],
+                           read_keys=lambda h, p: other)
+    d = read_yaml(path)["delivery"]
+    assert d["host_key_fingerprint"] == other["sha256"] and "host_key_confirmed" not in d
+
+
+def test_a_feed_with_an_unconfirmed_key_can_be_resumed(site, capsys):
     s = load_site(site)
     v = setupops.feed_settings(s, lib(s), "chq")["version"]
-    setupops.save_delivery(s, lib(s), "chq", sftp_form(confirm_later=True), version=v, read_keys=lambda h, p: KEYS)
-    assert main(["-s", str(site), "feeds", "resume", "chq"]) == 1
-    assert "not confirmed with the vendor yet" in capsys.readouterr().err
-    assert read_yaml(site / "feeds" / "chq.yaml")["enabled"] is False
-    v = setupops.feed_settings(s, lib(s), "chq")["version"]
-    setupops.save_delivery(s, lib(s), "chq", sftp_form(vendor_fingerprint=KEYS["sha256"]), version=v,
-                           read_keys=lambda h, p: KEYS)
+    setupops.save_delivery(s, lib(s), "chq", sftp_form(), version=v, read_keys=lambda h, p: KEYS)
+    assert main(["-s", str(site), "feeds", "pause", "chq"]) == 0
     assert main(["-s", str(site), "feeds", "resume", "chq"]) == 0
+    assert read_yaml(site / "feeds" / "chq.yaml")["enabled"] is True
 
 
 def test_delivery_failures_are_put_in_plain_words():

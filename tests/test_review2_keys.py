@@ -494,25 +494,48 @@ def test_a_fingerprint_matching_no_offered_key_lists_them_all(site, keyring, hos
     assert path.read_bytes() == before
 
 
-def test_a_key_confirmed_later_can_be_another_offered_type(site, keyring, host_keys):
+def test_a_key_pinned_without_the_vendor_logs_in_and_can_be_confirmed_as_another_type(site, keyring, host_keys,
+                                                                                       monkeypatch):
+    """Regression: a vendor that gives only a password (no fingerprint) left the feed paused and every login
+    refused. The key the server gives is pinned unconfirmed, logins go ahead with it, and the vendor's fingerprint
+    confirms it later, even for another of the offered types."""
+    monkeypatch.setenv("PW", "pw")
     s = load_site(site)
     library = RecipeLibrary(s.recipe_dirs)
     rsa, ed = host_keys["rsa"], host_keys["ed25519"]
     path = site / "feeds" / "chq.yaml"
+    enabled = read_yaml(path).get("enabled", True)
     with ssh_server(rsa, ed) as port:
         v = setupops.feed_settings(s, library, "chq")["version"]
-        out = setupops.save_delivery(s, library, "chq", delivery_form(port, confirm_later=True), version=v)
+        out = setupops.save_delivery(s, library, "chq", delivery_form(port), version=v)
         raw = read_yaml(path)
-        assert raw["enabled"] is False and raw["delivery"]["host_key_confirmed"] is False
+        assert raw.get("enabled", True) == enabled and raw["delivery"]["host_key_confirmed"] is False
         assert raw["delivery"]["host_key_fingerprint"] == delivery.sha256_fingerprint(ed)   # the preferred key
         assert len(out["server_key"]["keys"]) == 2
-        with pytest.raises(FxError, match="or choose to confirm it later"):          # unconfirmed is not "known"
-            setupops.save_delivery(s, library, "chq", delivery_form(port), version=out["version"])
+        client = delivery._connect({**raw["delivery"], "secret": "env:PW"})       # logs in with the password
+        seen = delivery.sha256_fingerprint(client.get_transport().get_remote_server_key())
+        client.close()
+        assert seen == raw["delivery"]["host_key_fingerprint"]
+        out = setupops.save_delivery(s, library, "chq", delivery_form(port), version=out["version"])
+        assert read_yaml(path)["delivery"]["host_key_confirmed"] is False             # kept, still unconfirmed
         setupops.save_delivery(s, library, "chq", delivery_form(port, vendor_fingerprint=delivery.sha256_fingerprint(rsa)),
                                version=out["version"])
     d = read_yaml(path)["delivery"]
     assert d["host_key_fingerprint"] == delivery.sha256_fingerprint(rsa) and d["host_key_type"] == "ssh-rsa"
     assert "host_key_confirmed" not in d
+
+
+def test_an_unconfirmed_pin_stays_strict(host_keys, monkeypatch):
+    """A key pinned without the vendor's fingerprint refuses any other key before logging in, as a confirmed
+    pin does."""
+    import paramiko
+
+    monkeypatch.setenv("PW", "pw")
+    other = paramiko.RSAKey.generate(2048)
+    with ssh_server(host_keys["rsa"], host_keys["ed25519"]) as port:
+        for d in (pin(port, other, "ssh-rsa"), pin(port, other)):
+            with pytest.raises(paramiko.SSHException, match="Host key for .* expected "):
+                delivery._connect({**d, "host_key_confirmed": False})
 
 
 def two_keys():
@@ -678,19 +701,16 @@ def unconfirmed_feed(site, key_type="ssh-rsa"):
     write_yaml(path, raw)
 
 
-def test_check_delivery_finds_an_unconfirmed_pin_among_the_offered_keys(site, keyring, capsys, monkeypatch):
-    rsa, ed, read = two_keys()
-    monkeypatch.setattr(delivery, "host_key_fingerprints", lambda host, port=22, timeout=30: read)
+def test_check_delivery_tests_an_unconfirmed_pin(site, keyring, capsys, monkeypatch):
+    """An unconfirmed pin is tested like any other (the login itself refuses a different key), and the check
+    says it isn't confirmed with the vendor."""
+    tried: list = []
+    monkeypatch.setattr(delivery, "check_delivery", lambda d: tried.append(d) or [])
     unconfirmed_feed(site)
-    assert main(["-s", str(site), "check", "--delivery", "chq"]) == 1
+    assert main(["-s", str(site), "check", "--delivery", "chq"]) == 0
     out = capsys.readouterr().out
-    assert "The server offers it as its ssh-rsa key (the same)." in out and "DIFFERENT" not in out
-    other = {**ed, "sha256": "SHA256:" + "x" * 43}
-    monkeypatch.setattr(delivery, "host_key_fingerprints",
-                        lambda host, port=22, timeout=30: {**other, "keys": [other]})
-    assert main(["-s", str(site), "check", "--delivery", "chq"]) == 1
-    out = capsys.readouterr().out
-    assert "DIFFERENT: ask the vendor" in out and f"ssh-ed25519: {other['sha256']}" in out
+    assert "not confirmed with the vendor; any other key is refused" in out and "OK" in out
+    assert [d["host_key_fingerprint"] for d in tried] == ["SHA256:" + "r" * 43]
 
 
 # --------------------------------------------- R-HIST-1: two programs open an old history file at once

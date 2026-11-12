@@ -2,9 +2,9 @@
 section, for the app.
 
 ``DeliveryDialog`` sets the destination: the vendor's SFTP server, a folder, or none (a dry run). For SFTP the
-window saves with ``setupops.save_delivery`` as a job, which reads every key the server offers and saves only
-when the fingerprint the vendor gave matches one of them (or, when the person has no fingerprint yet, keeps the
-server's key unconfirmed and the feed paused, so nothing logs in). A key that matches none refuses the change.
+window saves with ``setupops.save_delivery`` as a job, which reads every key the server offers and pins the one the
+vendor's fingerprint matches. A fingerprint that matches none refuses the change. With no fingerprint, the server's
+key is pinned unconfirmed and used from then on, and any other key is refused.
 
 ``LoginBox`` stores the SFTP password (in Windows Credential Manager) or a private key file (read here, kept as
 an owner-only file in the site's keys folder, with its passphrase in Credential Manager). The boxes are emptied
@@ -17,7 +17,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -81,8 +80,6 @@ class DeliveryDialog(QDialog):
         self.user = edit("SFTP user name")
         self.remote = edit("Folder on the server")
         self.fingerprint = edit("Server key fingerprint from the vendor", placeholder="SHA256:…")
-        self.later = QCheckBox("I don't have it yet – save the server without connecting until I confirm it")
-        self.later.setAccessibleName("I don't have it yet – save the server without connecting until I confirm it")
         self.rows.add("Server &name:", self.host, "The SFTP server the vendor gave you, such as sftp.vendor.com.")
         self.rows.add("&Port:", self.port, "Usually 22.")
         self.rows.add("&User name:", self.user, "The SFTP user name the vendor gave you.")
@@ -90,9 +87,6 @@ class DeliveryDialog(QDialog):
                       "the folder you start in after logging in.")
         self.fp_caption = self.rows.add("Server &key fingerprint from the vendor:", self.fingerprint, "Ask the "
                                         "vendor for it.")
-        form.addRow(self.later)
-        form.addRow(note("Saving pauses the feed. Nothing logs in to the server until you enter the vendor's "
-                         "fingerprint.", "About confirming later"))
         box.addWidget(self.sftp_box)
         self.local_box = QWidget()
         lform = QFormLayout(self.local_box)
@@ -137,18 +131,19 @@ class DeliveryDialog(QDialog):
         """The feed's settings (setupops.feed_settings): its delivery and the file's version."""
         self.st, self.version = st, str(st.get("version") or "")
         d = st.get("delivery") or {}
-        self.known = (d.get("transport") == "sftp" and bool(d.get("host_key_confirmed"))
-                      and bool(d.get("host_key_fingerprint")))
+        pinned = d.get("transport") == "sftp" and bool(d.get("host_key_fingerprint"))
+        self.known = pinned and bool(d.get("host_key_confirmed"))
         if not keep_form:
             self.host.setText(str(d.get("host") or ""))
             self.port.setValue(int(d.get("port") or 22))
             self.user.setText(str(d.get("username") or ""))
             self.remote.setText(str(d.get("remote_dir") or "."))
             self.folder.setText(str(d.get("directory") or ""))
-        help_text = ("Ask the vendor for it. It starts with SHA256: or looks like 3f:a2:…:9c, and must match the "
-                     "server's own key when you save." + (" This server's key is already confirmed. Leave this "
-                                                          "empty to keep it." if self.known else ""))
-        self.rows.set_help(self.fingerprint, help_text)
+        extra = (" This server's key is already confirmed. Leave this empty to keep it." if self.known else
+                 " Leave this empty to keep the server key saved before." if pinned else
+                 " If you don't have it, leave this empty to use the server's key and refuse any other.")
+        self.rows.set_help(self.fingerprint, "Ask the vendor for it. It starts with SHA256: or looks like 3f:a2:…:9c, "
+                           "and must match the server's own key when you save." + extra)
 
     def transport(self) -> str:
         return next((v for v, r in self.radios.items() if r.isChecked()), "none")
@@ -184,15 +179,8 @@ class DeliveryDialog(QDialog):
             bad = model.fingerprint_problem(fp)
             if bad:
                 return self._fail(self.rows, self.fingerprint, bad)
-            d = self.st.get("delivery") or {}
-            same = (self.known and host.lower() == str(d.get("host") or "").lower()
-                    and self.port.value() == int(d.get("port") or 22))
-            if not fp and not self.later.isChecked() and not same:
-                return self._fail(self.rows, self.fingerprint, "Enter the fingerprint the vendor gave you, or check the "
-                                  "box below to confirm it later.")
             return {"transport": "sftp", "host": host, "port": self.port.value(), "username": self.user.text().strip(),
-                    "remote_dir": self.remote.text().strip() or ".", "vendor_fingerprint": fp,
-                    "confirm_later": self.later.isChecked() and not fp}
+                    "remote_dir": self.remote.text().strip() or ".", "vendor_fingerprint": fp}
         if t == "local":
             bad = model.folder_problem(self.folder.text())
             if bad:

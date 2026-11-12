@@ -462,6 +462,7 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         d = {"transport": "local", "directory": p.ask("Folder to copy the files into", d.get("directory"),
                                                       folder_ok)}
     elif transport == "sftp":
+        old_server = (d.get("host"), int(d.get("port") or 22))
         d["host"] = p.ask("SFTP server name (from the vendor)", d.get("host"), _required)
         d["port"] = int(p.ask("Port", str(d.get("port") or 22),
                               lambda a: None if a.isdigit() else "Enter a number, usually 22."))
@@ -480,10 +481,18 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
         elif read:
             offered = [{"sha256": read}]
         if offered:
-            pinned_before = (d.get("host_key_fingerprint") if d.get("host_key_confirmed", True) is not False
-                             else None)
-            unsure = ("unconfirmed", "I don't have the vendor's value yet: keep it, but don't connect until I "
-                      "confirm it")
+            # The key pinned for this server before, if the server still offers it. A server that no longer offers
+            # it gets no "don't have the vendor's value" answer: a different key can mean the wrong server.
+            old_pin = d.get("host_key_fingerprint") if old_server == (d["host"], d["port"]) else None
+            pinned_before = next((k for k in offered if old_pin and k["sha256"] == old_pin), None)
+            was_confirmed = pinned_before is not None and d.get("host_key_confirmed", True) is not False
+            changed = bool(old_pin) and pinned_before is None
+            keep = pinned_before or offered[0]          # the key pinned when there is no vendor value
+            which = "this key" if len(offered) == 1 else f"the {keep.get('type') or 'first'} key"
+            unsure = ("unconfirmed", f"I don't have the vendor's value yet: use {which}, and refuse any other")
+            if changed:
+                p.say(f"This is not the key saved for this server before ({old_pin}). A different key can mean the "
+                      "wrong server, so compare it with the vendor's fingerprint.")
             if len(offered) == 1:
                 key_type = offered[0].get("type")
                 p.say(f"The server's {key_type + ' ' if key_type else ''}key fingerprint is {offered[0]['sha256']}")
@@ -499,8 +508,10 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                 choices = [*((c, f"the {k.get('type') or 'key'} key matches") for c, k in picks.items()), unsure,
                            ("no", "none of them matches: don't trust this server")]
                 question = "Which key matches the fingerprint the vendor gave you?"
-            before = next((c for c, k in picks.items() if k["sha256"] == pinned_before), None)
-            pin = p.choose(question, choices, before or "unconfirmed")
+            if changed:
+                choices.remove(unsure)
+            before = next((c for c, k in picks.items() if k is pinned_before), None) if was_confirmed else None
+            pin = p.choose(question, choices, before or ("no" if changed else "unconfirmed"))
             if pin == "no":
                 p.say("Stopped: a different key can mean the wrong server. Ask the vendor before going on.")
                 d.pop("host_key_fingerprint", None)
@@ -510,7 +521,7 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                 raw["delivery"] = d
                 save_feed("feed delivery left off by init (host key mismatch)")
                 return 1
-            chosen = picks.get(pin, offered[0])
+            chosen = picks.get(pin, keep)
             d["host_key_fingerprint"] = chosen["sha256"]
             if chosen.get("type") in delivery.KEY_TYPES:
                 d["host_key_type"] = chosen["type"]
@@ -518,9 +529,8 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                 d.pop("host_key_type", None)
             if pin == "unconfirmed":
                 d["host_key_confirmed"] = False
-                keep_paused = True
-                p.say("  Nothing will log in to that server until you confirm the key: run init again once the "
-                      "vendor has given you their fingerprint.")
+                p.say("  Kept as the server's key: deliveries use it, and any other key is refused. Run init again "
+                      "when the vendor gives you their fingerprint, to confirm it.")
             else:
                 d.pop("host_key_confirmed", None)
         else:
@@ -544,7 +554,7 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
                           f"then (`folio-exchange feeds resume {name}`).")
                 else:
                     d["secret"] = ref
-    if d.get("transport") in ("sftp", "local") and d.get("host_key_confirmed") is not False:
+    if d.get("transport") in ("sftp", "local"):
         p.say("Testing the destination (nothing is uploaded) ...")
         try:
             test = load_feed_defaults(d)
@@ -623,10 +633,11 @@ def _run_wizard(root: Path, p: Prompter, *, library: RecipeLibrary | None,
     fx = f"folio-exchange -s \"{root}\""
     if d.get("transport") in ("sftp", "local"):
         if not raw["enabled"]:
-            first = ("Once the vendor has given you the key fingerprint, run init again to confirm it. Then t"
-                     if d.get("host_key_confirmed") is False else "T")
-            p.say(f"The feed is paused. {first}est the delivery with `{fx} check --delivery {name}`, then resume it "
-                  f"with `{fx} feeds resume {name}`.")
+            p.say(f"The feed is paused. Test the delivery with `{fx} check --delivery {name}`, then resume it with "
+                  f"`{fx} feeds resume {name}`.")
+        if d.get("host_key_confirmed") is False:
+            p.say("The SFTP server key is not confirmed with the vendor yet. When they give you their fingerprint, "
+                  "run init again to confirm it.")
         p.say("Next steps:")
         p.say(f"  1. {fx} run {name}   (the first delivery is held for you to check)")
         p.say(f"  2. {fx} release {name}   (sends it once you are happy)")
