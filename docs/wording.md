@@ -39,7 +39,7 @@ The app's text was first written by an AI model and carried its habits. These ar
 
 | Before | After |
 |---|---|
-| Not confirmed yet: nothing logs in or sends until you enter the vendor's fingerprint under Change delivery… on this tab. | Not confirmed yet. Enter the vendor's fingerprint under Change delivery… before the feed can connect. |
+| Not confirmed yet: it's the key the server gave when the delivery was saved (a different key is refused), so enter the vendor's fingerprint under Change delivery… to confirm it. | Not confirmed yet. It's the key the server gave when the delivery was saved, and a different key is refused. Use Change delivery… to enter the vendor's fingerprint. |
 | Not yet. You can carry on: the feed is saved paused, but its runs fail until this is put right. | Not yet. You can continue, but the feed's runs will fail until this is fixed. |
 | Your mail server's name, from whoever looks after email. | Your mail server's name. Your email administrator can tell you. |
 | The feed is saved paused, so it does not run on this schedule until you resume it. | The feed starts paused. It runs on this schedule once you resume it. |
@@ -59,7 +59,7 @@ The app's text was first written by an AI model and carried its habits. These ar
 - **Safety facts** that must stay somewhere on the screens where they apply (reworded is fine):
   - a preview or build never sends;
   - a new feed is paused, and a dry run until it has a delivery;
-  - nothing logs in to an SFTP server until its key is confirmed;
+  - nothing logs in to an SFTP server whose key differs from the one pinned for it, and an unconfirmed key says so;
   - the release dialog shows exactly what will be sent;
   - a refused action changed nothing;
   - the Windows password is typed only into the console window, never into the app.

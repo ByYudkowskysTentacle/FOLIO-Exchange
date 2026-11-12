@@ -127,13 +127,18 @@ def test_feeds_names_resume_for_a_paused_feed(site, capsys):
 
 def test_the_wizard_names_check_delivery_for_a_paused_feed(tmp_path, folio, monkeypatch):
     monkeypatch.setenv("FOLIO_PASSWORD", FOLIO_TEST_PASSWORD)
-    monkeypatch.setattr(delivery, "check_delivery", lambda d: [])
+
+    def unreachable(d):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(delivery, "check_delivery", unreachable)        # a failed test keeps the feed paused
     p = ScriptedPrompter([folio.url, "diku", "fx_reader", None, None, [], [], False, False, "sftp", "h.example",
                           None, "u", None, "unconfirmed", None, None, "none"])
     assert run_wizard(tmp_path / "site", p, read_host_key=lambda h, port: "SHA256:" + "k" * 43) == 0
     text = "\n".join(p.transcript)
+    assert "The feed is paused" in text
     assert "check --delivery chq" in text and "feeds resume chq" in text
-    # check --delivery refuses an unconfirmed key, so the key is confirmed with init first
+    # the key was read from the server: init says how to confirm it once the vendor gives their fingerprint
     assert "run init again to confirm it" in text
 
 

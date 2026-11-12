@@ -99,7 +99,6 @@ class FeedPage(Page):
         self.checks: dict[str, str] = {}      # each feed's last delivery test, in words
         self.idle = True
         self.reviewing = self.toggling = False
-        self.unconfirmed = False              # an SFTP server key not confirmed yet: no delivery test
         self.waiting_id: int | None = None
         self.server_keys: dict[str, dict] = {}    # each feed's server key, as read when its delivery was saved
         self.keyring = True
@@ -239,8 +238,7 @@ class FeedPage(Page):
         self.test_button = button("&Test delivery", "Test delivery without sending")
         self.test_button.setToolTip("Logs in and checks the folder. Sends nothing.")
         self.test_button.clicked.connect(self._test)
-        self.test_why = text("You can test the delivery once the server key is confirmed.", "Why the test waits")
-        box.addLayout(actions_row(self.change_button, self.test_button, self.test_why))
+        box.addLayout(actions_row(self.change_button, self.test_button))
         self.test_result = text(about="Delivery test")
         box.addWidget(self.test_result)
         self.login = LoginBox()
@@ -425,14 +423,12 @@ class FeedPage(Page):
         transport = dl.get("transport") or "none"
         if transport != "none":
             self.added.hide()               # "nothing is sent until a delivery is set up" is no longer true (the page's)
-        self.unconfirmed = transport == "sftp" and not dl.get("host_key_confirmed")
         self.test_button.setVisible(transport != "none")
         self.change_button.setVisible(not st.get("error"))
         self.login.setVisible(transport == "sftp" and not st.get("error"))
         if transport == "sftp":
             self.login.show_login(self.name, dl, self.keyring)
         self._show_server_key()
-        self.test_why.setVisible(self.unconfirmed)
         self.test_result.setText(self.checks.get(self.name, ""))
         self.test_result.setVisible(bool(self.checks.get(self.name)))
         paused = not d.get("enabled")
@@ -445,9 +441,6 @@ class FeedPage(Page):
                          "computer." if transport == "none" else
                          "Resuming lets the schedule run it. The first delivery to a new destination is still held "
                          "until you look at the files and choose Review and send…")
-            if self.unconfirmed:
-                parts.append("The server key isn't confirmed yet, so nothing is sent even when it runs. Enter the "
-                             "vendor's fingerprint under Change delivery… first.")
             self.paused_text.setText(" ".join(parts))
 
     # ------------------------------------------------------------ actions under way
@@ -460,7 +453,7 @@ class FeedPage(Page):
         long = idle and not reviewing
         wanted = {self.preview_button: long, self.run_button: long, self.build_button: long,
                   self.pause_button: idle and not toggling, self.review_button: idle and not reviewing,
-                  self.test_button: long and not self.unconfirmed, self.resume_button: idle and not toggling,
+                  self.test_button: long, self.resume_button: idle and not toggling,
                   self.edit_button: long, self.change_button: long}
         focused = QApplication.focusWidget()
         if focused in wanted and not wanted[focused] and self.result.head.isVisible():

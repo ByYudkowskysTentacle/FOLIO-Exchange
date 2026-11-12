@@ -604,12 +604,11 @@ def open_delivery(qtbot, w, name="chq") -> DeliveryDialog:
     return w.delivery_dialog
 
 
-def sftp(d: DeliveryDialog, fingerprint: str = "", later: bool = False) -> None:
+def sftp(d: DeliveryDialog, fingerprint: str = "") -> None:
     d.radios["sftp"].setChecked(True)
     d.host.setText("sftp.vendor.example")
     d.user.setText("lib1")
     d.fingerprint.setText(fingerprint)
-    d.later.setChecked(later)
 
 
 def test_without_a_keyring_the_login_help_says_where_each_secret_is_read(qtbot):
@@ -667,13 +666,10 @@ def test_sftp_delivery_is_saved_only_with_the_vendors_fingerprint(qtbot, site, s
     before = path.read_bytes()
     d = open_delivery(qtbot, w)
     assert d.radios["local"].isChecked() and d.local_box.isVisibleTo(d) and not d.sftp_box.isVisibleTo(d)
-    sftp(d)
-    click(qtbot, d.save_button)
-    assert "Enter the fingerprint the vendor gave you, or check the box" in " ".join(d.rows.shown_problems())
-    assert server_keys == []                                           # nothing was asked of the server
-    d.fingerprint.setText("not a fingerprint")
+    sftp(d, "not a fingerprint")
     click(qtbot, d.save_button)
     assert "doesn't look like a server key fingerprint" in " ".join(d.rows.shown_problems())
+    assert server_keys == []                                           # nothing was asked of the server
     d.fingerprint.setText("SHA256:" + "Z" * 43)                        # a key, but not this server's
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: d.problem.isVisible(), timeout=LONG)
@@ -695,20 +691,26 @@ def test_sftp_delivery_is_saved_only_with_the_vendors_fingerprint(qtbot, site, s
     assert page.where.values["Login"].text() == "No password or key is stored yet, so nothing can be sent."
 
 
-def test_without_the_fingerprint_yet_the_feed_is_paused_and_nothing_logs_in(qtbot, site, server_keys):
+def test_without_the_fingerprint_the_servers_key_is_kept_and_can_be_tested(qtbot, site, server_keys):
+    """Regression: with only a password from the vendor, saving without a fingerprint paused the feed and the
+    test waited for a key the vendor never sent. The server's key is kept unconfirmed and the feed can send."""
     w = window(qtbot, site)
+    path = site / "feeds" / "chq.yaml"
+    enabled = read_yaml(path).get("enabled", True)
     d = open_delivery(qtbot, w)
-    sftp(d, later=True)
+    assert "leave this empty to use the server's key and refuse any other" in d.rows.helps[d.fingerprint]
+    sftp(d)
     click(qtbot, d.save_button)
     qtbot.waitUntil(lambda: w.delivery_dialog is None, timeout=LONG)
     settled(qtbot, w)
-    raw = read_yaml(site / "feeds" / "chq.yaml")
-    assert raw["enabled"] is False and raw["delivery"]["host_key_confirmed"] is False
+    raw = read_yaml(path)
+    assert raw.get("enabled", True) == enabled and raw["delivery"]["host_key_confirmed"] is False
+    assert raw["delivery"]["host_key_fingerprint"] == KEYS["sha256"] and server_keys == [("sftp.vendor.example", 22)]
     page = w.feed
-    assert page.notice.text() == ("Delivery saved. The server key isn't confirmed yet, so the feed is paused and "
-                                  "nothing logs in.")
-    assert not page.test_button.isEnabled() and page.test_why.isVisibleTo(page)
-    assert page.resume_row.isVisibleTo(page) and "Not confirmed yet" in page.where.values["Server key"].text()
+    assert page.notice.text() == "Delivery saved with the server's key, not confirmed yet. Use Test delivery to try it."
+    qtbot.waitUntil(page.test_button.isEnabled, timeout=5000)        # the test no longer waits for the key
+    key = page.where.values["Server key"].text()
+    assert "Not confirmed yet" in key and "a different key is refused" in key
 
 
 def test_a_local_folder_must_be_given_in_full_and_can_be_browsed_for(qtbot, site, tmp_path):

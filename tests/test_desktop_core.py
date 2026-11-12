@@ -303,7 +303,7 @@ def test_secrets_typed_in_setup_never_reach_the_audit(site, keyring):  # noqa: F
     lib = views.load(site)[1]
     v = setupops.feed_settings(s, lib, "chq")["version"]
     setupops.save_delivery(s, lib, "chq", {"transport": "sftp", "host": "sftp.vendor.example", "port": 22,
-                                           "username": "lib1", "remote_dir": ".", "confirm_later": True},
+                                           "username": "lib1", "remote_dir": "."},
                            version=v, read_keys=lambda h, p: {"sha256": "SHA256:" + "k" * 43, "md5": "0f:" * 15 + "0f"},
                            via="app")
     setupops.store_sftp_password(s, lib, "chq", SFTP_PASSWORD, via="app")

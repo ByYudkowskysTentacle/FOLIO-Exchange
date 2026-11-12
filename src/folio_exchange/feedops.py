@@ -35,11 +35,6 @@ def set_enabled(site: Site, name: str, enabled: bool, *, via: str = "cli") -> di
     except ConfigError:
         raw = None                             # the file has a problem: set the line anyway
     current = raw.get("enabled", True) if raw is not None else None
-    d = (raw or {}).get("delivery") or {}
-    if enabled and isinstance(d, dict) and d.get("transport") == "sftp" and d.get("host_key_confirmed") is False:
-        raise ConfigError(f"The key of {d.get('host')} is not confirmed with the vendor yet, so {name} stays paused: "
-                          "nothing would log in to the server. Confirm the key first (the page's Delivery tab, or "
-                          "`folio-exchange init`).")
     if current is enabled:
         return {"name": name, "enabled": enabled, "changed": False}
     if enabled:
@@ -332,10 +327,10 @@ def site_warnings(site: Site, library: RecipeLibrary, feeds: list[Feed], errors:
         if only and f.name != only:
             continue
         if f.delivery.get("host_key_confirmed") is False:
-            out.append(_w("warning", "host-key-unconfirmed",
-                          f"The SFTP server key of {f.delivery.get('host')} is not confirmed with the vendor yet, "
-                          "so nothing logs in to it. Run `folio-exchange init` again once the vendor confirms it.",
-                          f.name))
+            out.append(_w("note", "host-key-unconfirmed",
+                          f"The SFTP server key of {f.delivery.get('host')} was read from the server, not confirmed "
+                          "with the vendor. Files are sent, and a different key is refused. If the vendor gives you "
+                          "their fingerprint, run `folio-exchange init` again to confirm it.", f.name))
         if f.delivers and not f.checks.get("min_item_ratio"):
             out.append(_w("warning", "ratio-off", "checks.min_item_ratio is 0, so a sudden drop in items would be "
                           "delivered.", f.name))

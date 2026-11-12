@@ -533,15 +533,18 @@ def describe_keys(offered: list[dict[str, str]]) -> str:
 def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, version: str | None,
                   read_keys: Callable[[str, int], dict[str, str]] | None = None, via: str = "ui") -> dict:
     """Set where a feed's files go. For SFTP the server's keys (one per type it offers) are read now and the
-    fingerprint the vendor gave is looked for among them; the key it matches is pinned with its type. With no
-    vendor value yet the preferred key is kept unconfirmed (nothing logs in, the feed is paused); a value that
-    matches no key refuses the change. Passwords and keys are stored separately. ``server_key`` in the result is the
-    pinned key, with every offered key under ``keys`` when there were several."""
+    fingerprint the vendor gave is looked for among them; the key it matches is pinned with its type, confirmed. A
+    value that matches no key refuses the change. With no vendor value, the key already pinned for this server is
+    kept as it was; a server with no pin yet has its preferred key pinned unconfirmed (trust on first use: logins
+    go ahead, and any other key is refused); and a server that no longer offers the key pinned for it refuses the
+    change, since a different key can mean the wrong server. Passwords and keys are stored separately.
+    ``server_key`` in the result is the pinned key, with every offered key under ``keys`` when there were
+    several."""
     path, raw, old = _open_feed(site, name, version)
     old_d = dict(raw.get("delivery") or {})
     transport = form.get("transport")
     keys: dict[str, str] | None = None
-    pause = False
+    host_key: str | None = None
     if transport == "none":
         d: dict[str, Any] = {"transport": "none"}
     elif transport == "local":
@@ -575,8 +578,8 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
         offered = offered_keys(keys)
         vendor_value = str(form.get("vendor_fingerprint") or "").strip()
         same_server = old_d.get("host") == host and int(old_d.get("port") or 22) == port
-        known = next((k for k in offered if same_server and old_d.get("host_key_fingerprint") == k["sha256"]
-                      and old_d.get("host_key_confirmed", True) is not False), None)
+        old_pin = str(old_d.get("host_key_fingerprint") or "").strip() if same_server else ""
+        pinned = next((k for k in offered if old_pin and k["sha256"] == old_pin), None)
         if vendor_value:
             chosen = next((k for k in offered if fingerprint_matches(vendor_value, k)), None)
             if chosen is None:
@@ -590,12 +593,14 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
                                   "the fingerprint you entered. A different key can mean the wrong server, so nothing "
                                   "was saved. Check the value with the vendor.")
             confirmed = True
-        elif known:
-            chosen, confirmed = known, True
-        elif form.get("confirm_later"):
-            chosen, confirmed = offered[0], False
+        elif pinned:
+            chosen, confirmed = pinned, old_d.get("host_key_confirmed", True) is not False
+        elif old_pin:
+            raise ConfigError(f"The server no longer offers the key saved for it ({old_pin}). It offers "
+                              f"{describe_keys(offered)}. A different key can mean the wrong server, so nothing was "
+                              "saved. Ask the vendor for their fingerprint and enter it.")
         else:
-            raise ConfigError("Enter the server key fingerprint the vendor gave you, or choose to confirm it later.")
+            chosen, confirmed = offered[0], False
         d = {k: old_d[k] for k in ("upload_mode", "secret", "private_key") if old_d.get(k) is not None}
         d.update(transport="sftp", host=host, port=port, username=username, remote_dir=remote_dir,
                  host_key_fingerprint=chosen["sha256"])
@@ -605,16 +610,13 @@ def save_delivery(site: Site, library: RecipeLibrary, name: str, form: dict, *, 
         d.setdefault("secret", "keyring")
         if not confirmed:
             d["host_key_confirmed"] = False
-            pause = True
+        host_key = "confirmed" if confirmed else "not confirmed"
     else:
         raise ConfigError("Choose how the files are delivered: sftp, local or none.")
     raw["delivery"] = d
-    if pause:
-        raw["enabled"] = False
     _save_checked(site, library, name, path, raw, old)
     if old_d.get("private_key") and not d.get("private_key"):
         _drop_our_key(site, name, old_d["private_key"])
-    host_key = None if keys is None else ("not confirmed" if pause else "confirmed")
     _audit(site, name, f"feed delivery set {_from(via)}", {"file": f"feeds/{name}.yaml", "transport": transport,
                                                           "host_key": host_key, "from": via})
     return {**feed_settings(site, library, name), "server_key": keys}

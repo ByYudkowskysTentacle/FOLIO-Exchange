@@ -112,7 +112,7 @@ def test_a_feeds_page_shows_its_sections(qtbot, site):
     assert page.checks_facts.values["Must be filled"].text()
     assert shown(page.legacy) and "Loan count from the old system" in page.legacy.text()
     assert page.where.values["Sends to"].text() == "A folder on this computer or the network"
-    assert not shown(page.test_why) and shown(page.test_button)
+    assert shown(page.test_button)
     assert shown(page.no_runs) and not shown(page.waiting)
     assert "No results yet" in page.result.head.text()
 
@@ -141,16 +141,16 @@ def test_an_sftp_delivery_shows_where_the_password_comes_from_never_the_password
     assert "Not confirmed yet" in page.where.values["Server key"].text()
     assert page.where.values["Login"].text() == ("With a password. From the environment variable "
                                                  "FX_TEST_SFTP_PASSWORD.")
-    assert shown(page.test_why) and not page.test_button.isEnabled()     # the test waits for the key
+    assert page.test_button.isEnabled()                       # an unconfirmed key can be tested
     texts = [x.text() for x in w.findChildren(QLabel)]
     texts += [t.item(r, c).text() for t in w.findChildren(QTableWidget) for r in range(t.rowCount())
               for c in range(t.columnCount()) if t.item(r, c) is not None]
     assert not [t for t in texts if secret in t]                          # named by where it is, never shown
     # Regression (D2): both texts sent people to a Change delivery button the app did not have; D3 brings it.
-    assert page.where.values["Server key"].text().endswith("under Change delivery… before the feed can connect.")
+    assert page.where.values["Server key"].text().endswith("Use Change delivery… to enter the vendor's fingerprint.")
     assert shown(page.change_button)
-    assert shown(page.paused_text) and page.paused_text.text().endswith(
-        "Enter the vendor's fingerprint under Change delivery… first.")
+    # an unconfirmed key no longer stops sending, so pausing says nothing about it
+    assert shown(page.paused_text) and "nothing is sent" not in page.paused_text.text()
 
 
 # ------------------------------------------------------------ preview, run, build only

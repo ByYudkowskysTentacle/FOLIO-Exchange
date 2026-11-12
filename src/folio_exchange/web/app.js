@@ -648,8 +648,8 @@ function warningText(w, onFeedPage) {
     case "ratio-off":
       return "The item count check is off, so a sudden drop in items would be sent without a hold for review.";
     case "host-key-unconfirmed":
-      return "The vendor's SFTP server key is not confirmed yet, so nothing is sent there. Once the vendor " +
-        "gives you the fingerprint, enter it under Change delivery on the feed's Delivery tab.";
+      return "The vendor's SFTP server key is not confirmed yet. Files are sent, and a different key is refused. " +
+        "To confirm it, enter the vendor's fingerprint under Change delivery on the feed's Delivery tab.";
     default:
       return pageWords(w.text);
   }
@@ -1363,10 +1363,11 @@ function deliveryTab(f) {
       ["Folder on the server", h("span", { class: "mono", text: d.remote_dir || "." })],
       ["User name", h("span", { class: "mono", text: d.username || "" })],
       ["Server key", d.host_key_fingerprint ? h("span", {},
-        d.host_key_confirmed ? badge("success", "OK") : badge("held", "Wait"), " ",
+        d.host_key_confirmed ? badge("success", "OK") : badge("none", "Unconfirmed"), " ",
         h("span", { class: "mono fingerprint", text: d.host_key_fingerprint }),
         h("span", { class: "block muted", text: d.host_key_confirmed ? "Confirmed: it matches the fingerprint the vendor gave."
-          : "Not confirmed yet: nothing logs in or sends until you enter the vendor's fingerprint under Change delivery." }))
+          : "Not confirmed yet. It is the key the server gave when the delivery was saved, and a different key is refused. " +
+            "Use Change delivery to enter the vendor's fingerprint." }))
         : "not read yet"],
       ["Login", d.auth === "key" ? "With a private key, kept in this site's keys folder (only this Windows user can read it)"
         : pw.stored ? `With a password. ${pw.text}.` : h("span", { class: "error-text", text: "No password or key is stored yet, so nothing can be sent." })]);
@@ -1391,13 +1392,11 @@ function deliveryTab(f) {
   if (F.delivery) {
     out.push(F.delivery);
   } else {
-    const unconfirmed = d.transport === "sftp" && !d.host_key_confirmed;
     out.push(h("div", { class: "form-actions" },
       h("button", { class: "btn", type: "button", id: "btn-change-delivery", onclick: (e) => openDeliveryForm(name, e.currentTarget) },
         "Change delivery"),
-      d.transport !== "none" ? h("button", { class: "btn", type: "button", id: "btn-test-delivery", disabled: busy() || unconfirmed,
-        "aria-describedby": unconfirmed ? "dl-test-why" : null, onclick: (e) => testDelivery(name, e.currentTarget) }, "Test delivery") : null,
-      unconfirmed ? h("span", { class: "help", id: "dl-test-why", text: "The test waits until the server key is confirmed." }) : null));
+      d.transport !== "none" ? h("button", { class: "btn", type: "button", id: "btn-test-delivery", disabled: busy(),
+        onclick: (e) => testDelivery(name, e.currentTarget) }, "Test delivery") : null));
     out.push(testResult(D));
   }
   if (d.transport === "sftp" && !F.delivery) out.push(loginSection(f, st, D));
@@ -1449,10 +1448,8 @@ function deliveryForm(name, st) {
     value: String(d.port || 22) });
   const user = textInput("dl-user", d.username || "");
   const rdir = textInput("dl-rdir", d.remote_dir || ".");
-  const confirmed = (x) => x.transport === "sftp" && x.host_key_confirmed && !!x.host_key_fingerprint;
-  const known = confirmed(d);
+  const pinned = d.transport === "sftp" && !!d.host_key_fingerprint;
   const fp = textInput("dl-fp", "", { placeholder: "SHA256:…" });
-  const later = h("input", { type: "checkbox", id: "dl-later" });
   const dir = textInput("dl-dir", d.directory || "", { placeholder: "D:\\Exports\\vendor" });
   const boxes = {
     sftp: h("div", { id: "dl-box-sftp", class: "sub-fields" },
@@ -1462,9 +1459,9 @@ function deliveryForm(name, st) {
       field(rdir, "Folder on the server", "Where the files go on the vendor's server. A dot (.) is the folder you land in when you log in."),
       field(fp, "Server key fingerprint from the vendor", "Ask the vendor for it: it starts SHA256: (or is an older value such as " +
         "3f:a2:…:9c). On saving, FOLIO-Exchange reads the server's own key and saves only if they match, so files cannot go to a " +
-        "server pretending to be the vendor's." + (known ? " This server's key is already confirmed: leave this empty to keep it." : "")),
-      checkField(later, "I don't have it yet: save the server, but don't connect until I confirm it",
-        "The feed is paused, and nothing logs in to the server, until you come back and enter the vendor's fingerprint.")),
+        "server pretending to be the vendor's. " + (pinned && d.host_key_confirmed ? "This server's key is already confirmed: leave this empty to keep it."
+          : pinned ? "Leave this empty to keep the server key saved before."
+          : "If you don't have it, leave this empty: the server's own key is kept, and a different key is refused later."))),
     local: h("div", { id: "dl-box-local", class: "sub-fields" },
       field(dir, "Folder", "The folder's full path, on this computer or the network, such as D:\\Exports\\vendor or \\\\server\\share\\vendor. " +
         "It is made if it does not exist.")),
@@ -1482,7 +1479,6 @@ function deliveryForm(name, st) {
       clearErrors(form);
       conflictBox.hidden = true;
       describe(btn, conflictBox.id, false);
-      const now = cur.st.delivery;
       const transport = (radios.find((r) => r.checked) || {}).value || "none";
       let body;
       if (transport === "sftp") {
@@ -1492,13 +1488,8 @@ function deliveryForm(name, st) {
         if (!user.value.trim()) return fieldError(user, "Enter the SFTP user name the vendor gave you.");
         const bad = fingerprintProblem(fp.value);
         if (bad) return fieldError(fp, bad);
-        const sameServer = confirmed(now) && host.value.trim().toLowerCase() === String(now.host || "").toLowerCase()
-          && p === Number(now.port || 22);
-        if (!fp.value.trim() && !later.checked && !sameServer) {
-          return fieldError(fp, "Enter the fingerprint the vendor gave you, or tick the box below to confirm it later.");
-        }
         body = { transport, host: host.value.trim(), port: p, username: user.value.trim(), remote_dir: rdir.value.trim() || ".",
-                 vendor_fingerprint: fp.value.trim(), confirm_later: later.checked && !fp.value.trim() };
+                 vendor_fingerprint: fp.value.trim() };
       } else if (transport === "local") {
         const bad = folderProblem(dir.value);
         if (bad) return fieldError(dir, bad);
@@ -1542,7 +1533,7 @@ function deliveryForm(name, st) {
       S.forms[name].delivery = null;
       const sd = settings.delivery;
       const words = sd.transport === "sftp" && !sd.host_key_confirmed
-        ? "Delivery saved. The server key is not confirmed yet, so the feed stays paused and nothing logs in."
+        ? "Delivery saved with the server's key, not confirmed yet. Use Test delivery to try it."
         : sd.transport === "none" ? "Saved: the feed stays a dry run." : "Delivery saved. Use Test delivery to try it.";
       toast(words);
       announce(words);
@@ -1679,7 +1670,6 @@ function loginSection(f, st, D) {
 
 function resumeSection(f, st) {
   const d = st.delivery;
-  const unconfirmed = d.transport === "sftp" && !d.host_key_confirmed;
   return [
     h("h2", { class: "tab-heading", text: "This feed is paused" }),
     h("p", { text: "Its schedule does not run it, but you can still Preview and Run it by hand." }),
@@ -1687,8 +1677,6 @@ function resumeSection(f, st) {
       ? h("p", { text: "It has no delivery yet: resumed, its scheduled runs only build files on this computer." })
       : h("p", { text: "Resuming lets the schedule run it. The first delivery to a new destination is held for your review anyway: " +
         "nothing reaches the vendor until you have looked at the files and chosen Review and send…" }),
-    unconfirmed ? h("p", { class: "error-text", text: "The server key is not confirmed yet, so nothing is sent even when it runs. " +
-      "Enter the vendor's fingerprint under Change delivery first." }) : null,
     h("div", { class: "form-actions" },
       h("button", { class: "btn btn-primary", type: "button", id: "btn-resume", disabled: busy(),
         onclick: (e) => resumeFeed(f.name, e.currentTarget) }, "Resume feed")),

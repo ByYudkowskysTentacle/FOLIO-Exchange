@@ -183,7 +183,7 @@ Your earlier answers are offered as defaults; press Enter to keep each one. Answ
 | --- | --- |
 | How are the files delivered | **1, upload to the vendor's SFTP server** |
 | SFTP server name, port, user name, folder | from the vendor |
-| Does it match the fingerprint the vendor gave you? | compare the `SHA256:` line on screen with the vendor's, character by character. **1** (yes, it matches) only if they are the same. If you don't have the vendor's value yet, pick **2**: the feed is saved but stays paused, and nothing logs in until you run `init` again and confirm it. If they differ, pick **3** (no) and ask the vendor. If the server offers several keys, the question is which one matches, and those two answers come after the keys |
+| Does it match the fingerprint the vendor gave you? | compare the `SHA256:` line on screen with the vendor's, character by character. **1** (yes, it matches) only if they are the same. If you don't have the vendor's value yet, pick **2**: the key the server shows is kept, deliveries use it, and any other key is refused. Run `init` again to confirm it when the vendor sends their fingerprint. (If the server shows a different key from the one kept before, **2** isn't offered: ask the vendor.) If they differ, pick **3** (no) and ask the vendor. If the server offers several keys, the question is which one matches, and those two answers come after the keys |
 | SFTP password | typed at the prompt (not shown); it goes into Windows Credential Manager |
 | When should it run | the vendor's schedule, for example `weekly` or `Sun 03:30` |
 | How should FOLIO-Exchange tell you when a run fails? | asked only while no alert is set up: email, or a chat webhook (see step 6) |

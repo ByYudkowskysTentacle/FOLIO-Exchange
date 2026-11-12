@@ -373,7 +373,7 @@ class SetupActions:
         res = dict(state.get("result") or {})
         server_key = res.pop("server_key", None)
         sd = res.get("delivery") or {}
-        words = ("Delivery saved. The server key isn't confirmed yet, so the feed is paused and nothing logs in."
+        words = ("Delivery saved with the server's key, not confirmed yet. Use Test delivery to try it."
                  if sd.get("transport") == "sftp" and not sd.get("host_key_confirmed") else
                  "Saved. The feed is a dry run." if sd.get("transport") == "none" else
                  "Delivery saved. Use Test delivery to try it.")

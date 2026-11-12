@@ -427,7 +427,7 @@
         },
         "host_key_confirmed": {
           "type": "boolean",
-          "description": "false until the fingerprint is confirmed with the vendor; nothing logs in while it is false"
+          "description": "false while the pinned key was read from the server without the vendor's fingerprint to compare; logins go ahead, and any other key is refused"
         },
         "known_hosts": {
           "type": [
