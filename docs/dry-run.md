@@ -76,7 +76,7 @@ $env:Path = "$env:LOCALAPPDATA\FOLIO-Exchange\venv\Scripts;" + $env:Path
 folio-exchange --version
 ```
 
-`--version` shows the version and the commit installed, for example `folio-exchange 0.1.0.dev0 (commit 4e1f2c1a9b3d)`. If someone is helping you, tell them both.
+`--version` shows the version and the commit installed, for example `folio-exchange 0.2.0 (commit 4e1f2c1a9b3d)`. If someone is helping you, tell them both.
 
 ## 2. Guided setup
 

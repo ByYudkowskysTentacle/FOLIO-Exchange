@@ -2,7 +2,7 @@
 
 FOLIO-Exchange lets a library set up, test and run scheduled exports from [FOLIO](https://www.folio.org/) to vendor platforms – collectionHQ first – from shared, tested recipes, without writing code. Loading data into FOLIO is planned for a later version.
 
-**Status:** v1 is in development (`0.1.0.dev0`) and not released yet. Its tests run offline against a mock FOLIO, and it has run end to end against FOLIO's public Eureka test system. It hasn't yet run against a library's own tenant or delivered to collectionHQ. The [working notes](docs/notes.md) say where things stand.
+**Status:** v1 is in development (version 0.2.0) and not released yet. Its tests run offline against a mock FOLIO, and it has run end to end against FOLIO's public Eureka test system. It hasn't yet run against a library's own tenant or delivered to collectionHQ. The [working notes](docs/notes.md) say where things stand.
 
 ![Every feed runs one pipeline; only the recipe changes](docs/images/architecture.png)
 

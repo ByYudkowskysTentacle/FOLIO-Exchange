@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "folio-exchange"
-version = "0.1.0.dev0"
+version = "0.2.0"
 description = "Set up, test and run scheduled data exchanges between FOLIO and vendor platforms from shared recipes"
 readme = "README.md"
 requires-python = ">=3.10"
