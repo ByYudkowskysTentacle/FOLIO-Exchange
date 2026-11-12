@@ -24,7 +24,9 @@ The app's text was first written by an AI model and carried its habits. These ar
 7. **Explaining the app's own mechanics.** Readers don't need to know about jobs, errands or the site being read again. Say what they see or what to do.
 8. **Filler.** "still", "here", "at once", "as it is", "for you" and "now", where they add nothing.
 9. **Stacked asides.** At most one aside per sentence. Prefer a period to parentheses or a dash. En dashes ( – ) are the only dash; never use an em dash.
-10. **Inconsistent terms.** Use the app's words throughout: site, site folder, feed, recipe, vendor, run, preview, build only, dry run, delivery, server key, fingerprint, FOLIO, Credential Manager.
+10. **Inconsistent terms.** Use the app's words throughout: site, site folder, feed, recipe, vendor, service, destination, run, preview, build only, dry run, delivery, server key, fingerprint, FOLIO, Credential Manager.
+    - A service is a platform the library sends data to, such as collectionHQ. A destination is where a service receives it: an SFTP server, folder and account, or a local folder.
+    - The site keeps its name. Say tenant only for the FOLIO tenant itself ("FOLIO tenant fs00001234"), never for the site or its folder.
 
 ## Good patterns
 
