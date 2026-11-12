@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in FOLIO-Exchange doesn't work as the docs say
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue is public.** Don't paste passwords, keys, tokens, patron data, your `site.yaml` or feed files as they are, or files built for a vendor. Replace tenant, host and account names with made-up ones. For a security problem, follow [SECURITY.md](https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. folio-exchange run chq --no-deliver
+        2. ...
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Where
+      options:
+        - Desktop app
+        - Browser page (folio-exchange ui)
+        - Command line
+        - Scheduled task
+        - Installer
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `folio-exchange --version`.
+      placeholder: folio-exchange 0.1.0.dev0 (commit 4d80826...)
+    validations:
+      required: true
+  - type: input
+    id: folio
+    attributes:
+      label: FOLIO
+      description: Eureka or Okapi, and the FOLIO release if you know it.
+      placeholder: Eureka, Sunflower
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and Python
+      placeholder: Windows 11, Python 3.12
+  - type: textarea
+    id: log
+    attributes:
+      label: Log or output
+      description: The relevant lines from the site's `logs` folder or the console, with private names removed.
+      render: text

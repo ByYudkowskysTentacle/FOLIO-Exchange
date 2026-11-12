@@ -11,11 +11,25 @@ requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "FOLIO-Exchange contributors" }]
-keywords = ["FOLIO", "library", "collectionHQ", "MARC", "SFTP", "integration"]
+keywords = ["FOLIO", "library", "libraries", "library services platform", "Eureka", "collectionHQ", "MARC", "SFTP",
+            "integration", "data exchange"]
 classifiers = [
-  "Programming Language :: Python :: 3",
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Environment :: Win32 (MS Windows)",
   "Intended Audience :: Education",
-  "Topic :: Software Development :: Libraries",
+  "Intended Audience :: Information Technology",
+  "Intended Audience :: System Administrators",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+  "Topic :: Utilities",
 ]
 dependencies = [
   "requests>=2.31",
@@ -30,6 +44,8 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/ByYudkowskysTentacle/FOLIO-Exchange"
+Documentation = "https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/tree/main/docs"
+Issues = "https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "jsonschema>=4.20", "pytest-qt>=4.4"]

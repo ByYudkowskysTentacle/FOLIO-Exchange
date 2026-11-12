@@ -1,5 +1,6 @@
 # FOLIO-Exchange site settings: one folder per FOLIO tenant.
-# `folio-exchange init` writes this for you; this copy shows every setting with its default.
+# The page or `folio-exchange init` writes this for you. This copy shows every setting: the FOLIO
+# connection with example values, the rest with their defaults.
 # No passwords live here. Each `secret:` says where one is kept: keyring (the system
 # credential store) or env:NAME (an environment variable). See `folio-exchange secret status`.
 # Editors that read JSON Schema can check this file against
@@ -15,6 +16,7 @@ folio:
   timeout_seconds: 120
   max_retries: 5
   verify_tls: true
+  ca_bundle: null                            # a PEM file, or windows (the Windows certificate store), for networks that inspect TLS
   srs_include_shared: false                  # true for member tenants in an ECS consortium
 
 sync:
@@ -24,15 +26,16 @@ sync:
 paths: {data: data, out: out, logs: logs, feeds: feeds, recipes: [recipes]}
 
 runs:
-  keep_local_runs: 5                         # run folders kept per feed (held and blocked runs are always kept)
+  keep_local_runs: 5                         # run folders kept per feed, 0 = all (runs waiting for release and the last delivery stay)
   history_months: 12
-  max_attempts_per_slot: 3                   # scheduled retries of a failed run
+  max_attempts_per_slot: 3                   # scheduled tries per slot, the first included; a failed run is tried again the next hour
   timezone: null                             # schedules use this zone; null = this computer's time
 
 alerts:
-  on: failure                                # failure | always | never
+  on: failure                                # failure (also held and blocked runs) | always | never
   webhook: null                              # keyring or env:NAME: the webhook URL is itself a secret
   webhook_format: slack                      # slack, or teams for a Teams "webhook request" workflow
+  heartbeat: null                            # keyring or env:NAME: a monitor's ping URL, called as each hourly pass starts and ends
   email: null
   # email:
   #   to: [systems@library.example.edu]
@@ -42,3 +45,5 @@ alerts:
   #   starttls: true
   #   username: null                         # set it to log in; the password goes in the keyring
   #   secret: keyring
+
+recipe_sources: []                           # this site's own vendor recipe sources, added to the curated list
