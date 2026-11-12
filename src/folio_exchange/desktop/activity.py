@@ -58,7 +58,8 @@ class ActivityPage(Page):
             return                                  # unchanged: the selection and focus stay put
         self.listed = activity
         runs = activity.get("runs") or []
-        fill_table(self.runs, [[model.status_words(r.get("status")), r.get("feed") or "", model.when(r.get("started")),
+        fill_table(self.runs, [[model.status_words(r.get("status"), r.get("not_sent")), r.get("feed") or "",
+                                model.when(r.get("started")),
                                 r.get("trigger") or "", model.num(r.get("items")), model.num(r.get("bibs")),
                                 model.run_note(r)] for r in runs], [r["id"] for r in runs])
         self.runs.setVisible(bool(runs))

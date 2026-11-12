@@ -115,8 +115,20 @@ def when(iso: str | None) -> str:
         return iso
 
 
-def status_words(status: str | None) -> str:
+def status_words(status: str | None, not_sent: bool | None = False) -> str:
+    """A run's status in words. ``not_sent`` (views.run_row's): a successful run of a feed with no delivery, which
+    was built and not sent, so it's never called delivered."""
+    if status == "success" and not_sent:
+        return STATUS_WORDS["built"]
     return STATUS_WORDS.get(status or "", status or "No runs yet")
+
+
+def done_words(result: dict) -> str:
+    """The line that says how a preview, run, build or release ended (views.run_result)."""
+    status = result.get("status")
+    if status == "success" and (result.get("run") or {}).get("not_sent"):
+        return DONE_WORDS["built"]
+    return DONE_WORDS.get(status, str(status))
 
 
 def password_words(source: str | None) -> str:
@@ -135,8 +147,10 @@ def feed_state(item: dict) -> str:
     """A feed's line in the sidebar: on or paused, and its last real run. In words, not only colour. "Running"
     is kept for an action in progress, as the page keeps "Busy"."""
     state = "On" if item.get("enabled") else "Paused"
-    last = item.get("last_status") or (item.get("last_run") or {}).get("status")
-    return f"{state}, {status_words(last).lower() if last else 'no runs yet'}"
+    run = item.get("last_run") or {}
+    last = item.get("last_status") or run.get("status")
+    not_sent = item.get("last_not_sent") or run.get("not_sent")
+    return f"{state}, {status_words(last, not_sent).lower() if last else 'no runs yet'}"
 
 
 def warnings(summary: dict) -> list[str]:
@@ -279,8 +293,8 @@ def layout_about(detail: dict, o: dict) -> tuple[str, str]:
 def last_run_words(last: dict | None) -> str:
     if not last:
         return "never"
-    return (f"{status_words(last['status'])}, {when(last.get('started'))} · {num(last.get('items'))} items, "
-            f"{num(last.get('bibs'))} bibs")
+    return (f"{status_words(last['status'], last.get('not_sent'))}, {when(last.get('started'))} · "
+            f"{num(last.get('items'))} items, {num(last.get('bibs'))} bibs")
 
 
 def run_note(r: dict) -> str:
@@ -296,7 +310,7 @@ def run_summary(run: dict, report: dict, delivers: bool) -> list[tuple[str, str]
     skipped = ", ".join(f"{k}: {num(v)}" for k, v in (b.get("items_skipped") or {}).items())
     step = next_step(run.get("status"), delivers)
     rows: list[tuple[str, str] | None] = [
-        ("Status", status_words(run.get("status"))),
+        ("Status", status_words(run.get("status"), run.get("not_sent"))),
         ("Started", when(run.get("started"))),
         ("Recipe", str(run.get("recipe") or "")),
         ("Held because", page_words(report["held"])) if report.get("held") else None,

@@ -66,6 +66,14 @@ def open_in_browser(url: str) -> None:
     QDesktopServices.openUrl(QUrl(url))
 
 
+def quit_keys() -> list[QKeySequence]:
+    """Quit's shortcuts: the platform's standard one where it has one, and Ctrl+Q everywhere. Windows has no
+    standard Quit key, so StandardKey.Quit alone left Ctrl+Q doing nothing there."""
+    keys = list(QKeySequence.keyBindings(QKeySequence.StandardKey.Quit))
+    ctrl_q = QKeySequence("Ctrl+Q")
+    return keys + ([] if ctrl_q in keys else [ctrl_q])
+
+
 def app_command(site_root: Path) -> tuple[str, list[str], str]:
     """How to start the app for another site, in a process of its own (no console window on Windows), and the
     folder to start it in. Never this process's current folder: ``python -m`` imports from there first, and
@@ -160,7 +168,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.dark_action.toggled.connect(lambda on: theme.set_dark(QApplication.instance(), on))
         menu.addAction(self.dark_action)
         menu.addSeparator()
-        self._action(menu, "&Quit", QKeySequence.StandardKey.Quit, self.close)
+        self._action(menu, "&Quit", quit_keys(), self.close)
 
         self.banner = QLabel()
         self.banner.setObjectName("banner")
@@ -262,8 +270,13 @@ class MainWindow(QMainWindow, SetupActions):
         self.setTabOrder(self.sidebar, self.stack)
 
     def _action(self, menu, caption: str, keys, slot) -> QAction:
+        """A Site menu item, also reachable from anywhere in the window by its shortcut. ``keys``: one key
+        sequence, or a list of them (the first is the one the menu shows)."""
         action = QAction(caption, self)
-        action.setShortcut(QKeySequence(keys))
+        if isinstance(keys, list):
+            action.setShortcuts(keys)
+        else:
+            action.setShortcut(QKeySequence(keys))
         action.triggered.connect(lambda _checked=False: slot())
         menu.addAction(action)
         self.addAction(action)

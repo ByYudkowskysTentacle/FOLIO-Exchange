@@ -174,6 +174,22 @@ function settingsChanges(base, form) {
   if (Object.keys(legacy).length) values.legacy = legacy;
   return { values, changes };
 }
+
+// A run's status in words, and the toast when an action ends. A run of a feed with no delivery succeeds without
+// sending anything (the run's not_sent): it was built, not sent, never "Delivered".
+const RUN_LABELS = { success: "Delivered", held: "Held for review", blocked: "Blocked", failed: "Failed",
+                     built: "Built, not sent", preview: "Preview" };
+const DONE_TOASTS = { success: "Delivered.", held: "Held for your review.", blocked: "Blocked: see the summary.",
+                      failed: "The run failed: see the summary.", built: "Built. Nothing was sent.", preview: "Preview ready." };
+function runLabel(run) {
+  const status = run.not_sent && run.status === "success" ? "built" : run.status;
+  return RUN_LABELS[status] || status;
+}
+function doneToast(result) {
+  const run = result.run || {};
+  const status = run.not_sent && result.status === "success" ? "built" : result.status;
+  return DONE_TOASTS[status] || status;
+}
 // ---- pure helpers: end
 
 // ------------------------------------------------------------ helpers
@@ -2076,7 +2092,7 @@ function resultPanel() {
   const b = rep.build || {};
   const tabs = ["rows", "summary"].concat(R.job ? ["log"] : []);
   const head = h("div", { class: "result-head" }, badge(run.status || R.status),
-    h("span", { class: "label", text: { success: "Delivered", held: "Held for review", blocked: "Blocked", failed: "Failed", built: "Built, not sent", preview: "Preview" }[run.status] || run.status }),
+    h("span", { class: "label", text: runLabel(run) }),
     R.job ? h("span", { class: "stat" }, "Time ", h("b", { text: `${R.job.seconds} s` })) : h("span", { class: "stat", text: when(run.started) }),
     h("span", { class: "stat" }, "Bibs ", h("b", { text: num(run.bibs ?? b.bibs_written) })),
     h("span", { class: "stat" }, "Items ", h("b", { text: num(run.items ?? b.items_written) })),
@@ -2261,8 +2277,7 @@ async function follow(job) {
       S.results[job.feed] = { job: done, error: done.error };
     } else {
       S.results[job.feed] = { job: done, run: done.result.run, report: done.result.report, tab: "rows" };
-      toast({ success: "Delivered.", held: "Held for your review.", blocked: "Blocked: see the summary.", failed: "The run failed: see the summary.",
-              built: "Built. Nothing was sent.", preview: "Preview ready." }[done.result.status] || done.result.status);
+      toast(doneToast(done.result));
     }
   }
   try {

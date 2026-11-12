@@ -470,7 +470,10 @@ function Select-InstallDir([string]$Default) {
             }
         }
         if ($path.Length -gt 100) {
-            Write-Warn 'This folder path is long. Windows may refuse some of the program files under it; a shorter one, such as C:\FOLIO-Exchange, avoids that.'
+            # Not a folder such as C:\FOLIO-Exchange: every user of the PC can change one there, and check warns about it.
+            $shorter = '%USERPROFILE%\FOLIO-Exchange'
+            if ($env:USERPROFILE) { $shorter = Join-Path $env:USERPROFILE 'FOLIO-Exchange' }
+            Write-Warn ('This folder path is long. Windows may refuse some of the program files under it. A shorter folder in your own profile, such as {0}, avoids that.' -f $shorter)
         }
         return $path
     }
@@ -625,8 +628,15 @@ try {
         if ($winget) {
             Write-Text 'Windows can install Python 3.12 for you with winget, the Windows Package Manager. It downloads Python from python.org.'
             if (Read-YesNo 'Install Python 3.12 now?' $true) {
-                # --scope user: installed for this Windows user only, so no administrator rights are needed
-                $wingetArgs = @('install', '-e', '--id', $WingetPython, '--scope', 'user')
+                # --scope user: installed for this Windows user only, so no administrator rights are needed.
+                # --source winget: the community source, which holds this id. Without it winget also searches the
+                # Microsoft Store source, which on a PC that has never used winget first asks to accept its terms.
+                $wingetArgs = @('install', '-e', '--id', $WingetPython, '--source', 'winget', '--scope', 'user')
+                if ($Yes) {
+                    # -Yes answers every question, so winget must not stop to ask about a source's or a package's
+                    # agreements either: with nobody to answer, the install would hang or fail.
+                    $wingetArgs += @('--accept-source-agreements', '--accept-package-agreements')
+                }
                 Write-Host ''
                 Write-Host ('Running: winget {0}' -f ($wingetArgs -join ' '))
                 Invoke-Interactive $winget.Path $wingetArgs

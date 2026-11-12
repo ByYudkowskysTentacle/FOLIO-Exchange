@@ -293,7 +293,8 @@ class FeedPage(Page):
         self._show_delivery(d)
         if another or runs != self.runs_shown:          # unchanged: the selection and focus stay put
             self.runs_shown = runs
-            fill_table(self.history, [[model.status_words(r.get("status")), model.when(r.get("started")),
+            fill_table(self.history, [[model.status_words(r.get("status"), r.get("not_sent")),
+                                       model.when(r.get("started")),
                                        r.get("trigger") or "", model.num(r.get("items")), model.num(r.get("bibs")),
                                        r.get("folder") or "", model.run_note(r)] for r in runs],
                        [r["id"] for r in runs])
@@ -500,7 +501,7 @@ class FeedPage(Page):
             res = state.get("result") or {}
             self.results[name] = {"state": "done", "status": res.get("status"), "run": res.get("run") or {},
                                   "report": res.get("report") or {}, "lines": lines, "seconds": state.get("seconds")}
-            words = model.DONE_WORDS.get(res.get("status"), str(res.get("status")))
+            words = model.done_words(res)
         if name == self.name:
             self.say(words)
             self.result.show_result(self.results[name], self.delivers())

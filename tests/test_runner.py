@@ -9,7 +9,7 @@ from folio_exchange import client as client_mod
 from folio_exchange import notify, runner
 from folio_exchange.cli import main
 from folio_exchange.config import BUNDLED_RECIPES, load_site
-from folio_exchange.errors import DeliveryError
+from folio_exchange.errors import DeliveryError, FxError
 from folio_exchange.history import History
 from folio_exchange.lock import RunLock
 from folio_exchange.recipe import RecipeLibrary, load_feeds
@@ -158,6 +158,31 @@ def test_release_of_a_built_run_still_checks_the_item_count(site, folio):
     assert main(["-s", str(site), "run", "chq", "--no-deliver", "--force"]) == 0
     assert main(["-s", str(site), "release", "chq", "--yes"]) == 2
     assert main(["-s", str(site), "release", "chq", "--yes", "--force"]) == 0
+
+
+SKIPPED = "safety check skipped (--force)"
+
+
+def test_a_forced_run_that_is_held_records_the_skipped_check(site, monkeypatch):
+    """Regression: a skipped item-count check was audited only when the run ended success or built. A forced run
+    that was held left no record, and releasing a held run doesn't check the count again."""
+    assert main(["-s", str(site), "run", "chq", "--force"]) == 2              # held: the first delivery
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    with hist(site) as h:
+        skips = [a for a in h.audit_log() if a["action"] == SKIPPED]
+        held = next(r for r in h.runs("chq", 10) if r["id"] == 1)
+    assert len(skips) == 1 and skips[0]["feed"] == "chq"
+    assert skips[0]["detail"]["status"] == "held" and skips[0]["detail"]["items"] == held["items"]
+    assert skips[0]["detail"]["run_dir"] == held["run_dir"]
+
+    # A forced run that fails before the check skipped nothing, so it records no skip.
+    def boom(cache, feed, run_dir):
+        raise FxError("The build stopped.")
+
+    monkeypatch.setattr(runner, "build", boom)
+    assert main(["-s", str(site), "run", "chq", "--force", "--skip-sync"]) == 1
+    with hist(site) as h:
+        assert len([a for a in h.audit_log() if a["action"] == SKIPPED]) == 1
 
 
 def test_release_asks_first(site, monkeypatch, capsys):

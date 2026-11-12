@@ -20,7 +20,7 @@ from .client import probe
 from .config import BUNDLED_RECIPES, Site, load_site, password_note
 from .errors import ConfigError, FxError
 from .fields import FIELDS
-from .history import History
+from .history import History, not_sent
 from .recipe import Feed, RecipeLibrary, load_all
 
 PREVIEW_MOST = 500                   # the most instances a preview samples
@@ -48,13 +48,15 @@ def find_feed(site_root: Path, name: str) -> tuple[Site, RecipeLibrary, Feed, li
 
 
 def run_row(r: dict) -> dict:
-    """A history row for the page: no report body (it can be large), but the summary fields."""
+    """A history row for the page: no report body (it can be large), but the summary fields. ``not_sent``: a
+    successful run of a feed with no delivery, which interfaces show as built, not sent (never as delivered)."""
     rep = r.get("report") or {}
     return {
         "id": r["id"], "feed": r["feed"], "status": r["status"], "trigger": r.get("trigger"),
         "started": r.get("started"), "finished": r.get("finished"), "items": r.get("items"), "bibs": r.get("bibs"),
         "recipe": f"{r.get('recipe')}@{r.get('recipe_version')}", "error": r.get("error"),
         "folder": Path(r["run_dir"]).name if r.get("run_dir") else None, "delivered": bool(r.get("delivered")),
+        "not_sent": not_sent(r),
         "files": r.get("files") or [], "destinations": r.get("destinations") or [], "next": rep.get("next"),
         "held": rep.get("held"), "released_by": rep.get("released_by"), "released_after": rep.get("released_after"),
     }
@@ -123,6 +125,7 @@ def site_summary(site_root: Path) -> dict:
             newer = library.newer_major(f.uses)
             items.append({"name": f.name, "title": f.title, "recipe": f.recipe.ref, "enabled": f.enabled,
                           "last_status": last["status"] if last else None,
+                          "last_not_sent": not_sent(last) if last else False,
                           "last_started": last["started"] if last else None,
                           "newer_recipe": newer.ref if newer else None})
         now = datetime.now(timezone.utc)

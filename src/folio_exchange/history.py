@@ -34,6 +34,12 @@ ADDED_COLUMNS = {"runs": {"folio_source": "TEXT"}}
 STATUSES = ("running", "success", "built", "blocked", "held", "failed", "preview")
 
 
+def not_sent(row: dict) -> bool:
+    """A successful run that sent nothing because its feed had no delivery (transport none): built, not sent.
+    Interfaces never call it delivered."""
+    return row.get("status") == "success" and row.get("destination") == "none"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
