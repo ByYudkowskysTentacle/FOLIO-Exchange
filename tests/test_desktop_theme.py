@@ -7,11 +7,12 @@ from conftest import QT_LOADS
 if not QT_LOADS:
     pytest.skip("needs the desktop extra (PySide6) and pytest-qt, and a Qt that loads", allow_module_level=True)
 
-from PySide6.QtCore import QtMsgType, qInstallMessageHandler  # noqa: E402
-from PySide6.QtWidgets import QApplication, QPushButton, QWidget  # noqa: E402
+from PySide6.QtCore import QPoint, Qt, QtMsgType, qInstallMessageHandler  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QWidget  # noqa: E402
 from test_desktop_feeds import window  # noqa: E402
 
 from folio_exchange.desktop import places, theme  # noqa: E402
+from folio_exchange.desktop.options import OptionsPage  # noqa: E402
 from folio_exchange.desktop.picker import SitePicker  # noqa: E402
 
 
@@ -131,3 +132,35 @@ def test_a_first_start_makes_setting_up_the_primary_action(qtbot):
     new = next(b for b in picker.findChildren(QPushButton) if b.accessibleName() == "Set up a new site")
     assert new.property("primary") is True and new.isDefault()
     qtbot.waitUntil(new.hasFocus, timeout=5000)                          # where Enter goes, the focus is
+
+
+def test_a_line_ends_each_section_of_options(qtbot, app_look):
+    """Options has four sections; a divider sits below each, before the next one's heading, drawn as a line one
+    pixel high in the theme's line colour with room around it, and it's nothing to the keyboard or a screen reader."""
+    theme.apply(app_look, dark=False)
+    page = OptionsPage()
+    qtbot.addWidget(page)
+    page.resize(700, 900)
+    page.show()
+    box = page.box
+    parts = []
+    for i in range(1, box.count()):                                      # after the page's own heading
+        w = box.itemAt(i).widget()
+        if isinstance(w, QLabel) and w.font().bold():
+            parts.append(w.text())
+        elif isinstance(w, QFrame) and w.objectName() == "divider":
+            parts.append("divider")
+    assert parts == ["Rename the site folder", "divider", "Scheduled runs", "divider", "Alerts", "divider",
+                     "Tray and notifications", "divider"]
+    assert box.itemAt(box.count() - 1).widget().objectName() == "divider"
+    lines = page.findChildren(QFrame, "divider")
+    for line in lines:
+        assert line.isVisible() and line.height() == 2 * theme.DIVIDER_ROOM + 1
+        assert line.focusPolicy() == Qt.FocusPolicy.NoFocus and not line.accessibleName()
+    shot = page.grab().toImage()                                         # the page as drawn, the line within it
+    top = lines[0].mapTo(page, QPoint(lines[0].width() // 2, 0))
+    column = [shot.pixelColor(top.x(), top.y() + y).name() for y in range(lines[0].height())]
+    assert column == ([theme.LIGHT["panel"]] * theme.DIVIDER_ROOM + [theme.LIGHT["line"]]
+                      + [theme.LIGHT["panel"]] * theme.DIVIDER_ROOM)
+    for t in (theme.LIGHT, theme.DARK):
+        assert f"QFrame#divider {{ background: {t['line']};" in theme.stylesheet(t)

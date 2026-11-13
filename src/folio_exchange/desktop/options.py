@@ -24,7 +24,7 @@ from .. import schedule, siteops
 from ..launcher import program_path
 from . import model, theme
 from .forms import Rows, edit
-from .pages import Facts, Page, actions_row, button, heading, lines_label, set_lines, text
+from .pages import Facts, Page, actions_row, button, divider, heading, lines_label, set_lines, text
 
 RENAME_ABOUT = ("The folder's name is the site's name. It shows at the top of this window and in alerts, and the "
                 "scheduled task and desktop launcher are named after it. Renaming keeps the folder in the same place, "
@@ -109,6 +109,7 @@ class OptionsPage(Page):
         self.rename_button = theme.primary(button("&Rename folder", "Rename folder"))
         self.rename_button.clicked.connect(self._rename)
         self.box.addLayout(actions_row(self.rename_button))
+        self.box.addWidget(divider())
 
         self.box.addWidget(heading("Scheduled runs", 1.15))
         self.task = text(about="Scheduled task")
@@ -125,6 +126,7 @@ class OptionsPage(Page):
         self.box.addWidget(self.register_result)
         self.cron = text(about="The line to add with crontab -e")
         self.box.addWidget(self.cron)
+        self.box.addWidget(divider())
 
         self.box.addWidget(heading("Alerts", 1.15))
         self.box.addWidget(text("Who hears about a run that failed, was blocked or is waiting for review, by email or "
@@ -142,6 +144,7 @@ class OptionsPage(Page):
         self.test_result = text(about="Test alert")
         self.test_result.hide()
         self.box.addWidget(self.test_result)
+        self.box.addWidget(divider())
 
         self.box.addWidget(heading("Tray and notifications", 1.15))
         self.box.addWidget(text(TRAY_ABOUT, "About the tray"))
@@ -159,6 +162,7 @@ class OptionsPage(Page):
         self.tray_result = text(about="Tray settings")
         self.tray_result.hide()
         self.box.addWidget(self.tray_result)
+        self.box.addWidget(divider())
         self.set_platform(self.windows)
 
     def set_platform(self, windows: bool) -> None:
