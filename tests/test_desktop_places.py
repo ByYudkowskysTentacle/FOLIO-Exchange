@@ -3,10 +3,13 @@ and starting it when Qt is missing. These run with or without the desktop extra.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import QT_LOADS
 
 from folio_exchange import cli, desktop, siteops
 from folio_exchange.desktop import model, places
@@ -325,3 +328,75 @@ def test_the_command_line_does_not_load_qt():
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
                          cwd=Path(__file__).parent)
     assert out.stdout.strip() == "False"
+
+
+def _in_a_python_of_its_own(script: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, errors="replace",
+                          timeout=180, env={**os.environ, "QT_QPA_PLATFORM": "offscreen"})
+
+
+def test_main_spares_the_constants_before_it_looks_for_qt(monkeypatch, capsys):
+    """The tests' own Python gets the spare references from conftest, so only this shows that the app asks for
+    them itself, and before the first Qt import."""
+    order = []
+    monkeypatch.setattr(desktop, "spare_constants", lambda: order.append("spare") or False)
+    monkeypatch.setattr(desktop, "qt_problem", lambda: order.append("qt") or "no Qt here")
+    assert desktop.main([]) == 1 and order == ["spare", "qt"]
+    assert "no Qt here" in capsys.readouterr().err
+
+
+def test_none_true_and_false_get_spare_references_on_pythons_that_count_them():
+    """Python 3.12 and later never free None, True or False, so nothing is done there. Earlier ones count their
+    references, and each is given so many that the ones Qt gives away never matter."""
+    done = _in_a_python_of_its_own(
+        "import sys\n"
+        "from folio_exchange import desktop\n"
+        "three = (None, True, False)\n"
+        "before = [sys.getrefcount(x) for x in three]\n"
+        "first = desktop.spare_constants()\n"
+        "after = [sys.getrefcount(x) for x in three]\n"
+        "second = desktop.spare_constants()\n"
+        "again = [sys.getrefcount(x) for x in three]\n"
+        "gained = [a - b for a, b in zip(after, before)]\n"
+        "print(first, second, min(gained) > desktop.SPARE_REFERENCES - 9999, max(gained) < desktop.SPARE_REFERENCES"
+        " + 9999, max(abs(a - b) for a, b in zip(again, after)) < 9999, max(abs(g) for g in gained) < 9999)\n")
+    assert done.returncode == 0, done.stderr[-800:]
+    if sys.version_info >= (3, 12):
+        assert done.stdout.split() == ["False", "False", "False", "True", "True", "True"]     # nothing was touched
+    else:
+        assert done.stdout.split() == ["True", "False", "True", "True", "True", "False"]      # once, and only once
+
+
+@pytest.mark.skipif(not QT_LOADS, reason="needs the desktop extra (PySide6) and a Qt that loads")
+def test_qt_calls_by_the_thousand_never_free_none_or_true():
+    """Regression: CI's Python 3.10 job passed every test, then Python aborted as it exited ("munmap_chunk():
+    invalid pointer"). With PySide6 6.12.0 on Python 3.10 and 3.11, a Qt call that returns nothing or no object
+    costs None a reference, and a signal's emit, connect and disconnect cost True or False one. The recipe
+    builder's tests made enough of them for True to be freed. The app, which makes such calls for as long as it
+    is open, would have stopped the same way. The loop makes each kind of losing call."""
+    done = _in_a_python_of_its_own(
+        "from folio_exchange import desktop\n"
+        "desktop.spare_constants()\n"
+        "from PySide6.QtCore import QObject, Signal\n"
+        "from PySide6.QtWidgets import QApplication, QWidget\n"
+        "class Emitter(QObject):\n"
+        "    plain = Signal()\n"
+        "app = QApplication([])\n"
+        "import warnings\n"
+        "warnings.simplefilter('ignore')\n"                # disconnecting what isn't connected warns
+        "def slot():\n"
+        "    pass\n"
+        "emitter, widget = Emitter(), QWidget()\n"
+        "emitter.plain.connect(lambda: None)\n"
+        "for _ in range(30000):\n"
+        "    emitter.plain.emit()\n"                       # True
+        "    widget.setVisible(False)\n"                   # None, from a call that returns nothing
+        "    emitter.parent()\n"                           # None, from a call that returns no object
+        "    emitter.plain.connect(slot)\n"                # True, with the disconnect
+        "    emitter.plain.disconnect(slot)\n"
+        "    try:\n"
+        "        emitter.plain.disconnect(slot)\n"         # False: it isn't connected
+        "    except (RuntimeError, TypeError):\n"
+        "        pass\n"
+        "print('still here')\n")
+    assert done.returncode == 0 and "still here" in done.stdout, (done.returncode, done.stderr[-800:])
