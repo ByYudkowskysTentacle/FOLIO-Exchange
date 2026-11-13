@@ -340,6 +340,14 @@ def release_rows(s: dict) -> list[tuple[str, str]]:
             ("Items", items), ("Bibs", num(s.get("bibs"))), ("Sends to", str(s.get("destination") or ""))]
 
 
+# What the server key is, for library staff (the Delivery tab and Change delivery…, for SFTP).
+SERVER_KEY_ABOUT = ("The server key proves FOLIO-Exchange has reached the vendor's real server. It's checked before "
+                    "the password or any files are sent. The password works the other way and proves to the vendor "
+                    "that the login is yours. The fingerprint is a short code for the key. It isn't secret, so the "
+                    "vendor can email it to you. If a delivery fails because the key changed, check with the vendor "
+                    "before you enter a new fingerprint.")
+
+
 def delivery_rows(d: dict) -> list[tuple[str, str]]:
     """Where a feed's files go (its Delivery tab), from setupops.feed_settings' delivery, which holds no secret."""
     if d.get("transport") == "sftp":

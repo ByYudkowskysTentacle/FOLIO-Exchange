@@ -23,6 +23,7 @@ from . import places
 LOGO = Path(__file__).resolve().parent.parent / "web" / "logo.svg"
 CHECK = Path(__file__).resolve().parent / "check.svg"     # a ticked box's white tick
 MIN_POINTS = 10.5                     # the page's 14px; a larger font chosen in Windows is kept
+DIVIDER_ROOM = 10                     # px above and below the line that ends a section (pages.divider)
 
 LIGHT = {
     "bg": "#f6f6f6", "panel": "#ffffff", "panel2": "#fafafa", "line": "#e4e4e4",
@@ -166,6 +167,7 @@ QLabel[role="help"] {{ color: {t['muted']}; }}
 QLabel#banner {{ background: {t['warn_fill']}; color: {t['text']}; border: 0; border-radius: 6px;
   margin: 8px 8px 0 8px; }}
 QFrame#waiting {{ background: {t['warn_fill']}; border: 0; border-radius: 8px; }}
+QFrame#divider {{ background: {t['line']}; border: 0; margin: {DIVIDER_ROOM}px 0; }}
 QToolTip {{ background: {t['text']}; color: {t['panel']}; border: 0; padding: 4px 8px; }}
 """
 

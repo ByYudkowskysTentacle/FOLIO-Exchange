@@ -40,7 +40,7 @@ from test_sources import SHA, FakeGitHub, newer  # noqa: E402
 from folio_exchange import client as client_mod  # noqa: E402
 from folio_exchange import delivery, recipeops, runner, setupops, siteops, sources, views  # noqa: E402
 from folio_exchange.config import load_site, read_yaml  # noqa: E402
-from folio_exchange.desktop import forms, places  # noqa: E402
+from folio_exchange.desktop import forms, model, places  # noqa: E402
 from folio_exchange.desktop import options as options_module  # noqa: E402
 from folio_exchange.desktop.alerts import AlertsDialog  # noqa: E402
 from folio_exchange.desktop.builder import RecipeBuilder  # noqa: E402
@@ -659,6 +659,16 @@ def test_a_refused_delivery_says_nothing_was_saved_once(qtbot, site):
     assert d.problem.text() == "Nothing was saved, because site.yaml would not load."
     d.failed("Another action is still running (check).")             # it doesn't say so: the prefix does
     assert d.problem.text() == "Not saved. Another action is still running (check)."
+
+
+def test_change_delivery_says_what_the_server_key_is_beside_the_sftp_fields(qtbot, site):
+    d = DeliveryDialog("chq", {"version": "v", "delivery": {"transport": "none"}})
+    qtbot.addWidget(d)
+    about = [x for x in d.sftp_box.findChildren(QLabel) if x.text() == model.SERVER_KEY_ABOUT]
+    assert len(about) == 1 and about[0].accessibleDescription() == "About the server key"
+    assert not d.sftp_box.isVisibleTo(d)                       # a dry run: no SFTP fields, so no note either
+    d.radios["sftp"].setChecked(True)
+    assert about[0].isVisibleTo(d)
 
 
 def test_sftp_delivery_is_saved_only_with_the_vendors_fingerprint(qtbot, site, server_keys, heard):
