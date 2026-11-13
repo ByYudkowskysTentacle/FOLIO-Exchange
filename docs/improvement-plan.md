@@ -52,7 +52,7 @@ Measure first, then remove the full re-downloads that make a weekly run take hou
 
 ## Batch 4: tests, packaging and error types
 
-_Not started._
+_4.1 done on 12 November 2026 (`tests/test_alerts.py`; it found that a webhook failing unexpectedly stopped the email too, now fixed). The rest is not started._
 
 Keeps the rest cheap to change. About one day.
 

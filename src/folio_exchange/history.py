@@ -13,6 +13,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .errors import HistoryDamaged, NewerData, damaged_database
+
+# history.sqlite's format (SQLite's user_version). Raise it only for a change the version before can't read
+# correctly; added columns (ADDED_COLUMNS) don't need it, since older versions ignore them. A file from before
+# format numbers reads as 0 and is stamped when it is opened.
+FORMAT = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,15 +77,41 @@ def _row(cur: sqlite3.Cursor, row: tuple) -> dict:
     return out
 
 
+def newer_words(path: Path, what: str, found: int, reads: int) -> str:
+    return (f"The {what} in {path} was written by a newer version of FOLIO-Exchange (its format is {found}; this "
+            f"version reads up to {reads}), so this version won't use it. Install the newer version again, or put "
+            "back the copy of the file from before the update.")
+
+
+def damaged_words(path: Path, exc: Exception) -> str:
+    return (f"The site's run history ({path}) is damaged ({exc}). Restore it from a backup if you have one. "
+            "Otherwise rename it (to history.damaged.sqlite, say) and run again: a new history starts, the audit "
+            "log starts again, and the next delivery of each feed is held for your review.")
+
+
 class History:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path)
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(SCHEMA)
-        self._add_columns()
-        self.db.commit()
+        try:
+            found = self.db.execute("PRAGMA user_version").fetchone()[0]    # before anything writes to the file
+            if found > FORMAT:
+                raise NewerData(newer_words(self.path, "run history", found, FORMAT))
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.executescript(SCHEMA)
+            self._add_columns()
+            if found < FORMAT:
+                self.db.execute(f"PRAGMA user_version = {FORMAT}")
+            self.db.commit()
+        except NewerData:
+            self.db.close()
+            raise
+        except sqlite3.DatabaseError as exc:
+            self.db.close()                      # Windows won't let a person rename a file that is still open
+            if damaged_database(exc):
+                raise HistoryDamaged(damaged_words(self.path, exc)) from None
+            raise
 
     def _missing_columns(self) -> list[tuple[str, str, str]]:
         out = []

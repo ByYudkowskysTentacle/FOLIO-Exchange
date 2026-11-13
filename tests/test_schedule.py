@@ -78,6 +78,83 @@ def test_failed_scheduled_runs_retry_up_to_the_limit():
     assert not due([run(LATER, "failed")] * 3)
 
 
+def hourly_passes(text: str, late: timedelta, off=lambda when: False, max_attempts: int = 6):
+    """Simulate the hourly task (minute 7) through one slot of a feed whose every attempt fails, each recorded
+    ``late`` after its pass started (as a run is, once its sync has timed out). Returns the passes that made an
+    attempt, and the pass after which the slot counts as given up (None: not before the next slot)."""
+    sc = s.parse(text)
+    slot = at("2026-10-25T02:00:00+00:00")
+    nxt = s.next_slot(sc, slot, UTC)
+    runs, attempts, given = [], [], None
+    p = slot + timedelta(minutes=7)
+    while p < nxt:
+        if not off(p):
+            if s.is_due(sc, p, UTC, runs, max_attempts, None):
+                runs.append(run((p + late).isoformat(), "failed"))
+                attempts.append(p)
+            if runs and given is None and s.out_of_attempts(runs, max_attempts, s.next_slot(sc, p, UTC)):
+                given = p
+        p += timedelta(hours=1)
+    return [a.strftime("%d %H:%M") for a in attempts], given and given.strftime("%d %H:%M")
+
+
+def test_retries_come_1_2_4_then_8_hours_on_the_hourly_starts_however_long_an_attempt_took():
+    """Regression (review of 12 Nov): a gap measured from when the run was recorded, after a 13-minute sync timeout,
+    pushed every retry an hour late, so a daily feed ran out of time before its last attempt and its given-up
+    alert never came."""
+    for late in (timedelta(minutes=2), timedelta(minutes=13), timedelta(minutes=50)):
+        attempts, given = hourly_passes("daily 02:00", late)
+        assert attempts == ["25 02:07", "25 03:07", "25 05:07", "25 09:07", "25 17:07", "26 01:07"], late
+        assert given == "26 01:07"                                  # given up within the slot, after the 6th
+
+
+def test_attempts_over_an_hour_long_move_their_retries_but_the_slot_is_still_given_up_inside_it():
+    """A run recorded in the clock hour after its pass started counts its gap from that hour, so its retries come
+    an hour later. Fewer attempts fit, and the slot is given up after the last that does."""
+    attempts, given = hourly_passes("daily 02:00", timedelta(minutes=55))
+    assert attempts == ["25 02:07", "25 04:07", "25 07:07", "25 12:07", "25 21:07"]
+    assert given == "25 21:07"
+
+
+def test_a_slot_that_starts_late_is_given_up_when_no_retry_fits_before_the_next():
+    """The PC was off until 19:00: three attempts fit before 02:00, and the slot is given up after the third."""
+    attempts, given = hourly_passes("daily 02:00", timedelta(minutes=13),
+                                    off=lambda when: when < at("2026-10-25T19:00:00+00:00"))
+    assert attempts == ["25 19:07", "25 20:07", "25 22:07"] and given == "25 22:07"
+
+
+def test_a_slot_cut_short_by_the_pc_being_off_is_not_given_up_inside_it():
+    """Off from 19:00: the slot ends with attempts left, so the next slot's first pass reports it
+    (runner.missed_slot, tested with a real site)."""
+    attempts, given = hourly_passes("daily 02:00", timedelta(minutes=13),
+                                    off=lambda when: when >= at("2026-10-25T19:00:00+00:00"))
+    assert len(attempts) == 5 and given is None
+
+
+def test_a_weekly_slot_has_all_its_attempts_in_about_a_day():
+    attempts, given = hourly_passes("Sun 02:00", timedelta(minutes=13))
+    assert len(attempts) == 6 and given == attempts[-1] == "26 01:07"
+
+
+def test_a_retry_one_hour_on_is_not_pushed_back_by_the_runs_own_minutes():
+    """The task starts at minute 7: an attempt recorded at 03:20 (its pass began at 03:07) is retried at 04:07."""
+    slot = at("2026-10-25T03:00:00+00:00")
+    daily = s.parse("daily 03:00")
+    runs = [run("2026-10-25T03:20:00+00:00", "failed")]
+    assert s.next_retry(runs) == at("2026-10-25T03:50:00+00:00")
+    assert s.is_due(daily, at("2026-10-25T04:07:01+00:00"), UTC, runs, 6, None)
+    assert not s.is_due(daily, at("2026-10-25T03:45:00+00:00"), UTC, runs, 6, None)
+    assert s.last_slot(daily, at("2026-10-25T04:07:01+00:00"), UTC) == slot
+
+
+def test_attempts_run_out_or_stop_after_a_refused_login():
+    one = [run(LATER, "failed")]
+    assert not s.out_of_attempts(one, 2)
+    assert s.out_of_attempts(one * 2, 2)
+    refused = [{**run(LATER, "failed"), "report": {"no_retry": True}}]
+    assert s.out_of_attempts(refused, 6)
+
+
 def test_runs_by_hand_do_not_cancel_the_scheduled_delivery():
     assert due([run(LATER, "built", "manual"), run(LATER, "preview", "preview"), run(LATER, "failed", "manual")])
     assert not due([run(LATER, "success", "manual")])               # delivered by hand: the slot is done

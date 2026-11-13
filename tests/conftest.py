@@ -75,13 +75,82 @@ def no_real_secrets_in_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+def _real_app_folders():
+    """The app's real folder functions, kept before every test redirects them: a test may compute them, never
+    write there."""
+    from folio_exchange.desktop import places
+
+    return places.config_dir, places.local_dir
+
+
+REAL_APP_FOLDERS = _real_app_folders()
+
+
 @pytest.fixture(autouse=True)
 def no_real_app_settings(monkeypatch, tmp_path_factory):
-    """The desktop app's per-user settings (its recent sites) go to a test folder, never the developer's own."""
+    """The desktop app's per-user settings (its recent sites, the tray's list) go to test folders, never the
+    developer's own."""
     from folio_exchange.desktop import places
 
     folder = tmp_path_factory.mktemp("app-settings")
+    local = tmp_path_factory.mktemp("app-local")
     monkeypatch.setattr(places, "config_dir", lambda: folder)
+    monkeypatch.setattr(places, "local_dir", lambda: local)
+
+
+class FakeRegistry:
+    """Stands in for winreg: the tray's Startup entry (desktop/startup.py) goes here, never to the developer's
+    own Run key. ``values`` maps (key path, value name) to the text stored."""
+    HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ = "HKCU", 0x20019, 0x0002, 1
+
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+        self.refuse: OSError | None = None              # set to make every write fail, as a locked-down PC might
+
+    class Key:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def OpenKey(self, _root, path, _reserved=0, _access=0):  # noqa: N802 - winreg's names
+        return self.Key(path)
+
+    def CreateKeyEx(self, _root, path, _reserved=0, _access=0):  # noqa: N802
+        if self.refuse:
+            raise self.refuse
+        return self.Key(path)
+
+    def QueryValueEx(self, key, name):  # noqa: N802
+        if (key.path, name) not in self.values:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return self.values[(key.path, name)], self.REG_SZ
+
+    def SetValueEx(self, key, name, _reserved, _kind, value):  # noqa: N802
+        if self.refuse:
+            raise self.refuse
+        self.values[(key.path, name)] = value
+
+    def DeleteValue(self, key, name):  # noqa: N802
+        if self.refuse:
+            raise self.refuse
+        if self.values.pop((key.path, name), None) is None:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+
+
+@pytest.fixture(autouse=True)
+def registry(monkeypatch):
+    """Never read or write the developer's real Windows registry; on every system the tests see a Windows-like
+    one (tests that need "not Windows" replace startup._winreg themselves)."""
+    from folio_exchange.desktop import startup
+
+    fake = FakeRegistry()
+    monkeypatch.setattr(startup, "_winreg", lambda: fake)
+    return fake
 
 
 @pytest.fixture(autouse=True)

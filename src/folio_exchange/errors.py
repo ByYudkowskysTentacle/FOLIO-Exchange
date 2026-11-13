@@ -36,3 +36,35 @@ class DeliveryError(FxError):
 
 class LockBusy(FxError):
     """Another run holds the site lock."""
+
+
+class DeliveryLoginRefused(FxError):
+    """The vendor's server refused the SFTP login. Nothing reached it, and a scheduled run doesn't try again in the
+    same slot: another wrong password could lock the account."""
+
+
+class NewerData(FxError):
+    """A data file (the run history or the cache) was written by a newer FOLIO-Exchange than this one: its format
+    number (SQLite's user_version) is higher than this version reads."""
+
+
+class NewerCache(NewerData):
+    """The cache was written by a newer FOLIO-Exchange. It is refused as the history is (renaming it makes this
+    version download everything again), so two versions on one site never rebuild each other's cache."""
+
+
+class HistoryDamaged(FxError):
+    """The site's run history file is damaged (SQLite says it is malformed or not a database)."""
+
+
+SQLITE_CORRUPT, SQLITE_NOTADB = 11, 26
+
+
+def damaged_database(exc: Exception) -> bool:
+    """True only when SQLite says the file itself is damaged or is not a database. A full disk, an I/O error, a
+    lock or a file that cannot be opened is not damage."""
+    code = getattr(exc, "sqlite_errorcode", None)        # Python 3.11+
+    if code is not None:
+        return code & 0xFF in (SQLITE_CORRUPT, SQLITE_NOTADB)
+    text = str(exc).lower()
+    return "malformed" in text or "not a database" in text

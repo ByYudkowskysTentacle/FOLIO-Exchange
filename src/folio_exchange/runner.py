@@ -21,7 +21,15 @@ from .cache import Cache
 from .client import FolioClient, FolioError, LoginFailed, tls_verify
 from .config import BUNDLED_RECIPES, Site, read_yaml
 from .dates import now_utc
-from .errors import ConfigError, DeliveryError, FxError, LockBusy, SafetyCheckFailed
+from .errors import (
+    ConfigError,
+    DeliveryError,
+    DeliveryLoginRefused,
+    FxError,
+    LockBusy,
+    SafetyCheckFailed,
+    damaged_database,
+)
 from .history import History, current_user, file_digest
 from .lock import RunLock
 from .recipe import (
@@ -198,7 +206,7 @@ def _keep_unsent(site: Site, subject: str, text: str) -> None:
             kept = _unsent(hist)
             kept.append({"subject": subject, "text": text, "raised": now_utc().isoformat(timespec="seconds")})
             hist.set_meta(UNSENT, json.dumps(kept[-UNSENT_KEEP:]))
-    except (sqlite3.Error, OSError) as exc:
+    except (sqlite3.Error, OSError, FxError) as exc:       # FxError: a damaged history, or a newer version's
         log.warning("Could not keep the unsent alert to send later: %s", type(exc).__name__)
 
 
@@ -252,6 +260,26 @@ def start_pass(site: Site, hist: History) -> None:
                                     "failed. Check logs/folio-exchange.log.")
 
 
+def repeat_failure(site: Site, feed: Feed, status: str, trigger: str | None, error: str | None,
+                   previous: dict | None) -> bool:
+    """Whether a run that ended ``status`` is a scheduled retry that failed with the same ``error`` as the
+    scheduled attempt just before it (``previous``), in the same slot. Its alert would say again what the first
+    one said, so it is not sent: the slot's given-up alert (``report_given_up``) follows if every attempt fails.
+    A different error, or a failure in a new slot, is alerted as usual."""
+    if status != "failed" or trigger != "schedule" or not previous:
+        return False
+    if previous.get("trigger") != "schedule" or previous.get("status") != "failed":
+        return False
+    if (previous.get("error") or "") != (error or ""):
+        return False
+    slot = schedule.last_slot(schedule.parse(feed.schedule), now_utc(), site.timezone)
+    try:
+        started = datetime.fromisoformat(previous.get("started") or "")
+    except ValueError:
+        return False
+    return slot is not None and started >= slot
+
+
 def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) -> None:
     b = res.report.get("build") or {}
     lines = [f"Feed {feed.name} ({feed.title}), recipe {feed.recipe.ref}: {res.status}."]
@@ -268,7 +296,10 @@ def _alert_run(site: Site, feed: Feed, res: RunResult, previous: dict | None) ->
     if step:
         lines.append(step)
     text = "\n".join(lines)
-    if notify.should_alert(site.alerts, res.status):
+    if repeat_failure(site, feed, res.status, res.report.get("trigger"), res.report.get("error"), previous):
+        log.info("Feed %s: the scheduled retry failed as the attempt before it did; that was alerted already, "
+                 "and an alert follows if the slot is given up", feed.name)
+    elif notify.should_alert(site.alerts, res.status):
         alert(site, feed.name, res.status, text)
     elif res.status in ("success", "built") and previous and previous.get("status") in ("failed", "blocked"):
         alert(site, feed.name, "recovered", text, force=site.alerts.get("on") != "never")
@@ -496,8 +527,8 @@ def run_feed(site: Site, feed: Feed, opts: RunOptions, *, hist: History,
         log.error("Run failed: %s", exc)
     except FxError as exc:
         status, code, error = "failed", 1, str(exc)
-        if isinstance(exc, LoginFailed):
-            report["no_retry"] = True
+        if isinstance(exc, (LoginFailed, DeliveryLoginRefused)):
+            report["no_retry"] = True                # another try with the same password could lock the account
         log.error("Run failed: %s", exc)
     except Exception as exc:  # noqa: BLE001 - top level: report every failure
         status, code, error = "failed", 1, f"{type(exc).__name__}: {exc}"
@@ -577,17 +608,11 @@ def run_path(site: Site, stored: str | Path) -> Path:
     return here if here.exists() or not path.exists() else path
 
 
-SQLITE_CORRUPT, SQLITE_NOTADB = 11, 26
-
-
 def cache_damaged(exc: sqlite3.DatabaseError) -> bool:
-    """True only when SQLite says the file itself is damaged or is not a database. A full disk, an I/O error, a
-    lock or a file that cannot be opened is not damage: moving a healthy cache aside then loses it."""
-    code = getattr(exc, "sqlite_errorcode", None)        # Python 3.11+
-    if code is not None:
-        return code & 0xFF in (SQLITE_CORRUPT, SQLITE_NOTADB)
-    text = str(exc).lower()
-    return "malformed" in text or "not a database" in text
+    """True only when SQLite says the file itself is damaged or is not a database (``errors.damaged_database``). A
+    full disk, an I/O error, a lock or a file that cannot be opened is not damage: moving a healthy cache aside
+    then loses it."""
+    return damaged_database(exc)
 
 
 def cache_problem(site: Site, exc: sqlite3.DatabaseError) -> str:
@@ -713,6 +738,8 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
             except Exception as exc:  # noqa: BLE001 - every feed fails the same way; report it once per feed
                 err = str(exc) if isinstance(exc, FxError) else f"{type(exc).__name__}: {exc}"
                 log.error("Sync failed: %s", err)
+                before = {f.name: next((r for r in hist.runs(f.name, 100) if r.get("status") != "preview"), None)
+                          for f in feeds}
                 for f in feeds:
                     run_id = hist.start_run(f.name, f.recipe.id, f.recipe.version_str, opts.trigger, None,
                                             delivery.destination_key(f.delivery))
@@ -724,8 +751,12 @@ def run_many(site: Site, feeds: list[Feed], opts: RunOptions, *, all_feeds: list
                     results.append(RunResult(f.name, "failed", 1, None, rep))
                 advice = ("Run `folio-exchange check` to test the connection." if isinstance(exc, FolioError)
                           else "See logs/folio-exchange.log for details.")
-                alert(site, ", ".join(f.name for f in feeds), "failed",
-                      f"Could not update the cache from FOLIO, so no feed ran.\n{err}\n{advice}")
+                if all(repeat_failure(site, f, "failed", opts.trigger, f"Sync failed: {err}", before[f.name])
+                       for f in feeds):
+                    log.info("The scheduled retry failed as the attempt before it did; that was alerted already")
+                else:
+                    alert(site, ", ".join(f.name for f in feeds), "failed",
+                          f"Could not update the cache from FOLIO, so no feed ran.\n{err}\n{advice}")
                 return results
         for f in feeds:
             results.append(run_feed(site, f, opts, hist=hist, sync_report=sync_report))
@@ -780,9 +811,19 @@ def overdue(site: Site, feed: Feed, hist: History, now: datetime) -> str | None:
     return None
 
 
+def _all_failed(runs: list[dict]) -> list[dict] | None:
+    """A slot's scheduled runs when there is at least one and every one failed, with no delivery by hand."""
+    tries = [r for r in runs if r.get("trigger") == "schedule"]
+    if not tries or any(r.get("status") != "failed" for r in tries) or any(r.get("status") == "success"
+                                                                            for r in runs):
+        return None
+    return tries
+
+
 def given_up(site: Site, feed: Feed, hist: History, now: datetime) -> tuple[datetime, list[dict]] | None:
-    """The feed's latest slot and its scheduled runs when every attempt the slot allows has failed (or FOLIO
-    refused the login), so nothing more is tried until the next slot; else None."""
+    """The feed's latest slot and its scheduled runs when every attempt the slot allows has failed (or the
+    login was refused, or no hourly start is left before the next slot), so nothing more is tried until the
+    next slot; else None."""
     if not feed.enabled:
         return None
     s = schedule.parse(feed.schedule)
@@ -790,28 +831,53 @@ def given_up(site: Site, feed: Feed, hist: History, now: datetime) -> tuple[date
     created = feed_created(hist, feed)
     if slot is None or slot <= created:
         return None
-    runs = hist.runs_since(feed.name, slot)
-    tries = [r for r in runs if r.get("trigger") == "schedule"]
-    if not tries or any(r.get("status") != "failed" for r in tries) or any(r.get("status") == "success"
-                                                                            for r in runs):
+    tries = _all_failed(hist.runs_since(feed.name, slot))
+    if tries is None:
         return None
-    if schedule.is_due(s, now, site.timezone, runs, int(site.runs["max_attempts_per_slot"]), created):
-        return None
+    if not schedule.out_of_attempts(tries, int(site.runs["max_attempts_per_slot"]),
+                                    schedule.next_slot(s, now, site.timezone)):
+        return None                            # attempts are left: the next waits for its retry gap
     return slot, tries
 
 
+def missed_slot(site: Site, feed: Feed, hist: History, now: datetime) -> tuple[datetime, list[dict]] | None:
+    """The slot before the latest and its scheduled runs when they all failed and the slot ended with attempts
+    left (the computer was off or asleep, say), so its given-up alert would otherwise never be sent; else None."""
+    if not feed.enabled:
+        return None
+    s = schedule.parse(feed.schedule)
+    latest = schedule.last_slot(s, now, site.timezone)
+    if latest is None:
+        return None
+    slot = schedule.last_slot(s, latest - timedelta(seconds=1), site.timezone)
+    if slot is None or slot <= feed_created(hist, feed):
+        return None
+    runs = [r for r in hist.runs_since(feed.name, slot) if (_started_at(r) or latest) < latest]
+    tries = _all_failed(runs)
+    return (slot, tries) if tries else None
+
+
+def _started_at(run: dict) -> datetime | None:
+    try:
+        return datetime.fromisoformat(run.get("started") or "")
+    except ValueError:
+        return None
+
+
 def report_given_up(site: Site, feeds: list[Feed], hist: History, now: datetime) -> None:
-    """Alert once (remembered in history meta) when a feed's slot is given up after its last allowed attempt."""
+    """Alert once (remembered in history meta) when a feed's slot is given up after its last allowed attempt,
+    or when the slot before the latest ended with every attempt failed and no such alert sent."""
     for f in feeds:
+        key = f"slot_given_up:{f.name}"
+        told = hist.get_meta(key) or ""
         hit = given_up(site, f, hist, now)
-        if hit is None:
+        if hit is None or hit[0].isoformat() <= told:
+            hit = missed_slot(site, f, hist, now)
+        if hit is None or hit[0].isoformat() <= told:
             continue
         slot, tries = hit
-        key = f"slot_given_up:{f.name}"
-        if hist.get_meta(key) == slot.isoformat():
-            continue
         hist.set_meta(key, slot.isoformat())
-        nxt = schedule.next_slot(schedule.parse(f.schedule), now, site.timezone)
+        nxt = schedule.next_slot(schedule.parse(f.schedule), slot, site.timezone)
         until = f"its next slot ({_local(nxt.isoformat())})" if nxt else "its next slot"
         text = (f"Feed {f.name}: the scheduled run due {_local(slot.isoformat())} was given up after {len(tries)} "
                 f"failed attempt(s), so nothing was delivered and nothing more is tried until {until}.\n"

@@ -12,7 +12,7 @@ import pytest
 from sitekit import make_feed, write_yaml
 
 from folio_exchange import client as client_mod
-from folio_exchange import feedops, notify, runner
+from folio_exchange import feedops, notify, runner, schedule
 from folio_exchange.cli import main
 from folio_exchange.client import FolioClient, FolioUnreachable, LoginFailed
 from folio_exchange.config import load_site, read_yaml
@@ -75,6 +75,23 @@ def due_daily(site) -> None:
 
 def due(site) -> int:
     return main(["-s", str(site), "run", "--due"])
+
+
+EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)      # a retry time long past: the next attempt may start now
+
+
+def due_weekly_today(site) -> None:
+    """Make feed chq run weekly on today's weekday at 00:00, on a site that has known it for a while: today's slot
+    is due, and the next is a week off, so the time of day a test runs at never leaves a retry out of time."""
+    make_feed(site, schedule=f"{datetime.now().strftime('%a')} 00:00")
+    with hist(site) as h:
+        h.set_meta("feed_seen:chq", (datetime.now(timezone.utc) - timedelta(days=8)).isoformat())
+
+
+def age_runs(site, hours: int) -> None:
+    with hist(site) as h:
+        h.db.execute("UPDATE runs SET started = ?", ((datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(),))
+        h.db.commit()
 
 
 def task_now(site, now=None) -> dict:
@@ -262,6 +279,8 @@ def test_a_pass_killed_on_the_last_attempt_is_reported_as_given_up(site, alerts)
 
 # ------------------------------------------------------- SCHED-outage-exhausts-slot-alerts-lost
 def test_an_outage_across_the_slot_is_reported_when_the_network_returns(site, alerts, monkeypatch):
+    edit_site(site, runs={"max_attempts_per_slot": 3})
+    monkeypatch.setattr(schedule, "next_retry", lambda _runs: EPOCH)   # no waiting between retries
     due_daily(site)
     monkeypatch.setenv("FOLIO_URL", "http://127.0.0.1:1")             # FOLIO out of reach, and so is the webhook
     alerts.up = False
@@ -269,17 +288,57 @@ def test_an_outage_across_the_slot_is_reported_when_the_network_returns(site, al
     assert alerts.sent == []
     with hist(site) as h:
         kept = json.loads(h.get_meta(runner.UNSENT))
-    assert len(kept) == 4 and "was given up after 3 failed attempt(s)" in kept[-1]["text"]
+    # the first failure, then the slot given up: the retries failed the same way, so they add no alert
+    assert len(kept) == 2 and "was given up after 3 failed attempt(s)" in kept[-1]["text"]
     alerts.up = True
     assert due(site) == 0                                              # nothing is due, but the alerts go now
     texts = alerts.texts()
-    assert len(texts) == 4 and all(t.startswith("First raised ") for t in texts)
-    assert sum("Could not update the cache from FOLIO" in t for t in texts) == 3
+    assert len(texts) == 2 and all(t.startswith("First raised ") for t in texts)
+    assert "Could not update the cache from FOLIO" in texts[0]
     assert "was given up after 3 failed attempt(s)" in texts[-1]
     with hist(site) as h:
         assert h.get_meta(runner.UNSENT) is None
     assert due(site) == 0
-    assert len(alerts.sent) == 4                                       # sent once, never again
+    assert len(alerts.sent) == 2                                       # sent once, never again
+
+
+def test_waiting_for_a_retry_is_not_giving_up(site, alerts, monkeypatch):
+    due_weekly_today(site)
+    monkeypatch.setenv("FOLIO_URL", "http://127.0.0.1:1")
+    assert due(site) == 1                                              # the first attempt fails
+    s = load_site(site)
+    feeds = load_feeds(s, RecipeLibrary(s.recipe_dirs))
+    with hist(site) as h:
+        assert runner.given_up(s, feeds[0], h, datetime.now(timezone.utc)) is None
+    assert not [t for t in alerts.texts() if "given up" in t]
+    age_runs(site, 2)                                                  # two hours later
+    assert due(site) == 1                                              # it is tried again
+    with hist(site) as h:
+        assert [r["trigger"] for r in h.runs("chq", 10)] == ["schedule", "schedule"]
+
+
+def test_a_slot_whose_attempts_are_spent_is_given_up_with_one_alert(site, alerts, monkeypatch):
+    edit_site(site, runs={"max_attempts_per_slot": 2})
+    monkeypatch.setattr(schedule, "next_retry", lambda _runs: EPOCH)
+    due_weekly_today(site)
+    monkeypatch.setenv("FOLIO_URL", "http://127.0.0.1:1")
+    assert [due(site) for _ in range(3)] == [1, 1, 0]
+    texts = alerts.texts()
+    assert sum(t.startswith("Could not update the cache") for t in texts) == 1   # the retry failed the same way
+    given_up = [t for t in texts if "was given up after 2 failed attempt(s)" in t]
+    assert len(given_up) == 1
+
+
+def test_a_retry_that_fails_differently_is_alerted(site, alerts, monkeypatch):
+    edit_site(site, runs={"max_attempts_per_slot": 3})
+    monkeypatch.setattr(schedule, "next_retry", lambda _runs: EPOCH)
+    due_daily(site)
+    monkeypatch.setenv("FOLIO_URL", "http://127.0.0.1:1")
+    assert due(site) == 1
+    monkeypatch.setenv("FOLIO_URL", "http://127.0.0.1:2")              # the next attempt fails another way
+    assert due(site) == 1
+    failed = [t for t in alerts.texts() if "Cannot reach FOLIO" in t]
+    assert len(failed) == 2 and "127.0.0.1:1" in failed[0] and "127.0.0.1:2" in failed[1]
 
 
 def test_unsent_alerts_wait_while_the_channel_is_still_down(site, alerts):
@@ -346,7 +405,8 @@ def test_the_legacy_route_refusing_names_both_endpoints(folio):
     assert "HTTP 401 from /authn/login; /authn/login-with-expiry returned HTTP 404" in str(caught.value)
 
 
-def test_a_slot_whose_login_route_was_missing_is_tried_again(site, folio):
+def test_a_slot_whose_login_route_was_missing_is_tried_again(site, folio, monkeypatch):
+    monkeypatch.setattr(schedule, "next_retry", lambda _runs: EPOCH)   # as if the retry's hour had come
     due_daily(site)
     folio.fail_login = [404]
     assert due(site) == 1
@@ -495,3 +555,75 @@ def test_a_preview_does_not_alert_an_unchanged_warning_again(site, folio, alerts
     assert shown["status"] == "preview" and shown["report"]["warnings"] != real["report"]["warnings"]  # a sample
     assert main(["-s", str(site), "run", "chq"]) == 0
     assert warnings() == first
+
+
+def test_a_slot_that_ended_with_attempts_left_is_reported_by_the_next_pass(site, alerts, monkeypatch):
+    """Regression (review of 12 Nov): when the PC was off as a slot ran out, its given-up alert was never sent,
+    since given_up looked only at the latest slot."""
+    due_daily(site)                                                    # daily 00:00, seen a week ago
+    today = schedule.last_slot(schedule.parse("daily 00:00"), datetime.now(timezone.utc), None)
+    yesterday = today - timedelta(days=1)
+    with hist(site) as h:
+        for minutes in (7, 67):                                        # two attempts, then the PC was off
+            run_id = h.start_run("chq", "chq-academic", "1.0.0", "schedule", None)
+            h.finish_run(run_id, "failed", error="Sync failed: Cannot reach FOLIO.")
+            h.db.execute("UPDATE runs SET started = ? WHERE id = ?",
+                         ((yesterday + timedelta(minutes=minutes)).isoformat(), run_id))
+        h.db.commit()
+    monkeypatch.setenv("FOLIO_URL", "http://127.0.0.1:1")
+    assert due(site) == 1                                              # today's slot is tried
+    given_up = [t for t in alerts.texts() if "was given up after 2 failed attempt(s)" in t]
+    assert len(given_up) == 1 and "Cannot reach FOLIO" in given_up[0]
+    assert due(site) in (0, 1)                                         # later passes don't say it again
+    assert sum("was given up" in t for t in alerts.texts()) == 1
+
+
+def test_a_feeds_own_retry_that_fails_the_same_way_sends_no_second_alert(site, alerts, monkeypatch):
+    """The repeat rule on a feed's own run (runner._alert_run), not only on a sync that failed for every feed."""
+    edit_site(site, runs={"max_attempts_per_slot": 2})
+    monkeypatch.setattr(schedule, "next_retry", lambda _runs: EPOCH)
+    due_weekly_today(site)
+
+    def broken(*_a, **_k):
+        raise FxError("The build broke the same way.")
+
+    monkeypatch.setattr(runner, "build", broken)
+    assert [due(site) for _ in range(3)] == [1, 1, 0]
+    texts = alerts.texts()
+    assert sum(t.startswith("Feed chq") and "The build broke" in t and "given up" not in t for t in texts) == 1
+    assert sum("was given up after 2 failed attempt(s)" in t for t in texts) == 1
+
+
+def test_a_refused_sftp_login_is_not_tried_again_in_the_same_slot(site, alerts, monkeypatch, tmp_path):
+    """Regression (review of 12 Nov): with six attempts a slot, a wrong SFTP password was tried six times against
+    the vendor's server, where five failures often lock the account."""
+    import paramiko
+
+    from folio_exchange import delivery
+    from folio_exchange.errors import DeliveryLoginRefused
+
+    def refused(_d):
+        raise paramiko.AuthenticationException("Authentication failed.")
+
+    monkeypatch.setattr(delivery, "_connect", refused)
+    d = {"transport": "sftp", "host": "sftp.vendor.example", "username": "lib1"}
+    with pytest.raises(DeliveryLoginRefused) as err:
+        delivery.deliver([tmp_path / "a.mrc"], d, "chq")
+    words = str(err.value)
+    assert "did not accept the login for lib1" in words and "don't try again until the next slot" in words
+
+    assert main(["-s", str(site), "run", "chq"]) == 2                  # the first delivery is held
+    assert main(["-s", str(site), "release", "chq", "--yes"]) == 0
+    age_runs(site, 24 * 8)                                             # delivered before this week's slot
+    monkeypatch.setattr(schedule, "next_retry", lambda _runs: EPOCH)
+    due_weekly_today(site)
+
+    def login_refused(files, delivery_settings, feed_name):
+        raise DeliveryLoginRefused("Delivery failed. The vendor's server did not accept the login.")
+
+    monkeypatch.setattr(runner.delivery, "deliver", login_refused)
+    assert due(site) == 1
+    with hist(site) as h:
+        assert h.last_run("chq")["report"]["no_retry"] is True
+    assert due(site) == 0                                              # not tried again in this slot
+    assert sum("was given up after 1 failed attempt(s)" in t for t in alerts.texts()) == 1

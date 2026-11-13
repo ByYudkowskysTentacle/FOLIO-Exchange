@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
-import sysconfig
 import time
 from pathlib import Path
 
@@ -38,7 +36,7 @@ from PySide6.QtWidgets import (
 from .. import version_text, views
 from ..errors import FxError
 from ..jobs import Job, Jobs
-from . import model, places, theme
+from . import model, places, startup, theme
 from .actions import SETUP_DONE, SetupActions
 from .activity import ActivityPage
 from .feed import FeedPage
@@ -76,19 +74,8 @@ def quit_keys() -> list[QKeySequence]:
 
 def app_command(site_root: Path) -> tuple[str, list[str], str]:
     """How to start the app for another site, in a process of its own (no console window on Windows), and the
-    folder to start it in. Never this process's current folder: ``python -m`` imports from there first, and
-    that may be a shared folder others can write to. The installed ``folio-exchange-app`` is used when there
-    is one; else ``-m`` with ``-P`` (Python 3.11 and later), which leaves the current folder off the path."""
-    exe = Path(sys.executable)
-    here = str(exe.parent)
-    script = Path(sysconfig.get_path("scripts")) / ("folio-exchange-app.exe" if sys.platform == "win32"
-                                                    else "folio-exchange-app")
-    if script.is_file():
-        return str(script), ["--site", str(site_root)], here
-    if sys.platform == "win32" and exe.name.lower() == "python.exe" and (exe.parent / "pythonw.exe").is_file():
-        exe = exe.parent / "pythonw.exe"
-    safe = ["-P"] if sys.version_info >= (3, 11) else []
-    return str(exe), [*safe, "-m", "folio_exchange.desktop", "--site", str(site_root)], here
+    folder to start it in (``startup.app_command``: never this process's current folder)."""
+    return startup.app_command(site_root)
 
 
 def _what(job: Job) -> str:
@@ -230,6 +217,8 @@ class MainWindow(QMainWindow, SetupActions):
         self.options.register.connect(self.register_task)
         self.options.change_alerts.connect(self.change_alerts)
         self.options.test_alert.connect(self.test_alert)
+        self.options.watch.connect(self.watch_from_tray)
+        self.options.startup.connect(self.start_tray_at_sign_in)
         self.reading = QLabel("Loading the site…")
         self.reading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reading.setWordWrap(True)
@@ -407,6 +396,7 @@ class MainWindow(QMainWindow, SetupActions):
             self.stack.setCurrentWidget(self.recipes)
         elif key == "options":
             self.options.show_site(summary)
+            self.show_tray_settings()
             if moved:
                 self.read_alerts()
                 self.look_for_task()

@@ -39,7 +39,7 @@ SITE_DEFAULTS: dict[str, Any] = {
     },
     "sync": {"mode": "auto", "full_refresh_days": 30},
     "paths": {"data": "data", "out": "out", "logs": "logs", "feeds": "feeds", "recipes": ["recipes"]},
-    "runs": {"keep_local_runs": 5, "history_months": 12, "max_attempts_per_slot": 3, "timezone": None},
+    "runs": {"keep_local_runs": 5, "history_months": 12, "max_attempts_per_slot": 6, "timezone": None},
     "alerts": {"on": "failure", "webhook": None, "webhook_format": "slack", "email": None, "heartbeat": None},
     "recipe_sources": [],
 }

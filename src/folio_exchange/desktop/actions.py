@@ -19,7 +19,7 @@ from pathlib import Path
 from .. import runner, setupops, siteops, sources, views
 from ..config import load_site
 from ..errors import ConfigError, FxError
-from . import model, places
+from . import model, places, startup
 from .alerts import AlertsDialog
 from .delivery import DeliveryDialog
 from .options import task_command
@@ -546,6 +546,9 @@ class SetupActions:
         self.page.follow(new)
         log.info("The site folder is now %s (renamed from %s)", new, old)
         places.remember_site(new, replaces=old)
+        places.rename_watched(old, new)                    # siteops did it already; harmless when so
+        if places.is_watched(new):
+            self.start_tray()                              # the running tray reads its list of sites at once
         if self.instance is not None and not self.instance.rename(places.instance_name(new)):
             log.warning("Another window already uses the renamed folder %s", new)
         self._set_title(new.name)
@@ -585,6 +588,52 @@ class SetupActions:
                      "again.")
         self.options.registering(False, words)
         self.look_for_task()
+
+    # ------------------------------------------------------------ options: the tray
+    def show_tray_settings(self) -> None:
+        self.options.show_tray(places.is_watched(self.site_root), startup.startup_state())
+
+    def watch_from_tray(self, on: bool) -> None:
+        """Add this site to the tray's list, or take it off; then start the tray, which, when one is running,
+        only asks it to read the list again (and to close when it's empty)."""
+        try:
+            places.watch_site(self.site_root, on)
+        except OSError as exc:
+            self.show_tray_settings()
+            self.options.tray_said(f"Couldn't save the tray's list of sites: {exc}")
+            return
+        log.info("The tray %s %s", "watches" if on else "no longer watches", self.site_root)
+        if not self.start_tray():
+            self.options.tray_said("The setting is saved, but the tray couldn't be started.")
+        elif on:
+            self.options.tray_said("The tray watches this site. Look for the FOLIO-Exchange icon in the taskbar's "
+                                   "notification area.")
+        else:
+            self.options.tray_said("The tray doesn't watch this site any more.")
+        self.show_tray_settings()
+
+    def start_tray_at_sign_in(self, on: bool) -> None:
+        try:
+            startup.set_startup(on)
+        except (OSError, RuntimeError) as exc:
+            self.show_tray_settings()
+            self.options.tray_said(f"Couldn't change the Startup entry: {exc}")
+            return
+        log.info("The tray %s when this user signs in", "starts" if on else "no longer starts")
+        self.options.tray_said("The tray starts when you sign in to Windows." if on else
+                               "The tray won't start when you sign in.")
+        self.show_tray_settings()
+
+    def start_tray(self) -> bool:
+        """Start ``folio-exchange-app --tray`` in a process of its own. Tests replace this."""
+        from PySide6.QtCore import QProcess
+
+        exe, args, folder = startup.tray_command()
+        started = QProcess.startDetached(exe, args, folder)
+        ok = bool(started[0] if isinstance(started, tuple) else started)
+        if not ok:
+            log.warning("Couldn't start the tray: starting %s failed", exe)
+        return ok
 
     # ------------------------------------------------------------ options: alerts
     def read_alerts(self, purpose: str = "page") -> None:

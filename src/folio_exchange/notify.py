@@ -164,14 +164,18 @@ def _email(email: dict, subject: str, text: str) -> bool:
 def send(alerts: dict, subject: str, text: str, *, account: str = "default") -> list[str]:
     """Send ``text`` on every configured channel. Returns the channels that worked; never raises.
 
-    ``account`` is the keyring account for the webhook URL (the site folder's name)."""
+    ``account`` is the keyring account for the webhook URL (the site folder's name). Each channel is tried on
+    its own, so one that fails unexpectedly (a keyring error, say) never stops the other."""
     sent: list[str] = []
     alerts = alerts or {}
-    try:
-        if alerts.get("webhook") and _webhook(alerts, account, f"{subject}\n{text}"):
-            sent.append("webhook")
-        if alerts.get("email") and _email(alerts["email"], subject, text):
-            sent.append("email")
-    except Exception as exc:  # noqa: BLE001 - alerting must never break a run
-        log.warning("Alert failed: %s", type(exc).__name__)
+    channels = (("webhook", lambda: _webhook(alerts, account, f"{subject}\n{text}")),
+                ("email", lambda: _email(alerts["email"], subject, text)))
+    for name, attempt in channels:
+        if not alerts.get(name):
+            continue
+        try:
+            if attempt():
+                sent.append(name)
+        except Exception as exc:  # noqa: BLE001 - alerting must never break a run
+            log.warning("Alert by %s failed: %s", name, type(exc).__name__)
     return sent
