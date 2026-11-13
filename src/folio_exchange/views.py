@@ -15,7 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__, credentials, delivery, feedops, installed_commit, reads, runner, schedule, setupops, sources
+from . import (
+    __version__,
+    credentials,
+    delivery,
+    feedops,
+    installed_commit,
+    reads,
+    recipeops,
+    runner,
+    schedule,
+    setupops,
+    sources,
+)
 from .client import probe
 from .config import BUNDLED_RECIPES, Site, load_site, password_note
 from .errors import ConfigError, FxError
@@ -148,11 +160,14 @@ def recipes_overview(site_root: Path) -> dict:
     got = sources.provenance(site)
     origin = {f: sid for sid, entry in got.items() for f in (entry.get("files") or {})}
     bundled = BUNDLED_RECIPES.resolve()
+    built = recipeops.custom_records(site)
 
     def came_from(r) -> str:
         key = f"{r.id}/{r.version_str}.yaml"
         if key in origin:
             return origin[key]
+        if recipeops.is_custom(site, r, built):
+            return "custom"
         return "bundled" if r.path.resolve().is_relative_to(bundled) else "this site"
 
     items = []
@@ -166,6 +181,7 @@ def recipes_overview(site_root: Path) -> dict:
             "default_name": (latest.data.get("file_prefix") or rid.split("-")[0]).lower().replace("_", "-"),
             "selection": {k: (latest.data.get("selection") or {}).get(k) for k in setupops.FILTER_KEYS},
             "versions": [{"version": r.version_str, "from": came_from(r)} for r in versions],
+            "custom": recipeops.is_custom(site, latest, built),     # built on this site: the builder may change it
             "feeds": [f.name for f in feeds if f.recipe.id == rid],
         })
     srcs = [{"id": s.id, "vendor": s.vendor, "title": s.title, "description": s.description, "repo": s.repo,

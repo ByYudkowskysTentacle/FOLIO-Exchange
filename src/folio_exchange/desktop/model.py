@@ -28,13 +28,14 @@ KIND_WORDS = {"preview": "preview", "run": "run", "build": "build", "release": "
               "connect": "save of the FOLIO connection", "add-feed": "feed setup", "settings": "save of a feed's settings",
               "delivery": "save of a feed's delivery", "password": "save of an SFTP password",
               "private-key": "save of an SFTP key", "alerts": "save of the alert settings",
-              "test-alert": "test alert", "recipe-install": "recipe install"}
+              "test-alert": "test alert", "recipe-install": "recipe install", "recipe-save": "save of a recipe"}
 DOING_WORDS = {"preview": "Previewing", "run": "Running", "build": "Building", "release": "Sending"}
 ERRAND_WORDS = {"release-summary": "Looking at what a release would send", "enabled": "Pausing or resuming a feed",
                 "run": "Opening a run", "rows": "Reading a run's rows", "folder": "Opening a run's folder",
                 "recipes": "Reading the recipes", "choices": "Reading FOLIO's locations and note types",
                 "permissions": "Checking the FOLIO account's permissions", "feed-settings": "Reading a feed's settings",
-                "recipe-check": "Checking a recipe source", "rename": "Renaming the site folder",
+                "recipe-check": "Checking a recipe source", "recipe-form": "Opening the recipe builder",
+                "recipe-review": "Checking a custom recipe", "rename": "Renaming the site folder",
                 "register": "Registering the scheduled task", "task": "Looking for the scheduled task",
                 "alert-settings": "Reading the alert settings"}
 # The new-feed wizard's and settings form's schedules (the page's SCHEDULES): the value, and how it is offered.
@@ -578,8 +579,67 @@ def from_words(source: str, sources: list[dict]) -> str:
         return "comes with FOLIO-Exchange"
     if source == "this site":
         return "added to this site by hand"
+    if source == "custom":
+        return "built on this site"
     title = next((s.get("title") for s in sources if s.get("id") == source), None)
     return f"downloaded from {title or source}"
+
+
+def _sentence(words: str) -> str:
+    return words if words.endswith((".", "!", "?")) else words + "."
+
+
+def recipe_review_lines(result: dict) -> list[str]:
+    """A custom recipe before it is saved (recipeops.review): what it is, each file it writes, how items match
+    bibs, what it reads from FOLIO, and what changes for each feed that uses it."""
+    lines = [" · ".join(str(x) for x in (result.get("title"), result.get("vendor"), result.get("recipe")) if x)]
+    for o in result.get("outputs") or []:
+        title, about = layout_about(result, o)
+        if o.get("format") == "delimited":
+            headers = [str(c.get("header")) for c in o.get("columns") or []]
+            about = f"{_sentence(about)} {len(headers)} {'column' if len(headers) == 1 else 'columns'}: " \
+                    f"{', '.join(headers)}"
+        lines.append(f"{title}. {_sentence(about)}")
+    link = result.get("link")
+    if link:
+        lines.append(f"Items match bibs by MARC {link.get('bib_field')} and the column {link.get('item_column')}.")
+    lines.append(f"Reads from FOLIO: {', '.join(result.get('reads') or [])}. Patron data: none.")
+    for f in result.get("feeds") or []:
+        changes = "; ".join(f.get("changes") or [])
+        if not changes:
+            lines.append(f"{f['name']} uses this recipe. Its files keep their layout.")
+        elif f.get("delivers"):
+            lines.append(_sentence(f"{f['name']} uses this recipe. Its next delivery is held for your review because "
+                                   f"the layout changes: {changes}"))
+        else:
+            lines.append(_sentence(f"{f['name']} uses this recipe. Its files change: {changes}"))
+    return lines
+
+
+def recipe_review_note(result: dict) -> str:
+    """What saving a reviewed custom recipe does."""
+    feeds = [f["name"] for f in result.get("feeds") or []]
+    if result.get("new"):
+        return "Saving adds the recipe to this site and sends nothing. Use Add a vendor feed to try it with Preview."
+    if feeds:
+        return f"Saving changes the recipe for {', '.join(feeds)} from the next run."
+    return "Saving changes the recipe. No feed uses it yet."
+
+
+def recipe_saved_words(result: dict) -> str:
+    """What a save of a custom recipe did (recipeops.save_custom)."""
+    if not result.get("changed"):
+        return "Nothing needed saving."
+    ref = result.get("recipe") or "the recipe"
+    if result.get("new"):
+        return f"Saved {ref}. Use Add a vendor feed to try it with Preview."
+    held, feeds = result.get("held") or [], result.get("feeds") or []
+    if held:
+        return (f"Saved {ref}. The layout changed, so the next delivery of {', '.join(held)} is held for your "
+                "review.")
+    if feeds:
+        return f"Saved {ref}. {', '.join(feeds)} {'uses' if len(feeds) == 1 else 'use'} it from the next run."
+    return f"Saved {ref}."
 
 
 def recipe_rows(r: dict, sources: list[dict]) -> list[tuple[str, str]]:

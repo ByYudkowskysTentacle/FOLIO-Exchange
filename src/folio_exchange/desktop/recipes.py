@@ -1,6 +1,8 @@
 """The Recipes view, as on the page: the recipes installed on this site (each version and where it came from,
 which feeds use it, what it reads from FOLIO), and the vendors' recipe sources, each with a check for new
-versions, what changed in them, and an install of exactly the commit that was reviewed.
+versions, what changed in them, and an install of exactly the commit that was reviewed. The app adds custom
+recipes: "Build a custom recipe…", and on each recipe "Copy to a custom recipe…" and, for one built on this site,
+"Edit recipe…". The window opens the builder (``builder.RecipeBuilder``) for each.
 
 The core decides what may be installed (``sources.check`` and ``sources.install``): only the curated sources and
 the site's own, only the recipe ids a source lists, never a changed copy of an installed version, never a minor
@@ -21,6 +23,9 @@ from .pages import Facts, Page, actions_row, button, heading, lines_label, set_l
 class RecipesPage(Page):
     check = Signal(str)                   # a source's id: what does it offer now?
     install = Signal(str, str)            # a source's id and the commit that was reviewed
+    build = Signal()                      # build a custom recipe from nothing
+    copy = Signal(str)                    # a recipe's id: build a custom recipe from a copy of it
+    edit = Signal(str)                    # a custom recipe's id: change it
 
     def __init__(self) -> None:
         super().__init__()
@@ -31,6 +36,9 @@ class RecipesPage(Page):
         self.box.addWidget(text("The file layouts vendors ask for, and where to get new ones.", "About recipes"))
         self.state = text(about="Recipes")
         self.box.addWidget(self.state)
+        self.notice = text(about="What just happened")
+        self.notice.hide()
+        self.box.addWidget(self.notice)
         self.box.addWidget(heading("Installed on this site", 1.15))
         self.installed = QWidget()
         self.installed_box = QVBoxLayout(self.installed)
@@ -40,6 +48,15 @@ class RecipesPage(Page):
         self.problems = lines_label("Recipe files with problems")
         self.box.addWidget(self.problems_title)
         self.box.addWidget(self.problems)
+        self.box.addWidget(heading("Build a custom recipe", 1.15))
+        self.build_about = text("If a vendor hasn't published a recipe, build one. You choose the files, their "
+                                "columns and formats. To start from an installed recipe, use its Copy to a custom "
+                                "recipe… button.", "About custom recipes")
+        self.box.addWidget(self.build_about)
+        self.build_button = button("&Build a custom recipe…", "Build a custom recipe")
+        self.build_button.clicked.connect(self.build.emit)
+        self.box.addLayout(actions_row(self.build_button))
+        self.recipe_buttons: dict[str, dict] = {}  # a recipe's id: its copy button, and edit for a custom one
         self.box.addWidget(heading("Get recipes from vendors", 1.15))
         self.get_about = text("Vendors publish their recipes on GitHub. FOLIO-Exchange downloads only from the "
                                 "sources listed here, shows you what would change and installs only what you "
@@ -75,8 +92,9 @@ class RecipesPage(Page):
         self.shown = shown
         clear(self.installed_box)
         clear(self.sources_box)
-        added: list[QWidget] = [self.state]
+        added: list[QWidget] = [self.state, self.notice]
         sources = data.get("sources") or []
+        self.recipe_buttons = {}
         for r in data.get("recipes") or []:
             facts = Facts()
             facts.show_rows(model.recipe_rows(r, sources))
@@ -85,12 +103,17 @@ class RecipesPage(Page):
             parts += [text(r["description"], f"About {r['id']}")] if r.get("description") else []
             for w in [*parts, facts]:
                 self.installed_box.addWidget(w)
-            added += [*parts, *facts.values.values()]
+            actions = self._recipe_actions(r)
+            row = QWidget()                         # a widget, so the next redraw deletes the buttons with it
+            row.setLayout(actions_row(*actions))
+            self.installed_box.addWidget(row)
+            added += [*parts, *facts.values.values(), *actions]
         if not data.get("recipes"):
-            none = text("None yet. Get one from a vendor below.", "Installed recipes")
+            none = text("None yet. Get one from a vendor below, or build one.", "Installed recipes")
             self.installed_box.addWidget(none)
             added.append(none)
-        added += [self.problems, self.get_about]           # the page's own, between the two lists
+        # the page's own, between the two lists
+        added += [self.problems, self.build_about, self.build_button, self.get_about]
         set_lines(self.problems, list(data.get("problems") or []), "")
         self.problems_title.setVisible(bool(data.get("problems")))
         self.problems.setVisible(bool(data.get("problems")))
@@ -116,6 +139,32 @@ class RecipesPage(Page):
             target.setFocus(Qt.FocusReason.OtherFocusReason)
             if isinstance(target, QLabel):
                 announce(target)
+
+    def _recipe_actions(self, r: dict) -> list[QWidget]:
+        """A recipe's buttons: Edit recipe… for one built on this site, and Copy to a custom recipe… for any."""
+        rid = r["id"]
+        out: list[QWidget] = []
+        self.recipe_buttons[rid] = {}
+        if r.get("custom"):
+            change = button("Edit recipe…", f"Edit recipe ({rid})")              # the label, then which recipe
+            change.clicked.connect(lambda _c=False, rid=rid: self.edit.emit(rid))
+            self.recipe_buttons[rid]["edit"] = change
+            out.append(change)
+        dup = button("Copy to a custom recipe…", f"Copy to a custom recipe ({rid})")
+        dup.clicked.connect(lambda _c=False, rid=rid: self.copy.emit(rid))
+        self.recipe_buttons[rid]["copy"] = dup
+        out.append(dup)
+        return out
+
+    def say(self, message: str | None) -> None:
+        """What a custom recipe's builder just did, or why it could not open. It is announced and takes the focus,
+        since the dialog that had it has closed."""
+        self.notice.setText(message or "")
+        self.notice.setVisible(bool(message))
+        if message:
+            if self.notice.isVisible():
+                self.notice.setFocus(Qt.FocusReason.OtherFocusReason)
+            announce(self.notice)
 
     def _source(self, s: dict) -> list[QWidget]:
         sid = s["id"]

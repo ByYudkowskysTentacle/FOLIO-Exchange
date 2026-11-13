@@ -2564,6 +2564,7 @@ function sourceTitle(id) {
 function fromText(from) {
   if (from === "bundled") return "comes with FOLIO-Exchange";
   if (from === "this site") return "added to this site by hand";
+  if (from === "custom") return "built on this site";
   return `downloaded from ${sourceTitle(from)}`;
 }
 

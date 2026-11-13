@@ -38,11 +38,12 @@ from test_setup import KEYS, SFTP_PASSWORD, _ed25519_openssh, keyring  # noqa: E
 from test_sources import SHA, FakeGitHub, newer  # noqa: E402
 
 from folio_exchange import client as client_mod  # noqa: E402
-from folio_exchange import delivery, runner, setupops, siteops, sources, views  # noqa: E402
+from folio_exchange import delivery, recipeops, runner, setupops, siteops, sources, views  # noqa: E402
 from folio_exchange.config import load_site, read_yaml  # noqa: E402
 from folio_exchange.desktop import forms, places  # noqa: E402
 from folio_exchange.desktop import options as options_module  # noqa: E402
 from folio_exchange.desktop.alerts import AlertsDialog  # noqa: E402
+from folio_exchange.desktop.builder import RecipeBuilder  # noqa: E402
 from folio_exchange.desktop.delivery import DeliveryDialog, LoginBox  # noqa: E402
 from folio_exchange.desktop.settings import SettingsDialog  # noqa: E402
 from folio_exchange.desktop.window import MainWindow  # noqa: E402
@@ -1113,6 +1114,12 @@ def test_alerts_are_set_up_with_their_secrets_in_credential_manager(qtbot, site,
 
 
 # ------------------------------------------------------------ the setup views, for keyboards and screen readers
+def recipe_builder(site, parent) -> RecipeBuilder:
+    """The recipe builder on a copy of chq-academic, so it shows a MARC file, a delimited file and their link."""
+    site_, library, feeds, _errors = views.load(site)
+    return RecipeBuilder(recipeops.builder_form(site_, library, feeds, copy_of="chq-academic"), None, parent)
+
+
 def mnemonics(widget) -> list[str]:
     """The letters of every mnemonic in ``widget``: its buttons' and its captions' (labels with a buddy)."""
     out = []
@@ -1128,7 +1135,7 @@ def test_the_setup_views_and_dialogs_are_named_and_their_keys_never_clash(qtbot,
     w = window(qtbot, site)
     st = {"version": "v", "delivery": {"transport": "none"}, "filters": {}, "checks": {}, "legacy": {}}
     dialogs = [SettingsDialog("chq", st, None, w), DeliveryDialog("chq", st, w),
-               AlertsDialog({"on": "failure", "keyring": True}, w)]
+               AlertsDialog({"on": "failure", "keyring": True}, w), recipe_builder(site, w)]
     for d in dialogs:
         qtbot.addWidget(d)
     for widget in [w.setup, w.connection, w.wizard, w.recipes, w.options, w.feed, w.home, *dialogs]:
@@ -1163,7 +1170,7 @@ def test_every_buttons_accessible_name_holds_its_label(qtbot, site, server_keys)
     dialogs = [SettingsDialog("chq", st, None, w), DeliveryDialog("chq", st, w),
                AlertsDialog({"on": "failure", "keyring": True}, w),
                ReleaseDialog({"feed": "chq", "files": [["a.txt", 1]], "items": 1, "bibs": 1}, w),
-               SitePicker(w), NewSiteDialog(w)]
+               SitePicker(w), NewSiteDialog(w), recipe_builder(site, w)]
     for d in dialogs:
         qtbot.addWidget(d)
     checked = 0
