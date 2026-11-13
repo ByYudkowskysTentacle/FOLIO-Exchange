@@ -16,11 +16,12 @@ import logging
 import os
 from pathlib import Path
 
-from .. import runner, setupops, siteops, sources, views
+from .. import recipeops, runner, setupops, siteops, sources, views
 from ..config import load_site
 from ..errors import ConfigError, FxError
 from . import model, places, startup
 from .alerts import AlertsDialog
+from .builder import RecipeBuilder
 from .delivery import DeliveryDialog
 from .options import task_command
 from .settings import SettingsDialog
@@ -30,7 +31,8 @@ log = logging.getLogger(__name__)
 # What a job of each kind reports to when it ends.
 SETUP_DONE = {"connect": "_connected", "add-feed": "_feed_added", "settings": "_settings_saved",
               "delivery": "_delivery_saved", "password": "_password_saved", "private-key": "_key_saved",
-              "recipe-install": "_recipes_installed", "alerts": "_alerts_saved", "test-alert": "_alert_tested"}
+              "recipe-install": "_recipes_installed", "recipe-save": "_recipe_saved", "alerts": "_alerts_saved",
+              "test-alert": "_alert_tested"}
 CONFLICT = ("changed since this form was opened", "changed while this was being saved")
 
 
@@ -99,6 +101,12 @@ class SetupActions:
         elif what == "recipe-check":
             if self.asked.get(("recipe-check", key[1])) == n:
                 self.recipes.checked(key[1], result, message)
+        elif what == "recipe-form":
+            if self.asked.get(("recipe-form",)) == n:
+                self._open_builder(result, message)
+        elif what == "recipe-review":
+            if self.asked.get(("recipe-review",)) == n and self.builder_dialog is not None:
+                self.builder_dialog.show_review(result, message)
         elif what == "rename":
             self._renamed(result, message)
         elif what == "register":
@@ -473,6 +481,102 @@ class SetupActions:
             return
         self.recipes.installed_now(sid, state.get("result") or {})
         self.wizard.recipes = None
+        self.read_recipes("page")
+
+    # ------------------------------------------------------------ custom recipes
+    def build_recipe(self, copy_of: str | None = None, edit: str | None = None) -> None:
+        """Open the recipe builder: blank, on a copy of an installed recipe, or on a custom recipe to change.
+        What it starts from is read off this thread, with the tenant's locations when they are not known yet."""
+        if self.builder_dialog is not None:
+            self.builder_dialog.raise_()
+            return
+        self.recipes.say("Opening the recipe builder…")
+        self._follow_page()
+        root = self.site_root
+        n = self._ask(("recipe-form",))
+        cached = self.choices if self.choices and "data" in self.choices else None
+
+        def look() -> dict:
+            site, library, feeds, _errors = views.load(root)
+            out = {"form": recipeops.builder_form(site, library, feeds, copy_of=copy_of, edit=edit),
+                   "choices": cached}
+            if cached is None:
+                try:
+                    out["choices"] = {"data": setupops.tenant_choices(site)}
+                except Exception as exc:  # noqa: BLE001 - without the lists, location codes are typed in
+                    out["choices"] = {"error": str(exc)}
+            return out
+
+        self.errands.run(("recipe-form", n), look)
+
+    def _open_builder(self, result: dict | None, message: str | None) -> None:
+        if message:
+            self.recipes.say(f"Couldn't open the recipe builder. {message}")
+            return
+        self.recipes.say(None)
+        if self.builder_dialog is not None or self.quitting:
+            return
+        if result.get("choices") and "data" in result["choices"]:
+            self.choices = result["choices"]
+        dialog = self.builder_dialog = RecipeBuilder(result["form"], result.get("choices"), self)
+        dialog.review.connect(self.review_recipe)
+        dialog.save.connect(self.save_recipe)
+        dialog.finished.connect(self._builder_closed)
+        dialog.open()
+
+    def _builder_closed(self, _code: int) -> None:
+        dialog, self.builder_dialog = self.builder_dialog, None
+        self._ask(("recipe-review",))                        # an answer still on its way has no dialog to go to
+        if dialog is not None:
+            dialog.deleteLater()
+
+    def review_recipe(self, draft: dict) -> None:
+        """Have the core check a draft and say what saving it would do. Nothing is saved."""
+        dialog = self.builder_dialog
+        if dialog is None:
+            return
+        editing, copied = dialog.editing, dialog.copied_from
+        self._follow_page()
+        root = self.site_root
+        n = self._ask(("recipe-review",))
+
+        def look() -> dict:
+            site, library, feeds, _errors = views.load(root)
+            return recipeops.review(site, library, feeds, draft, editing=editing, copied_from=copied)
+
+        self.errands.run(("recipe-review", n), look)
+
+    def save_recipe(self, draft: dict, version: str) -> None:
+        dialog = self.builder_dialog
+        if dialog is None:
+            return
+        editing, copied = dialog.editing, dialog.copied_from
+        self._follow_page()
+        root = self.site_root
+
+        def work() -> dict:
+            log.info("Saving the custom recipe %s", draft.get("recipe"))
+            site, library, feeds, _errors = views.load(root)
+            return recipeops.save_custom(site, library, feeds, draft, editing=editing, version=version or None,
+                                         copied_from=copied, via="app")
+
+        if self._setup_job("recipe-save", draft.get("recipe"), work, dialog.failed):
+            dialog.working(True)
+
+    def _recipe_saved(self, state: dict, rid: str) -> None:
+        dialog = self.builder_dialog
+        problem = self._failed(state)
+        if problem:
+            if dialog is None:
+                self.recipes.say(f"The recipe {rid} wasn't saved. {problem}")
+            else:
+                (dialog.conflict if any(c in problem for c in CONFLICT) else dialog.failed)(problem)
+            return
+        if dialog is not None:
+            dialog.working(False)
+            dialog.accept()
+        self.recipes.say(model.recipe_saved_words(state.get("result") or {}))
+        self.wizard.recipes = None                         # the wizard lists it from now on
         self.read_recipes("page")
 
     # ------------------------------------------------------------ options: the site folder

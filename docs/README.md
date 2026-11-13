@@ -38,6 +38,7 @@
 - **Site** – a folder that holds one FOLIO tenant's connection settings, its feeds, a local cache, run history and alerts.
 - **Feed** – one scheduled export to one vendor, set up from a recipe plus the library's own choices.
 - **Recipe** – a vendor's file layout, shared and versioned, such as `chq-academic@^1.0`. A recipe is declarative: it holds no code.
+- **Custom recipe** – a recipe a library builds for itself in the desktop app, from nothing or from a copy of an installed one, for a vendor that has published none. It stays on the site and can be changed there.
 - **Service** – a third-party platform the library sends data to, such as collectionHQ.
 - **Destination** – where a service receives the data: today an SFTP server, folder and account, or a local folder.
 - **Dry run** – a run that builds and checks files but sends nothing: a feed with no delivery set up yet, or `run --no-deliver`.

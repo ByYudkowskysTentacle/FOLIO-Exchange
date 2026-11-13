@@ -286,6 +286,40 @@ def test_a_recipe_sources_review_is_put_in_words():
     assert rows["Repository"] == "https://github.com/o/r" and rows["Last downloaded"] == "never"
     assert rows["Listed by"] == "this site's own settings"
     assert model.from_words("foliohq", [{"id": "foliohq", "title": "cHQ"}]) == "downloaded from cHQ"
+    assert model.from_words("custom", []) == "built on this site"
+
+
+def test_a_custom_recipes_review_and_save_are_put_in_words():
+    items = {"name": "items", "format": "delimited", "file_name": "{prefix}_items_{date}", "extension": "psv",
+             "delimiter": "|", "header": True, "empty_value": "", "date_format": "%Y-%m-%d",
+             "columns": [{"header": "Barcode", "field": "barcode"}]}
+    result = {"recipe": "acme-items", "title": "Acme – items", "vendor": "Acme", "file_prefix": "acme",
+              "outputs": [items], "link": None, "reads": ["instances", "holdings", "items"], "new": True,
+              "feeds": []}
+    assert model.recipe_review_lines(result) == [
+        "Acme – items · Acme · acme-items",
+        "items · acme_items_YYYYMMDD.psv. pipe |-separated · header yes · empty values “” · dates %Y-%m-%d. "
+        "1 column: Barcode.",
+        "Reads from FOLIO: instances, holdings, items. Patron data: none."]
+    assert model.recipe_review_note(result).startswith("Saving adds the recipe to this site and sends nothing.")
+    changed = {**result, "new": False, "feeds": [
+        {"name": "chq", "delivers": True, "changes": ["items file: delimiter changed from , to |"]},
+        {"name": "dry", "delivers": False, "changes": ["items file: delimiter changed from , to |"]},
+        {"name": "same", "delivers": True, "changes": []}]}
+    lines = model.recipe_review_lines(changed)
+    assert lines[-3] == ("chq uses this recipe. Its next delivery is held for your review because the layout "
+                         "changes: items file: delimiter changed from , to |.")
+    assert lines[-2] == "dry uses this recipe. Its files change: items file: delimiter changed from , to |."
+    assert lines[-1] == "same uses this recipe. Its files keep their layout."
+    assert model.recipe_review_note(changed) == "Saving changes the recipe for chq, dry, same from the next run."
+    assert model.recipe_review_note({"new": False, "feeds": []}) == "Saving changes the recipe. No feed uses it yet."
+    saved = {"recipe": "acme-items", "changed": True, "new": False, "feeds": ["chq", "same"], "held": []}
+    assert model.recipe_saved_words(saved) == "Saved acme-items. chq, same use it from the next run."
+    assert model.recipe_saved_words({**saved, "feeds": ["chq"]}) == "Saved acme-items. chq uses it from the next run."
+    assert model.recipe_saved_words({**saved, "held": ["chq"]}) == (
+        "Saved acme-items. The layout changed, so the next delivery of chq is held for your review.")
+    assert model.recipe_saved_words({**saved, "feeds": []}) == "Saved acme-items."
+    assert model.recipe_saved_words({"changed": False}) == "Nothing needed saving."
 
 
 def test_a_permission_check_names_what_is_missing():

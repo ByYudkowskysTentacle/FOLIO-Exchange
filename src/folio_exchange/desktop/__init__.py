@@ -103,6 +103,40 @@ def qt_problem() -> str | None:
     return None
 
 
+SPARE_REFERENCES = min(1 << 40, sys.maxsize >> 3)       # more than a window open for years gives away
+
+
+def spare_constants() -> bool:
+    """Keep None, True and False from being freed under Qt on Python 3.10 and 3.11. True when it did anything.
+
+    With PySide6 6.12.0 on those Pythons, a Qt call that returns nothing, or no object, gives back None, a
+    signal's ``emit`` and a ``disconnect`` that works give back True, and a ``disconnect`` that finds nothing
+    connected gives back False, all without counting the reference, and Python then lets go of one it never
+    had. Each call costs the object one reference. After some thousands of calls its count reaches zero, and
+    Python stops with "deallocating None", or frees True and aborts when it exits (measured on 13 Nov 2026 with
+    nothing but PySide6: ``QWidget.setVisible`` and ``Signal().emit()`` in a loop). Python 3.12 made these
+    objects immortal, so nothing is lost there, and this does nothing.
+
+    The remedy is to give each of the three so many references that the loss never matters. CPython keeps an
+    object's count in its first field. It is changed only when that field reads as ``sys.getrefcount`` says it
+    should, so on a Python laid out another way nothing is touched. Doing it twice adds nothing."""
+    if sys.version_info >= (3, 12) or sys.implementation.name != "cpython":
+        return False
+    import ctypes
+
+    done = False
+    for constant in (None, True, False):
+        count = ctypes.c_ssize_t.from_address(id(constant))
+        now = count.value
+        if now >= SPARE_REFERENCES // 2:
+            continue                                   # done before
+        if abs(sys.getrefcount(constant) - now) > 4096:
+            continue                                   # not the count: leave this Python alone
+        count.value = now + SPARE_REFERENCES
+        done = True
+    return done
+
+
 def main(argv: list[str] | None = None) -> int:
     console = safe_streams()
     try:
@@ -110,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     except _Usage as exc:
         tell(str(exc), console)
         return 1
+    spare_constants()                                  # before the first Qt call (see its note)
     problem = qt_problem()
     if problem:
         tell(problem, console)

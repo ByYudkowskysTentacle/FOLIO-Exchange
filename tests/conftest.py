@@ -33,6 +33,14 @@ QT_LOADS = QT_PROBLEM is None
 require_qt_if_asked(QT_PROBLEM)
 pytest_plugins = ["pytestqt.plugin"] if QT_LOADS else []
 
+if QT_LOADS:
+    # As the app does when it starts: on Python 3.10 and 3.11 PySide6 gives None and True back uncounted, and a run
+    # that makes enough Qt calls ends with Python aborting at exit, after every test has passed. Regression: CI's
+    # Python 3.10 job did, once the recipe builder's tests were added.
+    from folio_exchange.desktop import spare_constants
+
+    spare_constants()
+
 
 @pytest.fixture(autouse=True)
 def qt_garbage_on_the_main_thread(request):

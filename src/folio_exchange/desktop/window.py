@@ -106,7 +106,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.renaming_started = False
         self.registering = False                                 # a console registers the scheduled task
         self.start_console = start_console                       # how that console is started (tests replace it)
-        self.settings_dialog = self.delivery_dialog = self.alerts_dialog = None
+        self.settings_dialog = self.delivery_dialog = self.alerts_dialog = self.builder_dialog = None
         self.shown_key: str | None = None
         self.closing_after_job = False
         self.quitting = False
@@ -212,6 +212,9 @@ class MainWindow(QMainWindow, SetupActions):
         self.recipes = RecipesPage()
         self.recipes.check.connect(self.check_source)
         self.recipes.install.connect(self.install_recipes)
+        self.recipes.build.connect(lambda: self.build_recipe())
+        self.recipes.copy.connect(lambda rid: self.build_recipe(copy_of=rid))
+        self.recipes.edit.connect(lambda rid: self.build_recipe(edit=rid))
         self.options = OptionsPage()
         self.options.rename.connect(self.rename_site)
         self.options.register.connect(self.register_task)
