@@ -152,8 +152,8 @@ def is_due(
     s: Schedule, now: datetime, tz: ZoneInfo | None, runs: list[dict], max_attempts: int,
     created: datetime | None,
 ) -> bool:
-    """True when the latest slot has passed and no run since has settled it, and fewer than ``max_attempts``
-    scheduled runs have started since it (failed runs are retried).
+    """True when the latest slot has passed and no run since has settled it, the slot has attempts left
+    (``out_of_attempts``: failed runs are retried) and the wait after the last of them (``next_retry``) is over.
 
     ``runs`` are the feed's runs started at or after the slot. ``created`` is when the site first saw the
     feed: slots before it are never due (None: no such rule)."""
@@ -162,12 +162,46 @@ def is_due(
         return False
     since = [r for r in runs if _started(r) is not None and _started(r) >= slot]
     scheduled = [r for r in since if r.get("trigger") == "schedule"]
-    if any((r.get("report") or {}).get("no_retry") for r in scheduled):
-        return False                         # FOLIO refused the login: retrying could lock the account
+    if out_of_attempts(scheduled, max_attempts, next_slot(s, now, tz)):
+        return False
     if any(r.get("status") in SETTLED for r in scheduled) or any(r.get("status") == "success" and
                                                                   r.get("trigger") != "preview" for r in since):
         return False
-    return len(scheduled) < max(1, max_attempts)
+    return not scheduled or now >= next_retry(scheduled)
+
+
+# The wait before each retry of a failed scheduled run, in clock hours: after the 1st attempt, the 2nd, the 3rd,
+# and every later one. Doubling spreads the attempts a slot allows over most of a day (6 attempts: about 23
+# hours), so an outage of a few hours, such as a hosted FOLIO's weekend maintenance, no longer spends them all.
+RETRY_GAPS = (1, 2, 4, 8)
+# Gaps count from the clock hour in which the last attempt started, less this slack, so a retry one hour on comes
+# at the next hourly start (minute 7) however long the attempt's sync took before its run was recorded.
+RETRY_SLACK = timedelta(minutes=10)
+# How often the scheduled task starts. A retry allowed less than this before the next slot may find no start in
+# time, so the slot is given up after the attempt before it: the given-up alert is never lost to the next slot.
+PASS_EVERY = timedelta(hours=1)
+
+
+def retry_gap(attempts: int) -> timedelta:
+    """The wait, in whole hours, before the attempt after ``attempts`` scheduled ones."""
+    return timedelta(hours=RETRY_GAPS[min(max(attempts, 1), len(RETRY_GAPS)) - 1])
+
+
+def next_retry(scheduled: list[dict]) -> datetime:
+    """When the next scheduled attempt of a slot may start: ``retry_gap`` counted from the clock hour of the last
+    attempt's start, less RETRY_SLACK. A run is recorded when its sync ends, which can be many minutes after
+    the hourly start, so counting from that minute would push each retry an hour later than meant."""
+    last = max(_started(r) for r in scheduled)
+    return last.replace(minute=0, second=0, microsecond=0) + retry_gap(len(scheduled)) - RETRY_SLACK
+
+
+def out_of_attempts(scheduled: list[dict], max_attempts: int, next_slot_at: datetime | None = None) -> bool:
+    """Whether a slot's scheduled runs have used up its attempts: as many as allowed, one ended with a login the
+    server refused (``no_retry``: retrying could lock the account), or (given the next slot) no hourly start is
+    left for another attempt before it."""
+    if len(scheduled) >= max(1, max_attempts) or any((r.get("report") or {}).get("no_retry") for r in scheduled):
+        return True
+    return bool(scheduled) and next_slot_at is not None and next_retry(scheduled) + PASS_EVERY > next_slot_at
 
 
 # ------------------------------------------------------------- OS scheduler

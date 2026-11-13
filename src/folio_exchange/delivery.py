@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import credentials
-from .errors import ConfigError, DeliveryError, FxError
+from .errors import ConfigError, DeliveryError, DeliveryLoginRefused, FxError
 
 log = logging.getLogger(__name__)
 
@@ -412,6 +412,11 @@ def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]:
     except FxError:
         raise
     except Exception as exc:  # noqa: BLE001 - paramiko, sockets and file systems raise many types
+        if not touched and login_refused(exc):
+            raise DeliveryLoginRefused(
+                f"Delivery failed. {plain_error(exc, delivery)} No file was put in place at the destination. Once "
+                f"it's fixed, run `folio-exchange run {feed_name}`. Scheduled runs don't try again until the next "
+                "slot, so the vendor's server doesn't lock the account.") from exc
         reason = f"{type(exc).__name__}: {str(exc)[:200]}"
         again = (f"Fix the problem, then run `folio-exchange run {feed_name}` (a scheduled run also tries again "
                  "on its own).")
@@ -426,6 +431,14 @@ def deliver(files: list[Path], delivery: dict, feed_name: str) -> list[str]:
             f"Delivery stopped part way ({reason}). Files already at the vendor: {done}; {touched[-1]} may be "
             f"incomplete, so the vendor may hold a mixed or partial set. {again}", sent,
         ) from exc
+
+
+def login_refused(exc: BaseException) -> bool:
+    """Whether the SFTP server turned the login down (a wrong password or key, or a key that needs its
+    passphrase), as against a network or server problem that a later try may get past."""
+    import paramiko
+
+    return isinstance(exc, paramiko.AuthenticationException)
 
 
 def destination_key(d: dict) -> str:

@@ -262,7 +262,7 @@ class FolioClient:
             raise FolioUnreachable(
                 f"FOLIO's login service did not answer as expected (/authn/login-with-expiry returned HTTP {first}"
                 f"{also}), so the password was not checked. FOLIO may be part way through an upgrade or restart: "
-                "run again later (a scheduled run tries again at its next hourly start). If it continues, check "
+                "run again later (a scheduled run tries again on its own, an hour later at first). If it continues, check "
                 "folio.base_url in site.yaml and ask your FOLIO host.", status=first)
         if not resp.ok or not self._token:
             where = " from /authn/login; /authn/login-with-expiry returned HTTP 404" if first == 404 else ""

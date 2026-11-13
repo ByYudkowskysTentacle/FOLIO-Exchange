@@ -24,6 +24,7 @@
 - [Spec sheet](spec.md) – goals, who it's for, the feeds it aims to cover, requirements, safety rules and roadmap. It's a snapshot of a working copy; the working notes have the current status.
 - [Working notes](notes.md) – where things stand, the decisions so far and why, and what's been learned about FOLIO and collectionHQ.
 - [Desktop app plan](desktop-plan.md) – why and how a Windows app replaces the browser page, in phases D1 to D8.
+- [In-app updates plan](updates-plan.md) – how the app will tell a library that a new version is out and install it after a yes, in phases U0 to U3 (D7 of the desktop plan).
 - [Services and destinations plan](services-plan.md) – a proposal, not started, to make the services a library sends data to, and the places they receive it, objects of their own, in phases S1 to S5.
 - [Improvement plan](improvement-plan.md) – the work planned after the October 2026 review, in batches, with what's done.
 
@@ -55,4 +56,5 @@
 - **Flower release** – FOLIO's named releases (Sunflower, Trillium and so on), about two a year.
 - **Phases and gates** – the roadmap in the [spec sheet](spec.md#roadmap). Gate 1 is collectionHQ accepting a library's first delivery; gate 2 is a second vendor's recipe that needs no core code change.
 - **The pilot library** – the first library setting up FOLIO-Exchange. It isn't named in these docs.
-- **Batches 1 to 5, D1 to D8** – work packages in the [improvement plan](improvement-plan.md), and the desktop app's phases in its [plan](desktop-plan.md).
+- **Batches 1 to 5, D1 to D8, U0 to U3** – work packages in the [improvement plan](improvement-plan.md), the desktop app's phases in its [plan](desktop-plan.md), and the in-app updates' phases in [theirs](updates-plan.md).
+- **The tray** – the FOLIO-Exchange icon in the Windows taskbar's notification area. It shows each watched site's feeds and tells you when a scheduled run is held, blocked or fails, with no window open.

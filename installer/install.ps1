@@ -516,7 +516,7 @@ function Select-SiteName([string]$Root) {
 # ---------------------------------------------------------------- other checks
 
 function Get-RunningCopies([string]$Folder) {
-    # FOLIO-Exchange processes started from this program folder: the page, or a scheduled run.
+    # FOLIO-Exchange processes started from this program folder: the page, the app, the tray, or a scheduled run.
     $prefix = $Folder.TrimEnd('\') + '\'
     foreach ($process in @(Get-Process -Name 'folio-exchange', 'python', 'pythonw' -ErrorAction SilentlyContinue)) {
         $file = $null
@@ -686,7 +686,7 @@ try {
 
     $running = @(Get-RunningCopies $venv)
     if ($running.Count -gt 0) {
-        Write-Warn 'FOLIO-Exchange is running from this folder right now: the page, or a scheduled run. Updating it while it runs can fail.'
+        Write-Warn 'FOLIO-Exchange is running from this folder right now: the page, the desktop app, the tray, or a scheduled run. Updating it while it runs can fail.'
         Write-Text 'Close the black window that keeps the page open, and wait for any run to finish. Then continue.'
         if (-not (Read-YesNo 'Continue with the update now?' $false)) {
             Stop-Install 'Run the installer again once FOLIO-Exchange has stopped.'

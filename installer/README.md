@@ -63,11 +63,11 @@ Exit codes: `0` when everything is done; `1` when the installer stopped; `2` whe
 
 Run the installer again and give the same install folder and site name. It replaces the program in `<install folder>\program` and keeps everything else: the site's settings, feeds, run history and cache, the passwords in Credential Manager, and the scheduled task, which still points at the same program.
 
-Close the page's black window first, and choose a time when no run is due. If FOLIO-Exchange is still running from that folder, the installer says so and asks before it goes on.
+Close the page's black window and the desktop app first, quit the tray (right-click the FOLIO-Exchange icon in the taskbar's notification area, then **Quit the tray**), and choose a time when no run is due. If FOLIO-Exchange is still running from that folder, the installer says so and asks before it goes on.
 
 ## Uninstall
 
-1. Close the page's black window, if it is open.
+1. Close the page's black window and the desktop app, if they are open, and quit the tray (right-click its icon, then **Quit the tray**). If the tray starts when you sign in, first untick **Start the tray when I sign in to Windows** under Options in the app.
 2. If scheduled runs were set up, remove the task, in PowerShell or Command Prompt, with your site's name in place of `mylibrary`:
 
    ```
@@ -76,7 +76,8 @@ Close the page's black window first, and choose a time when no run is due. If FO
 
 3. Delete the launcher, `FOLIO-Exchange (<name>).cmd`, from your desktop.
 4. Delete the install folder, by default `%LOCALAPPDATA%\FOLIO-Exchange`. This also deletes the site: its settings, run history, cache and the files built for vendors. Copy anything you want to keep first.
-5. Remove the saved passwords: open **Credential Manager** from the Start menu, choose **Windows Credentials**, and remove each entry whose name contains `folio-exchange/` (some start with a user name, such as `fx_reader@mytenant@folio-exchange/folio`).
+5. Delete the app's own folders: `%APPDATA%\FOLIO-Exchange` (its preferences and recent sites) and, if the install folder was elsewhere, `%LOCALAPPDATA%\FOLIO-Exchange\.app` (the tray's list of sites and its log).
+6. Remove the saved passwords: open **Credential Manager** from the Start menu, choose **Windows Credentials**, and remove each entry whose name contains `folio-exchange/` (some start with a user name, such as `fx_reader@mytenant@folio-exchange/folio`).
 
 Python stays installed; remove it in **Settings > Apps** if nothing else needs it.
 

@@ -59,6 +59,9 @@ def _parser(console: bool = True) -> argparse.ArgumentParser:
     p = _Parser(prog="folio-exchange-app", description="The FOLIO-Exchange desktop app.")
     p.console = console
     p.add_argument("-s", "--site", help=f"the site folder (default: {SITE_ENV}, or choose one in a window)")
+    p.add_argument("--tray", action="store_true",
+                   help="show the tray icon and notifications for the sites you watch, with no window "
+                        "(with --site, watch that site too)")
     p.add_argument("-v", "--verbose", action="store_true", help="write more detail to the log")
     return p
 
@@ -111,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     if problem:
         tell(problem, console)
         return 1
+    if args.tray:
+        from .tray import run_tray
+
+        return run_tray(args.site, verbose=args.verbose, console=console)
     from .app import run
 
     return run(args.site or os.environ.get(SITE_ENV), verbose=args.verbose, console=console)

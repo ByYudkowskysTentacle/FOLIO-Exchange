@@ -28,7 +28,7 @@ paths: {data: data, out: out, logs: logs, feeds: feeds, recipes: [recipes]}
 runs:
   keep_local_runs: 5                         # run folders kept per feed, 0 = all (runs waiting for release and the last delivery stay)
   history_months: 12
-  max_attempts_per_slot: 3                   # scheduled tries per slot, the first included; a failed run is tried again the next hour
+  max_attempts_per_slot: 6                   # scheduled tries per slot, the first included; retried after 1, 2, 4, then every 8 hours
   timezone: null                             # schedules use this zone; null = this computer's time
 
 alerts:

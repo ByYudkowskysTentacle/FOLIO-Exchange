@@ -1,4 +1,5 @@
-"""Options: the site folder (and renaming it), the scheduled task that starts runs every hour, and the alerts.
+"""Options: the site folder (and renaming it), the scheduled task that starts runs every hour, the alerts, and the
+tray (whether it watches this site, and whether it starts when the person signs in to Windows).
 
 Renaming works as on the page: the core (``siteops.rename_site``) refuses while a run holds the site, when a
 setting names the folder by its full path, or when the name is taken, and says what is left to do. The window
@@ -17,7 +18,7 @@ import sysconfig
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QFormLayout
+from PySide6.QtWidgets import QCheckBox, QFormLayout
 
 from .. import schedule, siteops
 from ..launcher import program_path
@@ -31,6 +32,10 @@ RENAME_ABOUT = ("The folder's name is the site's name. It shows at the top of th
 REGISTER_ABOUT = ("A console window opens and asks for your Windows password, so the task can run when nobody is "
                   "signed in. Type it only in that window. FOLIO-Exchange never sees it. The task starts at 7 minutes "
                   "past every hour, even on battery, and runs the feeds that are due.")
+TRAY_ABOUT = ("The FOLIO-Exchange icon in the taskbar's notification area shows each feed's state. It tells you when a "
+              "scheduled run fails or is held for review, even when this window is closed.")
+STARTUP_OTHER = ("When you sign in, Windows starts the tray from another copy of FOLIO-Exchange. Turn this off and on "
+                 "again to use this copy.")
 
 
 def task_command(site_root: Path) -> tuple[str, list[str], str]:
@@ -69,6 +74,8 @@ class OptionsPage(Page):
     register = Signal()
     change_alerts = Signal()
     test_alert = Signal()
+    watch = Signal(bool)
+    startup = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__()
@@ -77,7 +84,7 @@ class OptionsPage(Page):
         self.idle = True
         self.busy = {"rename": False, "register": False, "test": False}
         self.box.addWidget(heading("Options"))
-        self.box.addWidget(text("The site folder, scheduled runs and alerts.", "About options"))
+        self.box.addWidget(text("The site folder, scheduled runs, alerts and the tray.", "About options"))
 
         self.box.addWidget(heading("Rename the site folder", 1.15))
         self.done = text(about="Renamed")
@@ -118,7 +125,6 @@ class OptionsPage(Page):
         self.box.addWidget(self.register_result)
         self.cron = text(about="The line to add with crontab -e")
         self.box.addWidget(self.cron)
-        self.set_platform(self.windows)
 
         self.box.addWidget(heading("Alerts", 1.15))
         self.box.addWidget(text("Who hears about a run that failed, was blocked or is waiting for review, by email or "
@@ -137,10 +143,28 @@ class OptionsPage(Page):
         self.test_result.hide()
         self.box.addWidget(self.test_result)
 
+        self.box.addWidget(heading("Tray and notifications", 1.15))
+        self.box.addWidget(text(TRAY_ABOUT, "About the tray"))
+        self.watch_box = QCheckBox("&Watch this site from the tray")
+        self.watch_box.setAccessibleName("Watch this site from the tray")
+        self.watch_box.clicked.connect(lambda *_: self.watch.emit(self.watch_box.isChecked()))
+        self.box.addWidget(self.watch_box)
+        self.startup_box = QCheckBox("Start the tray when I sign &in to Windows")
+        self.startup_box.setAccessibleName("Start the tray when I sign in to Windows")
+        self.startup_box.clicked.connect(lambda *_: self.startup.emit(self.startup_box.isChecked()))
+        self.box.addWidget(self.startup_box)
+        self.startup_note = text(about="Starting the tray")
+        self.startup_note.hide()
+        self.box.addWidget(self.startup_note)
+        self.tray_result = text(about="Tray settings")
+        self.tray_result.hide()
+        self.box.addWidget(self.tray_result)
+        self.set_platform(self.windows)
+
     def set_platform(self, windows: bool) -> None:
         """Task Scheduler on Windows; elsewhere the crontab line to add (tests choose either)."""
         self.windows = windows
-        for w in (self.register_button, self.register_about, self.registered):
+        for w in (self.register_button, self.register_about, self.registered, self.startup_box):
             w.setVisible(windows)
         self.cron.setVisible(not windows)
         if not windows and self.site.get("root"):
@@ -246,6 +270,19 @@ class OptionsPage(Page):
         self.test_result.setText(message or ("Sending a test alert…" if busy else ""))
         self.test_result.setVisible(bool(self.test_result.text()))
         self._enable()
+
+    # ------------------------------------------------------------ the tray
+    def show_tray(self, watched: bool, startup: str | None) -> None:
+        """Whether the tray watches this site (places.is_watched), and the Startup entry's state
+        (startup.startup_state: "on", "other", "off", or None off Windows or when it can't be read)."""
+        self.watch_box.setChecked(watched)
+        self.startup_box.setChecked(startup in ("on", "other"))
+        self.startup_note.setText(STARTUP_OTHER if startup == "other" else "")
+        self.startup_note.setVisible(self.windows and startup == "other")
+
+    def tray_said(self, message: str | None) -> None:
+        self.tray_result.setText(message or "")
+        self.tray_result.setVisible(bool(message))
 
     def set_idle(self, idle: bool) -> None:
         self.idle = idle

@@ -12,6 +12,14 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from .errors import NewerCache
+
+# cache.sqlite's format (SQLite's user_version). Raise it for a change the version before can't read correctly;
+# that version then refuses the cache (NewerCache), as it refuses a newer history, rather than move it aside: with
+# two versions on one site (a scheduled task left on an older program), each would otherwise rebuild the other's
+# cache, a full download every hour. A file from before format numbers reads as 0 and is stamped when opened.
+FORMAT = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS refdata (kind TEXT, id TEXT, data TEXT, PRIMARY KEY (kind, id));
@@ -47,11 +55,19 @@ class Cache:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path)
         try:
+            found = self.db.execute("PRAGMA user_version").fetchone()[0]    # before anything writes to the file
+            if found > FORMAT:
+                raise NewerCache(f"The local cache ({self.path}) was written by a newer version of FOLIO-Exchange "
+                                 f"(its format is {found}; this version reads up to {FORMAT}), so this version "
+                                 "won't use it. Install the newer version again, or rename the file so this "
+                                 "version downloads everything from FOLIO again.")
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")
             self.db.executescript(SCHEMA)
+            if found < FORMAT:
+                self.db.execute(f"PRAGMA user_version = {FORMAT}")
             self.db.commit()
-        except sqlite3.DatabaseError:
+        except (sqlite3.DatabaseError, NewerCache):
             self.db.close()                    # let the caller move a damaged file aside (Windows locks open files)
             raise
 

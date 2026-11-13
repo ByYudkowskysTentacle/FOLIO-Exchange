@@ -19,7 +19,7 @@ from pathlib import Path
 from . import credentials, delivery, feedops, notify, reads, runner, schedule, siteops, version_text
 from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
-from .errors import ConfigError, FxError, LockBusy, RecipeError
+from .errors import ConfigError, FxError, LockBusy, RecipeError, damaged_database
 from .fields import FIELDS
 from .history import History, not_sent
 from .logsetup import setup_logging
@@ -309,8 +309,8 @@ def cmd_run(args) -> int:
     try:
         with History(site.history_path) as hist:
             feedops.record_due_start(hist, started)
-    except sqlite3.Error as exc:
-        log.warning("Could not record the start of this scheduled pass: %s", exc)
+    except (sqlite3.Error, FxError) as exc:    # FxError: a damaged history, or one from a newer version; the
+        log.warning("Could not record the start of this scheduled pass: %s", exc)   # pass below fails and alerts
     # The heartbeat goes at the start of the pass as well as the end, so a monitor hears from a long pass (a
     # first full sync can take hours) as soon as it starts; its period must still allow for the longest pass.
     notify.heartbeat(site.alerts, site.name)
@@ -1136,6 +1136,12 @@ def main(argv: list[str] | None = None) -> int:
         log.error("%s: %s", type(exc).__name__, exc)
         return 1
     except sqlite3.Error as exc:
+        if damaged_database(exc):
+            log.error("A file in the site's data folder is damaged (%s: %s). A damaged cache is moved aside by the "
+                      "next run, which downloads everything again. If it is data/history.sqlite, restore it from a "
+                      "backup, or rename it and run again: a new history starts, and the next delivery of each "
+                      "feed is held for your review.", type(exc).__name__, exc)
+            return 1
         log.error("A file in the site's data folder could not be read or written (%s: %s). Check that its drive "
                   "has free space and that no other program (a backup or an antivirus scan) holds it open, then "
                   "run again.", type(exc).__name__, exc)

@@ -45,6 +45,8 @@ def name_problem(name: str) -> str | None:
         return 'A folder name cannot contain < > : " / \\ | ? * or control characters.'
     if name != name.strip() or name.endswith("."):
         return "A folder name cannot start or end with a space, or end with a full stop."
+    if name.startswith("."):
+        return "A folder name can't start with a period. FOLIO-Exchange keeps those names for its own folders."
     if name in (".", "..") or name.split(".")[0].upper() in RESERVED:
         return f"Windows keeps {name!r} for itself; choose another name."
     if any(c in name for c in "%^!&"):
@@ -236,6 +238,9 @@ def rename_site(root: Path, name: str, *, via: str, desktop: Path | None = None,
     made = _carry_launcher(root, new, desktop if desktop is not None else launcher.desktop())
     if made:
         notes.append(f"The launcher on the desktop now opens the new folder: {made}.")
+    from .desktop import places  # no Qt: the tray's list of sites, so the tray follows the folder
+
+    places.rename_watched(root, new)
     task = None
     if platform.system() == "Windows" and _task_exists(old_task, run or subprocess.run):
         exe = launcher.program_path()

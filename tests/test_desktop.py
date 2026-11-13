@@ -19,7 +19,7 @@ from sitekit import make_feed  # noqa: E402
 
 from folio_exchange import siteops, views  # noqa: E402
 from folio_exchange.desktop import app as desktop_app  # noqa: E402
-from folio_exchange.desktop import model, pages, places, single  # noqa: E402
+from folio_exchange.desktop import model, pages, places, single, startup  # noqa: E402
 from folio_exchange.desktop import picker as picker_module  # noqa: E402
 from folio_exchange.desktop import window as window_module  # noqa: E402
 from folio_exchange.desktop.feed import FeedPage  # noqa: E402
@@ -406,7 +406,7 @@ def test_another_site_never_starts_from_the_current_folder(tmp_path, monkeypatch
     exe, args, folder = app_command(other)
     assert args[-2:] == ["--site", str(other)] and Path(folder) == Path(sys.executable).parent
     assert "-m" not in args or "-P" in args
-    monkeypatch.setattr(window_module.sysconfig, "get_path", lambda _name: str(tmp_path))   # no app script
+    monkeypatch.setattr(startup.sysconfig, "get_path", lambda _name: str(tmp_path))         # no app script
     exe, args, folder = app_command(other)
     assert args == [*(["-P"] if sys.version_info >= (3, 11) else []), "-m", "folio_exchange.desktop",
                     "--site", str(other)]
