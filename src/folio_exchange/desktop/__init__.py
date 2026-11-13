@@ -109,9 +109,10 @@ SPARE_REFERENCES = min(1 << 40, sys.maxsize >> 3)       # more than a window ope
 def spare_constants() -> bool:
     """Keep None, True and False from being freed under Qt on Python 3.10 and 3.11. True when it did anything.
 
-    With PySide6 6.12.0 on those Pythons, a Qt call that returns nothing, or no object, gives back None, and a
-    signal's ``emit``, ``connect`` and ``disconnect`` give back True or False, without counting the reference,
-    and Python then lets go of one it never had. Each call costs the object one reference. After some thousands of calls its count reaches zero, and
+    With PySide6 6.12.0 on those Pythons, a Qt call that returns nothing, or no object, gives back None, a
+    signal's ``emit`` and a ``disconnect`` that works give back True, and a ``disconnect`` that finds nothing
+    connected gives back False, all without counting the reference, and Python then lets go of one it never
+    had. Each call costs the object one reference. After some thousands of calls its count reaches zero, and
     Python stops with "deallocating None", or frees True and aborts when it exits (measured on 13 Nov 2026 with
     nothing but PySide6: ``QWidget.setVisible`` and ``Signal().emit()`` in a loop). Python 3.12 made these
     objects immortal, so nothing is lost there, and this does nothing.

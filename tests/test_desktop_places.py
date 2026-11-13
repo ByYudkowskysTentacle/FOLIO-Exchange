@@ -371,7 +371,8 @@ def test_none_true_and_false_get_spare_references_on_pythons_that_count_them():
 def test_qt_calls_by_the_thousand_never_free_none_or_true():
     """Regression: CI's Python 3.10 job passed every test, then Python aborted as it exited ("munmap_chunk():
     invalid pointer"). With PySide6 6.12.0 on Python 3.10 and 3.11, a Qt call that returns nothing or no object
-    costs None a reference, and a signal's emit, connect and disconnect cost True or False one. The recipe
+    costs None a reference, a signal's emit or a disconnect that works costs True one, and a disconnect that
+    finds nothing connected costs False one (connect costs nothing). The recipe
     builder's tests made enough of them for True to be freed. The app, which makes such calls for as long as it
     is open, would have stopped the same way. The loop makes each kind of losing call."""
     done = _in_a_python_of_its_own(
