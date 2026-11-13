@@ -233,6 +233,9 @@ class FeedPage(Page):
         self.server_key = lines_label("The server's key, as read when the delivery was saved")
         self.server_key.hide()
         box.addWidget(self.server_key)
+        self.key_about = theme.role(text(model.SERVER_KEY_ABOUT, "About the server key"), "help")
+        self.key_about.hide()
+        box.addWidget(self.key_about)
         self.change_button = button("&Change delivery…", "Change delivery")
         self.change_button.clicked.connect(lambda: self.change_delivery.emit(self.name))
         self.test_button = button("&Test delivery", "Test delivery without sending")
@@ -426,6 +429,7 @@ class FeedPage(Page):
         self.test_button.setVisible(transport != "none")
         self.change_button.setVisible(not st.get("error"))
         self.login.setVisible(transport == "sftp" and not st.get("error"))
+        self.key_about.setVisible(transport == "sftp")
         if transport == "sftp":
             self.login.show_login(self.name, dl, self.keyring)
         self._show_server_key()
