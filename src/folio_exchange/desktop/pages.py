@@ -12,6 +12,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import model, theme
+from .theme import DIVIDER_ROOM
 
 
 def _esc(text: object) -> str:
@@ -126,6 +128,15 @@ def fill_table(t: QTableWidget, rows: list[list[str]], keys: list[object] | None
 def row_key(t: QTableWidget, row: int) -> object:
     item = t.item(row, 0)
     return item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+
+
+def divider() -> QFrame:
+    """A line across the page below a section, with room above and below it. Decoration: the headings name the
+    sections, so it has no accessible name and takes no focus."""
+    line = QFrame()
+    line.setObjectName("divider")
+    line.setFixedHeight(DIVIDER_ROOM * 2 + 1)      # the stylesheet's margin leaves the 1px line in the middle
+    return line
 
 
 def actions_row(*widgets: QWidget) -> QHBoxLayout:
