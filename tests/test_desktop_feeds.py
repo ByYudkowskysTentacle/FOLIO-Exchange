@@ -19,6 +19,7 @@ from sitekit import make_feed  # noqa: E402
 from folio_exchange import client as client_mod  # noqa: E402
 from folio_exchange import views  # noqa: E402
 from folio_exchange.config import load_site  # noqa: E402
+from folio_exchange.desktop import model  # noqa: E402
 from folio_exchange.desktop import window as window_module  # noqa: E402
 from folio_exchange.desktop.activity import ActivityPage  # noqa: E402
 from folio_exchange.desktop.pages import HomePage  # noqa: E402
@@ -125,6 +126,7 @@ def test_a_feed_with_nowhere_to_send_is_a_dry_run(qtbot, site):
             in page.notices.text())
     assert page.where.values["Sends to"].text().startswith("Nowhere yet")
     assert not shown(page.test_button)
+    assert not shown(page.key_about)                     # the server key note is for SFTP only
 
 
 def test_an_sftp_delivery_shows_where_the_password_comes_from_never_the_password(qtbot, site, monkeypatch):
@@ -149,6 +151,10 @@ def test_an_sftp_delivery_shows_where_the_password_comes_from_never_the_password
     # Regression (D2): both texts sent people to a Change delivery button the app did not have; D3 brings it.
     assert page.where.values["Server key"].text().endswith("Use Change delivery… to enter the vendor's fingerprint.")
     assert shown(page.change_button)
+    # what the server key is, for library staff: it's checked before the password or files go, and isn't secret
+    assert shown(page.key_about) and page.key_about.text() == model.SERVER_KEY_ABOUT
+    assert "before the password or any files are sent" in page.key_about.text()
+    assert "isn't secret" in page.key_about.text()
     # an unconfirmed key no longer stops sending, so pausing says nothing about it
     assert shown(page.paused_text) and "nothing is sent" not in page.paused_text.text()
 
