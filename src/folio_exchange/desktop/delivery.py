@@ -57,7 +57,11 @@ class DeliveryDialog(QDialog):
         self.name = name
         self.saving = False
         self.setWindowTitle(f"FOLIO-Exchange – delivery for {name}")
-        self.resize(640, 560)
+        # Tall enough for the SFTP fields' help and the server key note to wrap in full (at 560 the help was cut to
+        # one line each), but never taller than the screen.
+        screen = self.screen()
+        room = screen.availableGeometry().height() - 60 if screen is not None else 720
+        self.resize(640, max(560, min(720, room)))
         box = QVBoxLayout(self)
         box.addWidget(heading("Change delivery", 1.3))
         box.addWidget(note("Where should the files go?", "Where the files go"))
@@ -87,6 +91,7 @@ class DeliveryDialog(QDialog):
                       "the folder you start in after logging in.")
         self.fp_caption = self.rows.add("Server &key fingerprint from the vendor:", self.fingerprint, "Ask the "
                                         "vendor for it.")
+        form.addRow(theme.role(note(model.SERVER_KEY_ABOUT, "About the server key"), "help"))
         box.addWidget(self.sftp_box)
         self.local_box = QWidget()
         lform = QFormLayout(self.local_box)
