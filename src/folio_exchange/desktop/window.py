@@ -33,10 +33,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import updates, version_text, views
+from .. import selfupdate, updates, version_text, views
 from ..errors import FxError
 from ..jobs import Job, Jobs
-from . import model, places, startup, theme
+from . import model, places, startup, theme, updating
 from .actions import SETUP_DONE, SetupActions
 from .activity import ActivityPage
 from .feed import FeedPage
@@ -119,6 +119,9 @@ class MainWindow(QMainWindow, SetupActions):
         self.update_reader = Reader(self)                        # the check for a newer version (actions.py)
         self.update_reader.done.connect(self._update_checked)
         self.update_asked = False                                # the check under way was asked for under Options
+        self.install_info: dict | None = None                    # selfupdate.find_install's answer, once looked up
+        self.find_install = selfupdate.find_install              # tests replace these two
+        self.updater = updating.install                          # installs an update (the running action)
         self.errands = Errands(self)
         self.errands.done.connect(self._errand_done)
         self._build()
@@ -132,8 +135,12 @@ class MainWindow(QMainWindow, SetupActions):
         self.busy_timer.timeout.connect(self.sync_busy)
         self.busy_timer.start()
         self.resize(1000, 680)
+        if instance is not None:                                 # "quit for update" from another window
+            instance.may_quit = self.may_quit_for_update
+            instance.quit_asked.connect(self.quit_for_update)
         self.refresh()
         self.look_for_update()
+        self.after_update()
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -230,6 +237,8 @@ class MainWindow(QMainWindow, SetupActions):
         self.options.check_updates.connect(lambda: self.look_for_update(asked=True))
         self.options.update_choice.connect(self.choose_updates)
         self.options.open_release.connect(self.open_release_page)
+        self.options.install.connect(self.install_update)
+        self.options.offer_of = self.update_offer
         self.reading = QLabel("Loading the site…")
         self.reading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reading.setWordWrap(True)
@@ -541,6 +550,8 @@ class MainWindow(QMainWindow, SetupActions):
         kind, feed = self.watching
         if kind == "check":
             self.connection.add_lines(lines)
+        elif kind == "update":
+            self.options.install_lines(lines)
         elif kind != "test-delivery" and feed:
             self.feed.job_lines(feed, lines)
 

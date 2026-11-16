@@ -13,7 +13,10 @@ site), and a site whose last reading hasn't ended is skipped, so a share that ha
 freezes the menu nor holds up the other sites.
 
 The tray also looks for a newer FOLIO-Exchange (``updates.look``, in a thread of its own, at most once a day) and
-tells about each new version once: "FOLIO-Exchange 0.3.0 is available." Clicking that opens Options.
+tells about each new version once: "FOLIO-Exchange 0.3.0 is available." Clicking that opens Options. An update
+installed from a window asks the tray to quit ("quit for update" over its socket); the tray always may, since it
+only reads, and the update starts it again. When it starts, it records the last update in each site's audit log
+if no window has yet (``updating.record_update``).
 """
 from __future__ import annotations
 
@@ -30,7 +33,7 @@ from .. import updates
 from ..config import find_site
 from ..errors import FxError
 from ..logsetup import setup_logging
-from . import places, single, startup, theme, watch
+from . import places, single, startup, theme, updating, watch
 from .worker import MainThreadCollector, Reader
 
 log = logging.getLogger(__name__)
@@ -90,6 +93,7 @@ class Tray(QObject):
         self.update_reader = Reader(self)
         self.update_reader.done.connect(self._update_looked)
         self.update_looks = 0                        # looks for a newer version delivered, for tests to wait on
+        self.after_reader = Reader(self)             # records the last update in each site (updating.py)
         self.closed = False
         self.plain = theme.logo_icon()
         self.marked = badged(self.plain)
@@ -109,7 +113,19 @@ class Tray(QObject):
         self.icon.show()
         self.timer.start()
         self.refresh()
+        self.after_reader.read(updating.record_update)
         return self
+
+    def listen(self, server: single.InstanceServer) -> None:
+        """Answer the local socket: another ``--tray`` start (read the list again), and an update's "quit for
+        update", which the tray always says yes to."""
+        server.shown.connect(self.reload)
+        server.may_quit = lambda: True
+        server.quit_asked.connect(self.quit_for_update)
+
+    def quit_for_update(self) -> None:
+        log.info("The tray closes for an update, which starts it again")
+        self.quit_app()
 
     def shut_down(self) -> None:
         self.closed = True                           # a reading still under way is dropped when it ends
@@ -362,7 +378,7 @@ def _run_tray(qapp: QApplication, named: str | None, verbose: bool, console: boo
             fail(NO_TRAY, console)
             return 1
         tray = Tray().start()
-        server.shown.connect(tray.reload)
+        tray.listen(server)
         log.info("The tray started for %d site(s)", len(tray.roots))
         try:
             return qapp.exec()

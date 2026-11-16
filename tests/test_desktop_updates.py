@@ -74,7 +74,7 @@ def test_options_tells_about_a_newer_version_and_how_to_get_it(qtbot, site, gith
     w.select("options")
     qtbot.waitUntil(lambda: not w.update_reader.busy, timeout=LONG)
     assert len(github.calls) == 1                                  # not again within the day
-    assert not hasattr(page, "install_button")                     # U0 only tells
+    assert not seen(page.install_button)                           # this test run isn't an install that can update
 
 
 def test_check_for_updates_says_when_this_is_the_newest_version(qtbot, site, github):

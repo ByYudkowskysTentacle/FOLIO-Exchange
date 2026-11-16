@@ -10,24 +10,30 @@ The scheduled task is registered by the command line (``folio-exchange schedule 
 of its own, where schtasks asks for the Windows password: the app never asks for it, sees it or keeps it. The
 window waits for that console to close, then looks again whether the task is there.
 
-Updates (phase U0 of docs/updates-plan.md) only tell: the newer version, its release notes as plain text, and the
-pip command or the release page. Nothing is downloaded or installed from here. With ``FOLIO_EXCHANGE_UPDATES=off``
-(or ``"check": false`` in updates.json) the section says IT manages updates and offers nothing else.
+Updates (phase U0 of docs/updates-plan.md) tell: the newer version, its release notes as plain text, and the pip
+command or the release page. For an install made by ``install.ps1``, once the release key is in the code
+(``updating.offer``), "Install X.Y.Z…" asks first (``UpdateDialog``, Cancel the default) and the window installs it
+in place as its running action, with its progress and any refusal shown here (``updating.install``). Otherwise the
+section says why there's no Install button. With ``FOLIO_EXCHANGE_UPDATES=off`` (or ``"check": false`` in
+updates.json) the section says IT manages updates and offers nothing else; with ``notify`` it tells, but never
+offers to install.
 """
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
 import sys
 import sysconfig
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QApplication, QCheckBox, QFormLayout
+from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QFormLayout, QPlainTextEdit, QVBoxLayout, QWidget
 
-from .. import schedule, siteops, updates
+from .. import __version__, schedule, siteops, updates
 from ..launcher import program_path
-from . import model, theme
+from . import model, theme, updating
 from .forms import Rows, edit, tell
 from .pages import Facts, Page, actions_row, button, divider, heading, lines_label, set_lines, text
 
@@ -48,6 +54,7 @@ UPDATES_BY_IT = "Your IT staff install updates on this computer."
 UPDATE_HOW = "To update, close FOLIO-Exchange and run this command in a command window:"
 PRERELEASE_ABOUT = "Until version 1.0, every release is a pre-release."
 NOTES_MOST = 3000                 # characters of release notes shown; the release page has the rest
+_STAMP = re.compile(r"^\d\d:\d\d:\d\d \w+\s+")      # a job's log line: "12:00:01 INFO    " before the words
 
 
 def task_command(site_root: Path) -> tuple[str, list[str], str]:
@@ -90,6 +97,41 @@ def cron_line(site_root: Path) -> str:
     return schedule.os_command(site_root, program_path(), platform.system())
 
 
+class UpdateDialog(QDialog):
+    """The question before an update installs: the version, its release notes as plain text, and what happens.
+    Cancel has the focus and is the default button, so Enter or Escape installs nothing; only "Install"
+    (focused, or Alt+I) accepts."""
+
+    def __init__(self, release: dict, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        version = str(release.get("version") or "")
+        self.setWindowTitle(f"FOLIO-Exchange – install {version}?")
+        self.setModal(True)
+        box = QVBoxLayout(self)
+        box.addWidget(heading(f"Install FOLIO-Exchange {version}?", 1.25))
+        self.facts = Facts()
+        self.facts.show_rows([("This version", __version__), ("New version", version)])
+        box.addWidget(self.facts)
+        notes = str(release.get("notes") or "").strip()
+        self.notes = QPlainTextEdit(notes)               # plain text: the release's words, never read as markup
+        self.notes.setReadOnly(True)
+        self.notes.setAccessibleName("Release notes")
+        self.notes.setMaximumHeight(220)
+        self.notes.setVisible(bool(notes))
+        box.addWidget(self.notes)
+        self.happens = text(updating.WHAT_HAPPENS, "What happens")
+        box.addWidget(self.happens)
+        self.cancel_button = button("&Cancel", "Cancel and install nothing")
+        self.install_button = theme.primary(button("&Install", f"Install {version}"))
+        self.cancel_button.setDefault(True)
+        for b in (self.cancel_button, self.install_button):
+            b.setAutoDefault(True)                       # Enter acts on the focused button
+        self.cancel_button.clicked.connect(self.reject)
+        self.install_button.clicked.connect(self.accept)
+        box.addLayout(actions_row(self.cancel_button, self.install_button))
+        self.cancel_button.setFocus()
+
+
 class OptionsPage(Page):
     rename = Signal(str)
     register = Signal()
@@ -100,14 +142,20 @@ class OptionsPage(Page):
     check_updates = Signal()
     update_choice = Signal(str, bool)          # "prereleases" or "automatic", and whether it's ticked
     open_release = Signal(str)                 # the release page's address
+    install = Signal(str)                      # the version to install, before the question
 
     def __init__(self) -> None:
         super().__init__()
         self.windows = platform.system() == "Windows"
         self.site: dict = {}
         self.idle = True
-        self.busy = {"rename": False, "register": False, "test": False, "update": False}
+        self.busy = {"rename": False, "register": False, "test": False, "update": False, "install": False}
         self.update_state: dict = {}
+        # Whether "Install X.Y.Z…" is offered for updates.status(), and why not (updating.offer). The window sets
+        # it; until then nothing is offered.
+        self.offer_of: Callable[[dict], dict] = lambda status: {"install": False, "why": None}
+        self.offered = False
+        self.progress: list[str] = []                  # the update's progress lines so far
         self.box.addWidget(heading("Options"))
         self.box.addWidget(text("The site folder, scheduled runs, alerts, the tray and updates.", "About options"))
 
@@ -192,23 +240,40 @@ class OptionsPage(Page):
         self.box.addWidget(heading("Updates", 1.15))
         self.updates_about = text(UPDATES_ABOUT, "About updates")
         self.box.addWidget(self.updates_about)
+        self.last_update = text(about="The last update")
+        self.last_update.hide()
+        self.box.addWidget(self.last_update)
         self.update_facts = Facts()
         self.box.addWidget(self.update_facts)
         self.update_managed = text(about="Who installs updates")
         self.update_available = text(about="New version")
         self.update_notes = text(about="Release notes")
+        self.install_why = text(about="Why FOLIO-Exchange can't install it")
         self.update_how = text(UPDATE_HOW, "How to update")
         self.update_line = text(about="The command that updates FOLIO-Exchange")
-        for w in (self.update_managed, self.update_available, self.update_notes, self.update_how, self.update_line):
+        for w in (self.update_managed, self.update_available, self.update_notes, self.install_why, self.update_how,
+                  self.update_line):
             w.hide()
             self.box.addWidget(w)
+        self.install_button = theme.primary(button("Insta&ll…", "Install"))
+        self.install_button.clicked.connect(self._install)
         self.copy_button = button("Cop&y the command", "Copy the command")
         self.copy_button.clicked.connect(self._copy_command)
         self.release_button = button("&Open the release page", "Open the release page")
         self.release_button.clicked.connect(self._open_release)
+        self.install_button.hide()
         self.copy_button.hide()
         self.release_button.hide()
-        self.box.addLayout(actions_row(self.copy_button, self.release_button))
+        self.box.addLayout(actions_row(self.install_button, self.copy_button, self.release_button))
+        self.install_progress = lines_label("Installing the update")
+        self.install_progress.hide()
+        self.box.addWidget(self.install_progress)
+        self.install_result = text(about="Installing the update")
+        self.install_result.hide()
+        self.box.addWidget(self.install_result)
+        self.install_notes = lines_label("What was done")
+        self.install_notes.hide()
+        self.box.addWidget(self.install_notes)
         self.check_button = button("Check for &updates", "Check for updates")
         self.check_button.clicked.connect(self._check_updates)
         self.box.addLayout(actions_row(self.check_button))
@@ -374,7 +439,15 @@ class OptionsPage(Page):
             notes = notes[:NOTES_MOST].rstrip() + "…\n\nThe release page has the rest."
         self.update_notes.setText(notes)
         self.update_notes.setVisible(bool(notes))
-        command = bool(new) and status.get("mode") == "on"       # "notify": tell, but never offer to install
+        offer = self.offer_of(status) if new and not off else {"install": False, "why": None}
+        self.offered = bool(offer.get("install"))
+        self.install_button.setText(f"Insta&ll {new['version']}…" if new else "Insta&ll…")
+        self.install_button.setAccessibleName(f"Install {new['version']}" if new else "Install")
+        self.install_button.setVisible(self.offered)
+        self.install_why.setText(str(offer.get("why") or ""))
+        self.install_why.setVisible(bool(offer.get("why")))
+        # "notify": tell, but never offer to install. An install this app can update gets the button instead.
+        command = bool(new) and status.get("mode") == "on" and not self.offered
         self.update_line.setText(update_command(new["version"]) if command else "")
         for w in (self.update_how, self.update_line, self.copy_button):
             w.setVisible(command)
@@ -386,6 +459,7 @@ class OptionsPage(Page):
         self.automatic_box.setChecked(bool(status.get("automatic")))
         if off:
             self.update_result.hide()
+        self._enable()
         if result is None:
             return
         self.busy["update"] = False
@@ -421,6 +495,45 @@ class OptionsPage(Page):
         if new:
             self.open_release.emit(new["page"])
 
+    # ------------------------------------------------------------ installing an update
+    def _install(self) -> None:
+        new = self.update_state.get("available")
+        if new and self.offered and not self.busy["install"] and self.install_button.isEnabled():
+            self.install.emit(new["version"])
+
+    def show_last_update(self, line: str | None) -> None:
+        """How the last update went, for a day after it ("Updated to 0.3.0.", or that it didn't finish)."""
+        self.last_update.setText(line or "")
+        self.last_update.setVisible(bool(line))
+
+    def installing(self, busy: bool, message: str | None = None) -> None:
+        """The update started (``busy``) or ended. ``message``: a sentence for the place where results show."""
+        started = busy and not self.busy["install"]
+        self.busy["install"] = busy
+        if started:
+            self.progress = []
+            set_lines(self.install_progress, [], "")
+            self.install_progress.hide()
+            self.install_notes.hide()
+        if message is not None:
+            tell(self.install_result, message)
+        elif started:
+            self.install_result.hide()
+        self._enable()
+
+    def install_lines(self, lines: list[str]) -> None:
+        """The update's progress, as it logs it: the newest few lines."""
+        self.progress += [_STAMP.sub("", ln) for ln in lines]
+        set_lines(self.install_progress, self.progress[-8:], "")
+        self.install_progress.show()
+
+    def install_stopped(self, result: dict) -> None:
+        """The update stopped before the swap (the engine's or the window's refusal): why, in place, with what was
+        done and what's left."""
+        self.installing(False, str(result.get("reason") or "The update stopped. Nothing was changed."))
+        notes = [*(result.get("done") or []), *(result.get("left") or [])]
+        set_lines(self.install_notes, notes, "")
+        self.install_notes.setVisible(bool(notes))
     def set_idle(self, idle: bool) -> None:
         self.idle = idle
         self._enable()
@@ -430,7 +543,8 @@ class OptionsPage(Page):
         self.register_button.setEnabled(not self.busy["register"])
         self.alerts_button.setEnabled(self.idle)
         self.test_button.setEnabled(self.idle and not self.busy["test"])
-        self.check_button.setEnabled(not self.busy["update"])
+        self.check_button.setEnabled(not self.busy["update"] and not self.busy["install"])
+        self.install_button.setEnabled(self.idle and not self.busy["install"])
 
     def clear_typed(self) -> None:
         self.rows.clear()
