@@ -23,11 +23,11 @@ _A route for in-app updates that needs neither the one-file installer (D5) nor W
 The helper, which uses the standard library only:
 
 1. waits up to two minutes for every program in the program folder to quit and for the minutes 5 to 15 to pass, and stops if either is still true or if the list of running programs can't be read;
-2. renames `program` to `program.outgoing` and waits up to ten seconds for any program caught running from it to quit. If one is still there, or the list can't be read, it renames the folder back and stops;
+2. renames `program` to `program.outgoing` and waits up to ten seconds for any program caught running from it to quit. A program counts if it's listed under either name, since Windows goes on listing a running program under the path it started from. If one is still there, or the list can't be read, it renames the folder back and stops;
 3. renames `program.new` to `program`, so the scheduled task, the Startup entry and the launchers keep their paths. Its commands already name `program`, so there's no moment when they point at a folder that's gone;
 4. checks that `program\Scripts\folio-exchange.exe --version` reports the new version;
 5. on success, removes the `program.previous` from the update before and renames `program.outgoing` to `program.previous`;
-6. removes the marker, whatever happened, writes `updates\result.json`, and starts the programs in `restart` again (only programs inside the program folder).
+6. removes the marker, whatever happened (even when the plan can't be read: `start_swap` passes the install folder and the result file on the command line too), writes `updates\result.json`, and starts the programs in `restart` again (only programs inside the program folder).
 
 ## The marker
 

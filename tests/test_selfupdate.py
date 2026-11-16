@@ -556,6 +556,8 @@ def test_start_swap_runs_a_copy_of_the_helper_from_outside_the_program_folder(in
     argv, kw = launched[0]
     assert argv[0] == install["python"] and argv[1] == "-I"
     helper = Path(argv[4])
+    plan = json.loads(Path(ready).read_text(encoding="utf-8"))
+    assert argv[5:] == [str(ready), plan["root"], plan["result"]]
     assert helper.read_bytes() == Path(swaphelper.__file__).read_bytes()
     assert not str(helper).startswith(install["program"])
     assert Path(kw["cwd"]) == helper.parent
@@ -571,11 +573,34 @@ def test_the_helper_rolls_back_a_program_that_cannot_start_at_all(install, ready
     monkeypatch.setattr(swaphelper, "processes_in", lambda folder: [])
     monkeypatch.setattr(swaphelper.swap, "__kwdefaults__", {**swaphelper.swap.__kwdefaults__,
                                                              "processes": lambda folder: []})
-    assert swaphelper.main([ready]) == 1
     plan = json.loads(Path(ready).read_text(encoding="utf-8"))
+    assert swaphelper.main([ready, plan["root"], plan["result"]]) == 1
     result = json.loads(Path(plan["result"]).read_text(encoding="utf-8"))
     assert result["program"] == "old" and result["reason"].endswith("The old version was put back.")
     assert (Path(install["root"]) / "program" / "VERSION").read_text(encoding="utf-8") == OLD
+
+
+def test_a_helper_that_fails_early_removes_the_marker_and_says_so(install, ready, monkeypatch):
+    """Every entry point refuses while the marker is new, so a helper that stops before the swap (an
+    unreadable plan, or a plan for another folder) must still remove it and write a result."""
+    plan = json.loads(Path(ready).read_text(encoding="utf-8"))
+    root, out = Path(plan["root"]), Path(plan["result"])
+    for bad in ("not json", json.dumps({**plan, "root": str(root.parent / "elsewhere")})):
+        selfupdate.write_marker(root, NEW)
+        broken = Path(ready).with_name("broken.json")
+        broken.write_text(bad, encoding="utf-8")
+        assert swaphelper.main([str(broken), str(root), str(out)]) == 1
+        assert not (root / "updating.json").exists()
+        result = json.loads(out.read_text(encoding="utf-8"))
+        assert result["ok"] is False and result["program"] == "old"
+        assert result["reason"].startswith("The update's plan couldn't be read")
+        assert (root / "program" / "VERSION").read_text(encoding="utf-8") == OLD
+    # and when the swap itself raises something unexpected
+    selfupdate.write_marker(root, NEW)
+    monkeypatch.setattr(swaphelper, "swap", lambda plan: 1 / 0)
+    assert swaphelper.main([ready, str(root), str(out)]) == 1
+    assert not (root / "updating.json").exists()
+    assert json.loads(out.read_text(encoding="utf-8"))["reason"].startswith("The update stopped (ZeroDivisionError")
 
 
 def test_the_helper_needs_only_the_standard_library():
@@ -665,7 +690,14 @@ def test_no_entry_point_starts_while_the_program_is_being_swapped(tmp_path, monk
     """Windows lets the program folder be renamed under a running program, so nothing may start from it
     during the swap: the command line (every command), the desktop app and the tray."""
     from folio_exchange import desktop
+    from folio_exchange.desktop import app as desktop_app
 
+    def opened(*a, **k):
+        raise AssertionError("the app or the tray started during an update")
+
+    monkeypatch.setattr(desktop_app, "run", opened)
+    tray = pytest.importorskip("folio_exchange.desktop.tray")
+    monkeypatch.setattr(tray, "run_tray", opened)
     program = tmp_path / "program"
     program.mkdir()
     monkeypatch.setattr(sys, "prefix", str(program))
@@ -702,6 +734,25 @@ def test_a_process_list_that_cannot_be_read_never_means_nothing_runs(install, ke
 
 
 def test_a_program_started_during_the_swap_puts_the_old_folder_back(install, ready):
+    renamed = []
+
+    def rename(src, dst):
+        renamed.append(Path(src).name)
+        os.rename(src, dst)
+
+    def windows_listing(folder):
+        """As Windows lists it: once program has been renamed, a program that started from it is still listed
+        under program, the path it started from, and never under program.outgoing."""
+        if renamed and Path(folder).name == "program":
+            return [(77, str(Path(folder) / "Scripts" / "folio-exchange.exe"))]
+        return []
+
+    result = selfupdate.swap(ready, run=Runner(), processes=windows_listing, now=lambda: CALM, sleep=lambda s: None,
+                             rename=rename)
+    assert result["program"] == "old" and result["reason"].startswith("A program started from the program folder")
+    assert renamed == ["program", "program.outgoing"]
+    assert (Path(install["root"]) / "program" / "VERSION").read_text(encoding="utf-8") == OLD
+
     def caught(folder):
         return [(77, str(Path(folder) / "Scripts" / "folio-exchange.exe"))] if Path(folder).name == "program.outgoing" \
             else []
@@ -812,6 +863,23 @@ def test_downloads_send_no_account_from_netrc_and_no_extra_headers(tmp_path, mon
     assert dict(sent.headers) == headers
     settings = s.merge_environment_settings(url, {}, True, None, None)
     assert "auth" not in settings or settings.get("auth") is None
+
+
+def test_prepare_downloads_through_the_bare_session(install, key, monkeypatch):
+    used = []
+
+    def session():
+        used.append(True)
+        return FakeGitHub(release(key[0]))
+
+    monkeypatch.setattr(selfupdate, "download_session", session)
+    monkeypatch.setattr(requests, "Session", lambda: (_ for _ in ()).throw(AssertionError("a plain session")))
+    result = selfupdate.prepare(TAG, key=key[1], install=install, current=OLD, builder=Builder(), run=Runner(),
+                                sites=(), now=CALM, processes=lambda f: [], allow_pids={1},
+                                updates_dir=Path(install["root"]).parent / "app" / "updates",
+                                protect=lambda *a, **k: None)
+    assert result["ok"], result["reason"]
+    assert used == [True]
 
 
 def test_a_tag_with_a_trailing_newline_is_not_a_release_tag():
