@@ -61,7 +61,7 @@ Exit codes: `0` when everything is done; `1` when the installer stopped; `2` whe
 
 ## Update
 
-Run the installer again and give the same install folder and site name. It replaces the program in `<install folder>\program` and keeps everything else: the site's settings, feeds, run history and cache, the passwords in Credential Manager, and the scheduled task, which still points at the same program.
+Run the installer again and give the same install folder and site name. Run this way it installs the newest `main`. To install the release that Options names under Updates, open a command window in the installer's folder and run `install.cmd -Ref v0.3.0`, with that release's version. It replaces the program in `<install folder>\program` and keeps everything else: the site's settings, feeds, run history and cache, the passwords in Credential Manager, and the scheduled task, which still points at the same program.
 
 Close the page's black window and the desktop app first, quit the tray (right-click the FOLIO-Exchange icon in the taskbar's notification area, then **Quit the tray**), and choose a time when no run is due. If FOLIO-Exchange is still running from that folder, the installer says so and asks before it goes on.
 

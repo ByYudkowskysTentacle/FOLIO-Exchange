@@ -91,8 +91,10 @@ def test_an_install_the_installer_made_is_told_to_run_the_installer_again(qtbot,
     assert options.installer_install()
     w, page = options_page(qtbot, site)
     assert seen(page.update_available) and seen(page.update_notes) and seen(page.release_button)
-    assert seen(page.update_how) and page.update_how.text() == options.UPDATE_INSTALLER
-    assert "run the installer (install.cmd) again" in options.UPDATE_INSTALLER
+    # Regression (re-review of #37): the installer run again follows main, not the release the notice names.
+    assert seen(page.update_how) and page.update_how.text() == (
+        "To update, close FOLIO-Exchange and its tray icon. Then run install.cmd -Ref v0.3.0 in the installer's "
+        "folder, with the same install folder and site name.")
     assert not seen(page.update_line) and not seen(page.copy_button) and page.update_line.text() == ""
     monkeypatch.setattr(options.sys, "prefix", str(tmp_path / "venv"))
     assert not options.installer_install()
