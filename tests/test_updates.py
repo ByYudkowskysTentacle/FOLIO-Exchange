@@ -450,12 +450,19 @@ def test_long_release_notes_are_cut():
     assert len(updates.status()["available"]["notes"]) == updates.MAX_NOTES
 
 
-def test_the_release_key_is_unset_and_unused_until_u1():
-    """U0 only tells. The public key's place exists; nothing reads it, and no key is in the repository."""
-    assert updates.RELEASE_KEY is None
+RELEASE_KEY_HEX = "2a68fa1ed70d946402ef6665c1c33ac949ee8674fca02b86903793c27fe11ed0"   # gitleaks:allow - a public key, published on purpose
+
+
+def test_the_release_key_is_the_projects_public_half_and_nothing_else():
+    """The key is the maintainer's Ed25519 public key (32 bytes), written once in the code and repeated here, so
+    changing it takes two deliberate edits. No private key is in the repository, and updates.py only defines it."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    assert updates.RELEASE_KEY == bytes.fromhex(RELEASE_KEY_HEX) and len(updates.RELEASE_KEY) == 32
+    Ed25519PublicKey.from_public_bytes(updates.RELEASE_KEY)        # a key the engine can load
     source = Path(updates.__file__).read_text(encoding="utf-8")
     code = [line for line in source.splitlines() if "RELEASE_KEY" in line and not line.lstrip().startswith("#")]
-    assert code == ["RELEASE_KEY: bytes | None = None"]
+    assert code == [f'RELEASE_KEY: bytes | None = bytes.fromhex("{RELEASE_KEY_HEX}")']
     assert "PRIVATE KEY" not in source
 
 

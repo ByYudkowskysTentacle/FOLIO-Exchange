@@ -79,7 +79,7 @@ def test_an_install_it_can_update_gets_install_instead_of_the_command(qtbot, sit
 
 def test_no_release_key_means_no_install_button_and_no_way_to_the_engine(qtbot, site, github, monkeypatch):
     monkeypatch.setattr(selfupdate, "find_install", lambda **kw: dict(UPDATABLE))
-    assert updates.RELEASE_KEY is None                             # as shipped, until the maintainer makes the key
+    monkeypatch.setattr(updates, "RELEASE_KEY", None)              # a build without the key
     w, page = options_page(qtbot, site)
     assert not seen(page.install_button)
     assert seen(page.install_why) and page.install_why.text() == installing.NO_KEY
