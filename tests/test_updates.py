@@ -450,7 +450,7 @@ def test_long_release_notes_are_cut():
     assert len(updates.status()["available"]["notes"]) == updates.MAX_NOTES
 
 
-RELEASE_KEY_HEX = "2a68fa1ed70d946402ef6665c1c33ac949ee8674fca02b86903793c27fe11ed0"
+RELEASE_KEY_HEX = "2a68fa1ed70d946402ef6665c1c33ac949ee8674fca02b86903793c27fe11ed0"   # gitleaks:allow - a public key, published on purpose
 
 
 def test_the_release_key_is_the_projects_public_half_and_nothing_else():

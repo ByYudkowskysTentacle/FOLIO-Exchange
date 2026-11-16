@@ -1,3 +1,5 @@
-# Findings gitleaks reports that are made-up test values, not secrets (commit:file:rule:line).
+# Findings gitleaks reports that are made-up test values or public values, not secrets (commit:file:rule:line).
 # tests/test_setup.py SFTP_PASSWORD: an invented password the tests check never leaks anywhere.
 aac6f6dc09652a094639f667d8d0096f1e63da99:tests/test_setup.py:generic-api-key:20
+# tests/test_updates.py RELEASE_KEY_HEX: the release key's public half, which is meant to be published.
+78664b0cff55ae069dc88eac5de9d49409003849:tests/test_updates.py:generic-api-key:453
