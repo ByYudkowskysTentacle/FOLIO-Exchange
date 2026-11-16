@@ -17,6 +17,10 @@ installed: this phase only tells (the tray's notification, the Updates section u
 that didn't work since), ``wait_until`` (GitHub asked to wait), ``checking`` (a check under way, so the tray and
 a window don't both ask), ``found`` (the newest release, and the newest that isn't a pre-release) and ``told``
 (the version the tray has notified about).
+
+When the file can't be saved (a read-only or full profile), what should have been written is kept in this
+process's memory (``_unsaved``) and laid over the file whenever it is read, so the once-a-day rule, the retries and
+"told once" still hold for as long as the process runs.
 """
 from __future__ import annotations
 
@@ -41,7 +45,7 @@ REPO = "ByYudkowskysTentacle/FOLIO-Exchange"       # fixed: never read from a se
 HOST = "api.github.com"
 RELEASES_URL = f"https://{HOST}/repos/{REPO}/releases"
 RELEASE_PAGE = f"https://github.com/{REPO}/releases/tag/"
-PIP_SOURCE = f"git+https://github.com/{REPO}.git"
+RELEASE_ZIP = f"https://github.com/{REPO}/archive/refs/tags/"
 
 # The public half of the project's Ed25519 release key, which ``SHA256SUMS.sig`` is checked against before anything
 # downloaded is used: by the in-place update the app installs (desktop/updating.py passes this and no other key to
@@ -115,11 +119,12 @@ def release_page(version: str) -> str:
 
 
 def pip_command(version: str, python: str | None = None) -> str:
-    """The command that installs ``version`` over a pip install. Always from this project's repository at the
-    release's tag: FOLIO-Exchange is never installed by its bare name, which isn't on PyPI. ``python``: the
-    full path of the Python to run pip with (the app passes its own)."""
+    """The command that installs ``version`` over a pip install, for Command Prompt. Always this project's
+    repository at the release's tag, as the zip GitHub makes of it, so the PC needs no Git: FOLIO-Exchange is
+    never installed by its bare name, which isn't on PyPI. ``python``: the full path of the Python to run pip
+    with (the app passes its own)."""
     pip = f'"{python}" -m pip' if python else "pip"
-    return f'{pip} install "folio-exchange[desktop] @ {PIP_SOURCE}@v{version}"'
+    return f'{pip} install "folio-exchange[desktop] @ {RELEASE_ZIP}v{version}.zip"'
 
 
 # ------------------------------------------------------------------ updates.json
@@ -139,13 +144,23 @@ def _stamp(t: datetime) -> str:
     return t.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
+_unsaved: dict[str, Any] = {}       # what a failed save should have written (None: a key it should have removed)
+
+
 def load() -> dict:
-    """``updates.json`` as saved; empty when there is none or it can't be read."""
+    """``updates.json`` as saved, with what this process couldn't save laid over it; empty when there is none
+    or it can't be read."""
     try:
         data = json.loads((places.config_dir() / FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    for key, value in _unsaved.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return data
 
 
 def _save(data: dict) -> None:
@@ -158,8 +173,9 @@ def _save(data: dict) -> None:
 
 
 def _change(**values: Any) -> dict:
-    """Read the file, set ``values`` (None removes a key) and save it. A file that can't be saved is logged:
-    the check then runs again sooner than it should, which the limits at GitHub's end still bound."""
+    """Read the file, set ``values`` (None removes a key) and save it. A file that can't be saved is logged,
+    and the values are kept in this process's memory (``_unsaved``), which ``load`` lays over the file: the
+    time of the last check must hold even then, or the tray would ask GitHub at every poll."""
     data = load()
     for key, value in values.items():
         if value is None:
@@ -169,7 +185,12 @@ def _change(**values: Any) -> dict:
     try:
         _save(data)
     except OSError as exc:
-        log.warning("Could not save %s in %s: %s", FILE, places.config_dir(), exc)
+        if not _unsaved:
+            log.warning("Could not save %s in %s: %s. Until it can be saved, the last check is remembered only "
+                        "while this program runs.", FILE, places.config_dir(), exc)
+        _unsaved.update(values)
+    else:
+        _unsaved.clear()                 # the file now holds everything, what was kept in memory included
     return data
 
 
@@ -200,6 +221,7 @@ def set_choice(key: str, on: bool) -> None:
     data = load()
     data[key] = bool(on)
     _save(data)
+    _unsaved.clear()                     # the file now holds everything, what was kept in memory included
 
 
 # ------------------------------------------------------------------ when

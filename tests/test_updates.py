@@ -327,12 +327,49 @@ def test_a_choice_that_cannot_be_saved_is_raised(monkeypatch, tmp_path):
     assert updates.check(http=FakeGitHub(answer()), now=T0) == {"checked": True, "problem": None}   # only logged
 
 
+def test_a_file_that_cannot_be_saved_does_not_make_the_tray_ask_at_every_poll(monkeypatch, caplog):
+    """Regression (review of #37): only the file remembered the last check, so with a read-only or full profile
+    the tray asked GitHub every two minutes, 30 times an hour of the 60 a campus shares."""
+    def refuse(data):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(updates, "_save", refuse)
+    gh = FakeGitHub(answer(data=[release("v0.3.0")]))
+    polls = [T0 + timedelta(minutes=2 * n) for n in range(30 * 24)]            # a day of the tray's polls
+    told = [updates.look(http=gh, now=t) for t in polls]
+    assert len(gh.calls) == 1                                                  # once, as with a file that saves
+    assert told[0] == "0.3.0" and updates.status()["available"]["version"] == "0.3.0"
+    updates.told("0.3.0")
+    assert updates.look(http=gh, now=polls[-1]) is None                        # told once, too
+    assert updates.look(http=gh, now=T0 + 24 * HOUR) is None and len(gh.calls) == 2   # the next day's check
+    assert caplog.text.count("Could not save updates.json") == 1               # said once, not at every poll
+
+
+def test_failed_checks_keep_their_gaps_when_the_file_cannot_be_saved(monkeypatch):
+    monkeypatch.setattr(updates, "_save", lambda data: (_ for _ in ()).throw(OSError(28, "No space left")))
+    gh = FakeGitHub(requests.ConnectionError("no route"))
+    tried = [m for m in range(0, 24 * 60, 2) if updates.check(http=gh, now=T0 + timedelta(minutes=m))["checked"]]
+    assert tried == [0, 120, 240, 360]                                         # two hours apart, four in the day
+
+
+def test_what_could_not_be_saved_is_written_once_the_file_can_be(monkeypatch):
+    real = updates._save
+    monkeypatch.setattr(updates, "_save", lambda data: (_ for _ in ()).throw(OSError(28, "No space left")))
+    updates.check(http=FakeGitHub(answer(data=[release("v0.3.0")])), now=T0)
+    assert not (places.config_dir() / updates.FILE).exists() and updates._unsaved
+    monkeypatch.setattr(updates, "_save", real)
+    updates.told("0.3.0")
+    assert not updates._unsaved
+    assert saved()["told"] == "0.3.0" and saved()["found"]["any"]["version"] == "0.3.0" and "checking" not in saved()
+
+
 # ------------------------------------------------------------------ what is shown, and the key
 def test_the_pip_command_names_the_repository_and_tag_never_the_bare_name():
-    assert updates.pip_command("0.3.0") == ('pip install "folio-exchange[desktop] @ git+https://github.com/'
-                                            'ByYudkowskysTentacle/FOLIO-Exchange.git@v0.3.0"')
-    assert updates.pip_command("0.3.0", r"C:\FX\program\Scripts\python.exe").startswith(
-        r'"C:\FX\program\Scripts\python.exe" -m pip install "folio-exchange[desktop] @ git+https://')
+    assert updates.pip_command("0.3.0") == ('pip install "folio-exchange[desktop] @ https://github.com/'
+                                            'ByYudkowskysTentacle/FOLIO-Exchange/archive/refs/tags/v0.3.0.zip"')
+    assert updates.pip_command("0.3.0", r"C:\Python\python.exe").startswith(
+        r'"C:\Python\python.exe" -m pip install "folio-exchange[desktop] @ https://github.com/')
+    assert "git+" not in updates.pip_command("0.3.0")              # the zip of the tag: the PC needs no Git
 
 
 def test_the_release_page_is_built_here_not_taken_from_the_answer():

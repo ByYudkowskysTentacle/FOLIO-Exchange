@@ -42,7 +42,7 @@ What it doesn't replace: the one-file installer remains the route for new instal
 ### Checking
 
 - **Where:** the tray, and the window when it opens. Never the scheduled task: `run --due` stays quick, offline apart from FOLIO and the vendor, and has nobody to ask.
-- **How often:** at most once a day per Windows user after a check that worked. The time of the last check is kept in `places.config_dir()` (`updates.json`, which also holds the person's choices below).
+- **How often:** at most once a day per Windows user after a check that worked. The time of the last check is kept in `places.config_dir()` (`updates.json`, which also holds the person's choices below), and in the process's memory when that file can't be saved, so a read-only or full profile never makes the tray ask at every poll.
 - **What:** one `GET https://api.github.com/repos/ByYudkowskysTentacle/FOLIO-Exchange/releases` over https, with redirects followed by hand only within `api.github.com`, as `sources.py` does for recipes. The repository is fixed in the code, not read from a setting, so a changed file can't point updates elsewhere.
 - **Which releases:** the newest release whose tag is `vX.Y.Z` and higher than the running version. Drafts are never used. Pre-releases are used only when the person chose them (see open question 1). Never a lower version, so a downgrade can't be pushed.
 - **Failures:** a check that fails (offline, a proxy, GitHub's rate limit) is logged and tried again two hours later, at most four times a day, honoring GitHub's `Retry-After` and `X-RateLimit-Reset`. It never shows an error dialog. GitHub allows 60 unauthenticated requests an hour per IP address, shared by every program behind a campus's address (FOLIO-Exchange's recipe sources included), and checks cluster when people sign in, so a failed morning check must not wait a whole day.
@@ -57,7 +57,8 @@ What it doesn't replace: the one-file installer remains the route for new instal
   - for a newer version, its release notes (the release's text, shown as plain text) and "Install 0.3.0…";
   - "Get pre-releases" and "Check for updates automatically", both per Windows user.
 - An install made with pip (no installer) gets the same notice, with the command to run instead of an Install button:
-  `pip install "folio-exchange[desktop] @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@v0.3.0"`. FOLIO-Exchange is never installed by its bare name, which isn't on PyPI. As built in U0, the command starts with this install's own Python (`"<python>" -m pip install …`), so it works in the installer's program folder too, and "Open the release page" sits beside it. The command needs Git, which a PC set up with `installer/install.ps1` may not have: there, running the installer again updates in place.
+  `"<python>" -m pip install "folio-exchange[desktop] @ https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/archive/refs/tags/v0.3.0.zip"`. FOLIO-Exchange is never installed by its bare name, which isn't on PyPI. As built in U0, the command names the zip GitHub makes of the tag, not `git+https://…`, so the PC needs no Git, and starts with this install's own Python. Options says to run it in Command Prompt: PowerShell refuses a command that starts with a quoted path.
+- An install that `installer/install.ps1` made (every library PC today) is told to run the installer again instead, with the same install folder and site name, which updates in place. "Open the release page" sits beside either.
 
 ### Downloading and checking the file
 

@@ -93,6 +93,7 @@ def no_real_update_checks(monkeypatch):
         raise AssertionError("a test tried to ask GitHub for releases")
 
     monkeypatch.setenv(updates.ENV, "off")
+    monkeypatch.setattr(updates, "_unsaved", {})       # nothing one test couldn't save reaches the next
     monkeypatch.setattr(updates, "_session", refuse)
 
 

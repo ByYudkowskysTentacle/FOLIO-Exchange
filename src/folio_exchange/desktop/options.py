@@ -10,13 +10,14 @@ The scheduled task is registered by the command line (``folio-exchange schedule 
 of its own, where schtasks asks for the Windows password: the app never asks for it, sees it or keeps it. The
 window waits for that console to close, then looks again whether the task is there.
 
-Updates (phase U0 of docs/updates-plan.md) tell: the newer version, its release notes as plain text, and the pip
-command or the release page. For an install made by ``install.ps1``, once the release key is in the code
-(``updating.offer``), "Install X.Y.Z…" asks first (``UpdateDialog``, Cancel the default) and the window installs it
-in place as its running action, with its progress and any refusal shown here (``updating.install``). Otherwise the
-section says why there's no Install button. With ``FOLIO_EXCHANGE_UPDATES=off`` (or ``"check": false`` in
-updates.json) the section says IT manages updates and offers nothing else; with ``notify`` it tells, but never
-offers to install.
+Updates (phase U0 of docs/updates-plan.md) tell: the newer version, its release notes as plain text, the release
+page, and how to update this install: the installer again for one ``installer/install.ps1`` made, else a pip
+command for Command Prompt. For an install made by ``install.ps1``, once the release key is in the code
+(``updating.offer``), "Install X.Y.Z…" takes the place of that: it asks first (``UpdateDialog``, Cancel the default)
+and the window installs the update in place as its running action, with its progress and any refusal shown here
+(``updating.install``). Otherwise the section says why there's no Install button. With
+``FOLIO_EXCHANGE_UPDATES=off`` (or ``"check": false`` in updates.json) the section says IT manages updates and offers
+nothing else; with ``notify`` it tells, but never offers to install.
 """
 from __future__ import annotations
 
@@ -51,7 +52,9 @@ UPDATES_ABOUT = ("Once a day, FOLIO-Exchange asks GitHub whether a new version i
                  "library.")
 UPDATES_MANAGED = "Updates on this computer are managed by IT."
 UPDATES_BY_IT = "Your IT staff install updates on this computer."
-UPDATE_HOW = "To update, close FOLIO-Exchange and run this command in a command window:"
+UPDATE_HOW = "To update, close FOLIO-Exchange and its tray icon. Then run this command in Command Prompt:"
+UPDATE_INSTALLER = ("To update, close FOLIO-Exchange and its tray icon. Then run the installer (install.cmd) again "
+                    "with the same install folder and site name.")
 PRERELEASE_ABOUT = "Until version 1.0, every release is a pre-release."
 NOTES_MOST = 3000                 # characters of release notes shown; the release page has the rest
 _STAMP = re.compile(r"^\d\d:\d\d:\d\d \w+\s+")      # a job's log line: "12:00:01 INFO    " before the words
@@ -84,9 +87,18 @@ def start_console(exe: str, args: list[str], folder: str) -> int:
     return done.returncode
 
 
+def installer_install() -> bool:
+    """Whether ``installer/install.ps1`` made this install: it runs from the Python environment the installer
+    makes, a folder called ``program`` with a ``pyvenv.cfg``. Such a PC updates by running the installer again,
+    which needs neither Git nor a command typed by hand."""
+    home = Path(sys.prefix)
+    return home.name.lower() == "program" and (home / "pyvenv.cfg").is_file()
+
+
 def update_command(version: str) -> str:
-    """The pip command that installs ``version`` over this install, run by this Python's full path (the console
-    Python beside pythonw, so pip's progress shows)."""
+    """The pip command that installs ``version`` over this install, for Command Prompt (PowerShell refuses a
+    command that starts with a quoted path), run by this Python's full path (the console Python beside pythonw,
+    so pip's progress shows)."""
     exe = Path(sys.executable)
     if exe.name.lower() == "pythonw.exe" and (exe.parent / "python.exe").is_file():
         exe = exe.parent / "python.exe"
@@ -447,9 +459,12 @@ class OptionsPage(Page):
         self.install_why.setText(str(offer.get("why") or ""))
         self.install_why.setVisible(bool(offer.get("why")))
         # "notify": tell, but never offer to install. An install this app can update gets the button instead.
-        command = bool(new) and status.get("mode") == "on" and not self.offered
+        how = bool(new) and status.get("mode") == "on" and not self.offered
+        command = how and not installer_install()                # the installer's own install runs it again
+        self.update_how.setText(UPDATE_HOW if command else UPDATE_INSTALLER)
+        self.update_how.setVisible(how)
         self.update_line.setText(update_command(new["version"]) if command else "")
-        for w in (self.update_how, self.update_line, self.copy_button):
+        for w in (self.update_line, self.copy_button):
             w.setVisible(command)
         self.release_button.setVisible(bool(new))
         for w in (self.updates_about, self.check_button, self.prerelease_box, self.automatic_box):
