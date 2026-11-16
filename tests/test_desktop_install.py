@@ -327,6 +327,13 @@ def test_the_next_start_says_updated_to_and_records_it_once(qtbot, site):
     assert len(audit_entries(site)) == 1
 
 
+def test_with_no_update_behind_it_the_window_starts_no_errand_for_one(qtbot, site):
+    w = window(qtbot, site)
+    assert w.after_update_asked and not w.errands.pending
+    w.select("options")
+    assert not seen(w.options.last_update)
+
+
 def test_the_next_start_says_when_the_update_did_not_finish(qtbot, site):
     reason = "FOLIO-Exchange is still running from C:\\FX\\program. Nothing was changed. Close it and try again."
     write_result(ok=False, version="9.9.9", **{"from": __version__}, reason=reason)

@@ -122,7 +122,10 @@ class Tray(QObject):
         if self.after_asked or self.closed or any(r.busy for r in self.readers.values()):
             return
         self.after_asked = True
-        self.after_reader.read(installing.record_update)
+        found = installing.pending()
+        if found is not None:
+            folder, sites = found
+            self.after_reader.read(lambda: installing.record_update(updates_dir=folder, sites=sites))
 
     def listen(self, server: single.InstanceServer) -> None:
         """Answer the local socket: another ``--tray`` start (read the list again), and an update's "quit for

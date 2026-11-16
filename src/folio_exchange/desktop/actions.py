@@ -858,9 +858,16 @@ class SetupActions:
         self.close_now()
 
     def after_update(self) -> None:
-        """When the window opens: how the last update went, for Options, and its audit entry in each site."""
+        """Once the window's first reading has ended: how the last update went, for Options, and its audit entry
+        in each site. Nothing at all when no update has finished on this PC."""
+        found = installing.pending()
+        if found is None:
+            return
+        folder, sites = found
+
         def look() -> dict:
-            return {"recorded": installing.record_update(), "line": installing.last_update()}
+            return {"recorded": installing.record_update(updates_dir=folder, sites=sites),
+                    "line": installing.last_update(updates_dir=folder)}
 
         self.errands.run(("after-update",), look)
 

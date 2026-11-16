@@ -260,6 +260,16 @@ def last_update(*, updates_dir: Path | None = None, now: datetime | None = None,
     return f"{line} {reason}" if reason else line
 
 
+def pending() -> tuple[Path, list[Path]] | None:
+    """For the window and the tray, on their own thread before they hand the rest to another: the updates folder
+    and the sites known now, or None when no swap has left a result on this PC. Both are small local files, read
+    here so the thread that records the update never looks up the app's folders itself."""
+    folder = selfupdate.updates_folder()
+    if not (folder / selfupdate.RESULT).is_file():
+        return None
+    return folder, selfupdate.known_sites()
+
+
 def _write(path: Path, data: dict) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")

@@ -351,6 +351,17 @@ def test_no_result_says_nothing(tmp_path):
     assert installing.last_update(updates_dir=tmp_path, now=NOW) is None
 
 
+def test_pending_names_the_folder_and_sites_only_after_a_swap(tmp_path):
+    """Read on the window's or tray's own thread, so the thread that records never looks up the app's folders
+    (a test's redirect of them could be gone by then)."""
+    assert installing.pending() is None
+    site = make_site(tmp_path / "lakeside", "https://folio.example.org")
+    places.remember_site(site)
+    write_result(selfupdate.updates_folder(), ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
+    folder, sites = installing.pending()
+    assert folder == selfupdate.updates_folder() and [Path(s) for s in sites] == [site]
+
+
 def test_the_swap_writes_what_the_next_start_says(install, key, tmp_path):  # noqa: F811
     """The real swap, then the line: the result file is the one handover between the versions."""
     updates_dir = tmp_path / "app" / "updates"
