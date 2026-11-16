@@ -77,13 +77,13 @@ def logs_dir(root: Path) -> Path:
         return root / "logs"
 
 
-def run(named: str | None, *, verbose: bool = False, console: bool = True) -> int:
+def run(named: str | None, *, verbose: bool = False, console: bool = True, view: str | None = None) -> int:
     qapp = QApplication.instance() or QApplication(["folio-exchange-app"])
     qapp.setApplicationName("FOLIO-Exchange")
     theme.apply(qapp)                                   # the page's look, with FOLIO's (see theme)
     collector = MainThreadCollector(qapp).start()       # garbage cycles freed on this thread only (see worker)
     try:
-        return _run(qapp, named, verbose, console)
+        return _run(qapp, named, verbose, console, view)
     except Exception as exc:  # noqa: BLE001 - before the window there is no excepthook, and pythonw no console
         log.exception("FOLIO-Exchange could not start")
         fail(f"FOLIO-Exchange couldn't start: {type(exc).__name__}: {exc}", console)
@@ -93,7 +93,7 @@ def run(named: str | None, *, verbose: bool = False, console: bool = True) -> in
         collector.deleteLater()
 
 
-def _run(qapp: QApplication, named: str | None, verbose: bool, console: bool) -> int:
+def _run(qapp: QApplication, named: str | None, verbose: bool, console: bool, view: str | None = None) -> int:
     setup_logging(None, verbose, console=console)
     try:
         root = site_from(named)
@@ -103,7 +103,7 @@ def _run(qapp: QApplication, named: str | None, verbose: bool, console: bool) ->
     if root is None:
         return 0
     setup_logging(logs_dir(root), verbose, console=console)
-    kind, server = single.claim(places.instance_name(root))
+    kind, server = single.claim(places.instance_name(root), view)
     if kind == "shown":
         log.info("FOLIO-Exchange is already open for %s; brought its window to the front", root)
         return 0
@@ -113,6 +113,9 @@ def _run(qapp: QApplication, named: str | None, verbose: bool, console: bool) ->
     places.remember_site(root)
     window = MainWindow(root, instance=server)
     server.shown.connect(window.bring_to_front)
+    server.asked.connect(window.open_view)
+    if view:
+        window.open_view(view)
     old_hook, sys.excepthook = sys.excepthook, report_unexpected
     log.info("Desktop app opened for %s", root)
     try:

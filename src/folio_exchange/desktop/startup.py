@@ -34,10 +34,11 @@ def app_program() -> tuple[str, list[str], str]:
     return str(exe), [*safe, "-m", "folio_exchange.desktop"], here
 
 
-def app_command(site_root: Path) -> tuple[str, list[str], str]:
-    """How to open the app for a site, in a process of its own (see ``app_program``)."""
+def app_command(site_root: Path, view: str | None = None) -> tuple[str, list[str], str]:
+    """How to open the app for a site, in a process of its own (see ``app_program``). ``view``: the view to
+    open it on (``--view``)."""
     exe, args, folder = app_program()
-    return exe, [*args, "--site", str(site_root)], folder
+    return exe, [*args, "--site", str(site_root), *(["--view", view] if view else [])], folder
 
 
 def tray_command() -> tuple[str, list[str], str]:

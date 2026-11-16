@@ -16,7 +16,7 @@ import logging
 import os
 from pathlib import Path
 
-from .. import recipeops, runner, setupops, siteops, sources, views
+from .. import recipeops, runner, setupops, siteops, sources, updates, views
 from ..config import load_site
 from ..errors import ConfigError, FxError
 from . import model, places, startup
@@ -727,6 +727,45 @@ class SetupActions:
         self.options.tray_said("The tray starts when you sign in to Windows." if on else
                                "The tray won't start when you sign in.")
         self.show_tray_settings()
+
+    # ------------------------------------------------------------ updates
+    def look_for_update(self, asked: bool = False) -> None:
+        """Check for a newer version, off this thread: when a check is due (the window opened, or Options
+        did), or because the person ``asked`` under Options. One check at a time."""
+        if self.quitting or (self.update_reader.busy and not asked):
+            return                                       # a check asked for takes the place of one under way
+        self.update_asked = asked
+        if asked:
+            log.info("Checking for updates, asked under Options")
+            self.options.checking_updates()
+        self.update_reader.read(lambda: updates.check(asked=asked))
+
+    def _update_checked(self, result: dict | None, error: Exception | None) -> None:
+        asked, self.update_asked = self.update_asked, False
+        if self.quitting:
+            return
+        if error is not None:                            # a check that fails is in ``result``; this is unexpected
+            log.warning("Checking for updates failed: %s: %s", type(error).__name__, error)
+            result = {"checked": False, "problem": f"{type(error).__name__}: {error}"}
+        self.options.show_updates(updates.status(), result if asked else None)
+
+    def choose_updates(self, key: str, on: bool) -> None:
+        """"Get pre-releases" or "Check for updates automatically" was ticked or unticked."""
+        try:
+            updates.set_choice(key, on)
+        except OSError as exc:
+            self.options.show_updates(updates.status())
+            self.options.updates_said(f"Couldn't save the setting: {exc}")
+            return
+        log.info("Updates: %s is %s", key, "on" if on else "off")
+        self.options.show_updates(updates.status())
+        self.options.updates_said(None)
+        if on and key == "automatic":
+            self.look_for_update()
+
+    def open_release_page(self, url: str) -> None:
+        """Open a release's page on GitHub in the browser (the address is built in ``updates.release_page``)."""
+        self.open_url(url)
 
     def start_tray(self) -> bool:
         """Start ``folio-exchange-app --tray`` in a process of its own. Tests replace this."""

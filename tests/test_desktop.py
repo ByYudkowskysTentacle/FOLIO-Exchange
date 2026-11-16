@@ -647,7 +647,7 @@ def test_a_window_open_in_another_windows_session_is_reported(qtbot, site, monke
     shown = []
     monkeypatch.setattr(desktop_app, "alert", lambda parent, message, icon=None: shown.append(message))
     monkeypatch.setattr(desktop_app, "setup_logging", lambda *a, **kw: None)     # leave the test's logging be
-    monkeypatch.setattr(desktop_app.single, "claim", lambda name: ("elsewhere", None))
+    monkeypatch.setattr(desktop_app.single, "claim", lambda name, view=None: ("elsewhere", None))
     assert desktop_app.run(str(site), console=False) == 1
     assert shown == [desktop_app.ELSEWHERE] and "another of your Windows sessions" in shown[0]
 
@@ -725,7 +725,7 @@ def test_the_app_collects_garbage_on_its_own_thread(qtbot, site, monkeypatch):
 
     running = []
 
-    def run(qapp, named, verbose, console):
+    def run(qapp, named, verbose, console, view=None):
         running.extend(c for c in qapp.findChildren(MainThreadCollector) if c.timer.isActive())
         return 0
 
