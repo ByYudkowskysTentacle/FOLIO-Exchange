@@ -1,19 +1,25 @@
 """The last step of an in-place update: swap the program folder for the new one built beside it.
 
-Windows won't rename a folder while a program runs from it, so this step can't run from the program folder.
-``selfupdate.start_swap`` copies this file out of it and runs it with the Python the install was made from
-(``-I``, so nothing from the program folder or the current folder is imported). For that reason it uses the
-standard library only: no FOLIO-Exchange module, no requests, no Qt. A test checks the imports.
+It runs from outside the program folder: ``selfupdate.start_swap`` copies this file out of it and runs it with
+the Python the install was made from (``-I``, so nothing from the program folder or the current folder is
+imported). For that reason it uses the standard library only: no FOLIO-Exchange module, no requests, no Qt. A
+test checks the imports.
+
+Windows does let a folder be renamed while a program runs from it, as long as nothing holds a data file open
+in it or has its current folder there. A program that kept running across the swap would load its next
+modules from the other version. Three things keep that from happening: every FOLIO-Exchange entry point
+refuses to start while the ``updating.json`` marker is new (``updating.py``); the swap waits until no program
+runs from the program folder, and stops if the list of programs can't be read; and after the first rename it
+checks that nothing runs from the renamed folder, and puts it back if something does.
 
 What it does, given the plan ``selfupdate.prepare`` wrote:
 
 1. waits up to two minutes for every FOLIO-Exchange program in the program folder to quit, and out of
    minutes 5 to 15 of the hour, when the scheduled task starts;
-2. renames ``program`` to ``program.outgoing`` and the new ``program.new`` to ``program``, so the scheduled
-   task's program path stays the same;
-3. reinstalls FOLIO-Exchange's own wheel in the new folder without downloading anything, so its commands
-   (``folio-exchange.exe``, ``folio-exchange-app.exe``) name the folder's new path, and checks that
-   ``folio-exchange --version`` reports the new version;
+2. renames ``program`` to ``program.outgoing``, checks that no program kept running from it, then renames
+   ``program.new`` to ``program``, so the scheduled task's program path stays the same. ``prepare`` already
+   pointed the new folder's commands at ``program``, so they work the moment it has that name;
+3. checks that ``folio-exchange --version`` reports the new version;
 4. on success keeps the folder it replaced as ``program.previous`` (removing the one before it), so going back
    is possible; on any failure puts the old folder back as ``program``;
 5. removes the ``updating.json`` marker in every case and writes what happened to the plan's result file.
@@ -43,6 +49,7 @@ QUIET = (5, 15)            # minutes of the hour when the scheduled task starts,
 WAIT_SECONDS = 120         # for the windows and the tray to quit
 STEP_SECONDS = 2
 COMMAND_SECONDS = 600
+SETTLE_SECONDS = 10        # for a program caught by the first rename to quit (it finds the marker and stops)
 _VERSION = re.compile(r"\b(\d+\.\d+\.\d+)\b")
 
 
@@ -59,6 +66,10 @@ def program_exe(env: Path) -> Path:
     return scripts_dir(env) / ("folio-exchange.exe" if os.name == "nt" else "folio-exchange")
 
 
+def app_exe_name() -> str:
+    return "folio-exchange-app.exe" if os.name == "nt" else "folio-exchange-app"
+
+
 def reported_version(text: str | None) -> str | None:
     """The first X.Y.Z in what ``--version`` printed (``folio-exchange 0.3.0 (commit …)``)."""
     m = _VERSION.search(text or "")
@@ -70,6 +81,10 @@ def in_quiet_minutes(now: datetime) -> bool:
 
 
 # ------------------------------------------------------------------ programs running from a folder
+class ProcessListError(OSError):
+    """The list of running programs couldn't be read, which must never read as "nothing is running"."""
+
+
 def _inside(path: str, folder: Path) -> bool:
     prefix = os.path.normcase(os.path.abspath(str(folder))).rstrip("\\/") + os.sep
     return os.path.normcase(os.path.abspath(path)).startswith(prefix)
@@ -79,7 +94,7 @@ def _windows_processes() -> list[tuple[int, str]]:
     import ctypes
     from ctypes import wintypes
 
-    psapi, kernel32 = ctypes.WinDLL("psapi"), ctypes.WinDLL("kernel32")
+    psapi, kernel32 = ctypes.WinDLL("psapi", use_last_error=True), ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
@@ -90,7 +105,7 @@ def _windows_processes() -> list[tuple[int, str]]:
         pids = (wintypes.DWORD * size)()
         used = wintypes.DWORD()
         if not psapi.EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(used)):
-            return []
+            raise ProcessListError(f"EnumProcesses failed ({ctypes.get_last_error()})")
         count = used.value // ctypes.sizeof(wintypes.DWORD)
         if count < size:
             break
@@ -111,6 +126,8 @@ def _windows_processes() -> list[tuple[int, str]]:
 
 
 def _proc_processes() -> list[tuple[int, str]]:
+    if not Path("/proc/self/exe").exists():
+        raise ProcessListError("there's no /proc to read")
     out = []
     for entry in Path("/proc").glob("[0-9]*"):
         try:
@@ -123,12 +140,86 @@ def _proc_processes() -> list[tuple[int, str]]:
 def processes_in(folder: Path) -> list[tuple[int, str]]:
     """The processes this user can see whose program file is inside ``folder``: as ``install.ps1`` finds them,
     the page, the app, the tray, a scheduled run or the command line. (On Windows a program folder's
-    ``python.exe`` and ``folio-exchange.exe`` start the base Python but stay running themselves, so they count.)"""
+    ``python.exe`` and ``folio-exchange.exe`` start the base Python but stay running themselves, so they count.)
+    A process this user can't open (another user's, or Windows' own) is left out, as ``install.ps1`` leaves it
+    out. Raises ``ProcessListError`` when the list itself can't be read."""
     try:
         found = _windows_processes() if os.name == "nt" else _proc_processes()
-    except (OSError, AttributeError):
-        found = []
+    except ProcessListError:
+        raise
+    except (OSError, AttributeError) as exc:
+        raise ProcessListError(str(exc)) from None
     return [(pid, path) for pid, path in found if path and _inside(path, folder)]
+
+
+def _windows_parents() -> dict[int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)              # TH32CS_SNAPPROCESS
+    if not snap or snap == ctypes.c_void_p(-1).value:
+        return {}
+    out = {}
+    try:
+        entry = Entry()
+        entry.dwSize = ctypes.sizeof(Entry)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            out[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+    return out
+
+
+def _proc_parents() -> dict[int, int]:
+    out = {}
+    for entry in Path("/proc").glob("[0-9]*"):
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+            out[int(entry.name)] = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return out
+
+
+def parent_pids() -> dict[int, int]:
+    """Each process's parent, by process id (empty when it can't be read)."""
+    try:
+        return _windows_parents() if os.name == "nt" else _proc_parents()
+    except (OSError, AttributeError):
+        return {}
+
+
+def own_chain(folder: Path, *, pid: int | None = None, processes=None, parents=None) -> set[int]:
+    """This process and the ancestors that started it from ``folder``. Started as ``folio-exchange-app.exe``,
+    the app is that launcher, the environment's ``pythonw.exe`` it starts, and the base Python that one starts:
+    none of them is another program to wait for."""
+    pid = os.getpid() if pid is None else pid
+    try:
+        inside = {p for p, _path in (processes or processes_in)(folder)}
+    except ProcessListError:
+        inside = set()
+    tree = (parents or parent_pids)()
+    chain = {pid}
+    parent = tree.get(pid)
+    while parent and parent in inside and parent not in chain:
+        chain.add(parent)
+        parent = tree.get(parent)
+    return chain
 
 
 # ------------------------------------------------------------------ the swap
@@ -162,22 +253,6 @@ def version_problem(run, env: Path, expected: str) -> str | None:
     return None
 
 
-def _relink_problem(run, env: Path, wheel: str | None) -> str | None:
-    """Reinstall FOLIO-Exchange's own wheel without downloading anything, so its commands name the folder's
-    new path (pip writes a program's full path into each command it makes)."""
-    if not wheel:
-        return None
-    try:
-        r = _run_quiet(run, [env_python(env), "-I", "-X", "utf8", "-m", "pip", "install", "--no-deps",
-                             "--force-reinstall", "--no-index", "--no-input", "--disable-pip-version-check", wheel],
-                       cwd=Path(env).parent)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return f"its commands couldn't be set up ({exc})"
-    if r.returncode != 0:
-        return f"its commands couldn't be set up ({_last_line(r)})"
-    return None
-
-
 def _remove(path: Path) -> bool:
     if not path.exists():
         return True
@@ -204,6 +279,15 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
             done.append(f"FOLIO-Exchange {old_version} is still installed.")
         return result
 
+    def running(folder: Path) -> bool | None:
+        """Whether a program runs from ``folder``, or None when that can't be told."""
+        try:
+            return bool(processes(folder))
+        except ProcessListError:
+            return None
+
+    unlisted = ("Couldn't list the programs running on this computer, so it can't tell whether FOLIO-Exchange "
+                "is running. Nothing was changed.")
     try:
         if plan.get("format") != PLAN_FORMAT:
             return stop("The update's plan is from another version of FOLIO-Exchange. Nothing was changed.")
@@ -212,14 +296,15 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
 
         waited = 0
         while True:
-            busy = processes(program)
-            if in_quiet_minutes(now()):
-                busy = busy or [(0, "the scheduled task's minutes")]
-            if not busy or waited >= wait_seconds:
+            busy = running(program)
+            if busy is None or (not busy and not in_quiet_minutes(now())) or waited >= wait_seconds:
                 break
             sleep(STEP_SECONDS)
             waited += STEP_SECONDS
-        if processes(program):
+        busy = running(program)
+        if busy is None:
+            return stop(unlisted)
+        if busy:
             return stop(f"FOLIO-Exchange is still running from {program}. Nothing was changed. Close it and "
                         "try the update again.")
         if in_quiet_minutes(now()):
@@ -233,6 +318,26 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
         except OSError as exc:
             return stop(f"The program folder couldn't be renamed ({exc.strerror or exc}). Nothing was changed. "
                         "A program may still be using it.")
+        # A program that started between the check and the rename now runs from program.outgoing. It finds the
+        # marker and quits; anything still there after a few seconds means the old folder goes back.
+        settled = 0
+        caught = running(outgoing)
+        while caught and settled < SETTLE_SECONDS:
+            sleep(STEP_SECONDS)
+            settled += STEP_SECONDS
+            caught = running(outgoing)
+        if caught is None or caught:
+            reason = unlisted if caught is None else (
+                "A program started from the program folder during the update. Nothing was changed. Try the "
+                "update again.")
+            try:
+                rename(outgoing, program)
+            except OSError as back:
+                result["program"] = "none"
+                left.append(f"Rename {outgoing} to {PROGRAM}, or run the installer again.")
+                return stop(f"{reason.replace(' Nothing was changed.', '')} The program folder couldn't be put "
+                            f"back ({back.strerror or back}).")
+            return stop(reason)
         try:
             rename(new, program)
         except OSError as exc:
@@ -245,7 +350,7 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
                 return stop(f"{reason} The old one couldn't be put back either ({back.strerror or back}).")
             return stop(f"{reason} The old version was put back.")
 
-        problem = _relink_problem(run, program, plan.get("wheel")) or version_problem(run, program, version)
+        problem = version_problem(run, program, version)
         if problem:
             reason = f"FOLIO-Exchange {version} didn't work after the swap, because {problem}."
             try:
