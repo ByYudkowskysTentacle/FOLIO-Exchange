@@ -131,6 +131,29 @@ def test_the_install_is_looked_up_only_when_it_matters():
     assert asked == [{"version": NEW}]
 
 
+def test_the_release_key_comes_only_from_the_code():
+    """updates.RELEASE_KEY is the one key the app passes: nothing else sets it, and only the window's Install
+    reads it (no setting, file or environment variable)."""
+    import ast
+
+    import folio_exchange
+
+    src = Path(folio_exchange.__file__).parent
+    readers, setters = set(), []
+    for path in src.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            named = (node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute)
+                     else None)
+            if named == "RELEASE_KEY":
+                where = path.relative_to(src).as_posix()
+                if isinstance(node.ctx, ast.Load):
+                    readers.add(where)
+                else:
+                    setters.append((where, node.lineno))
+    assert readers == {"desktop/actions.py"}
+    assert [where for where, _line in setters] == ["updates.py"]                    # its definition, only
+
+
 # ------------------------------------------------------------------ installing
 def test_without_a_key_the_engine_is_never_reached(tmp_path):
     res = updating.install(NEW, key=None, own=tmp_path, engine=Untouchable(), probe=pytest.fail, ask_quit=pytest.fail)
