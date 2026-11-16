@@ -63,8 +63,11 @@ def test_options_tells_about_a_newer_version_and_how_to_get_it(qtbot, site, gith
     assert page.update_notes.textFormat() == Qt.TextFormat.PlainText    # never read as markup
     command = page.update_line.text()
     assert seen(page.update_line) and seen(page.update_how)
-    assert command.endswith('-m pip install "folio-exchange[desktop] @ git+https://github.com/ByYudkowskysTentacle/'
-                            'FOLIO-Exchange.git@v0.3.0"')
+    assert command.endswith('-m pip install "folio-exchange[desktop] @ https://github.com/ByYudkowskysTentacle/'
+                            'FOLIO-Exchange/archive/refs/tags/v0.3.0.zip"')
+    assert "git+" not in command                                   # the tag's zip: the PC needs no Git
+    assert page.update_how.text() == ("To update, close FOLIO-Exchange and its tray icon. Then run this command "
+                                      "in Command Prompt:")        # PowerShell refuses a quoted path first
     assert "pythonw" not in command.lower() and "pip install folio-exchange" not in command
     click(qtbot, page.copy_button)
     assert QApplication.clipboard().text() == command and page.update_result.text() == "Copied the command."
@@ -75,6 +78,24 @@ def test_options_tells_about_a_newer_version_and_how_to_get_it(qtbot, site, gith
     qtbot.waitUntil(lambda: not w.update_reader.busy, timeout=LONG)
     assert len(github.calls) == 1                                  # not again within the day
     assert not hasattr(page, "install_button")                     # U0 only tells
+
+
+def test_an_install_the_installer_made_is_told_to_run_the_installer_again(qtbot, site, github, monkeypatch, tmp_path):
+    """Regression (review of #37): every library PC is set up by installer/install.ps1 and has no Git, and the
+    pip command offered there needed it."""
+    program = tmp_path / "FOLIO-Exchange" / "program"
+    program.mkdir(parents=True)
+    monkeypatch.setattr(options.sys, "prefix", str(program))
+    assert not options.installer_install()                         # a folder called program isn't enough
+    (program / "pyvenv.cfg").write_text("home = C:\\Python312\n", encoding="utf-8")
+    assert options.installer_install()
+    w, page = options_page(qtbot, site)
+    assert seen(page.update_available) and seen(page.update_notes) and seen(page.release_button)
+    assert seen(page.update_how) and page.update_how.text() == options.UPDATE_INSTALLER
+    assert "run the installer (install.cmd) again" in options.UPDATE_INSTALLER
+    assert not seen(page.update_line) and not seen(page.copy_button) and page.update_line.text() == ""
+    monkeypatch.setattr(options.sys, "prefix", str(tmp_path / "venv"))
+    assert not options.installer_install()
 
 
 def test_check_for_updates_says_when_this_is_the_newest_version(qtbot, site, github):
@@ -172,6 +193,7 @@ def test_the_updates_section_follows_the_wording_rules(qtbot, site, github):
     letters = [x for x in (letter(b.text()) for b in page.findChildren(QAbstractButton)) if x]
     assert len(letters) == len(set(letters)) and "s" not in letters, letters        # unique, and not the menu's
     for words in (options.UPDATES_ABOUT, options.UPDATES_MANAGED, options.UPDATES_BY_IT, options.UPDATE_HOW,
+                  options.UPDATE_INSTALLER,
                   options.PRERELEASE_ABOUT, page.update_available.text()):
         assert "—" not in words and words[0].isupper() and words.rstrip()[-1] in ".:"
     assert "sends nothing about your library" in options.UPDATES_ABOUT          # the privacy fact, said once
