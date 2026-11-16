@@ -41,7 +41,7 @@ import subprocess
 import sys
 import zipfile
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -52,6 +52,7 @@ from . import __version__, swaphelper
 from .config import BUNDLED_RECIPES, SITE_FILE, load_site
 from .errors import FxError, LockBusy
 from .lock import RunLock
+from .updating import MARKER, marker_active, marker_path, marker_started, update_in_progress, write_marker  # noqa: F401
 
 log = logging.getLogger(__name__)
 
@@ -66,15 +67,13 @@ MAX_SMALL_BYTES = 64 * 1024
 CONNECT_SECONDS = 30
 STALL_SECONDS = 60          # no bytes for this long stops a download
 MAX_REDIRECTS = 4
-MARKER = swaphelper.MARKER
-MARKER_AGE = timedelta(hours=1)
 UPDATES = "updates"
 PLAN = "plan.json"
 RESULT = "result.json"
 HELPER = "helper"
 PART = ".part"
 
-_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 _VERSION_DIR = re.compile(r"^\d+\.\d+\.\d+$")
 _SUM_LINE = re.compile(r"^([0-9a-fA-F]{64}) [ *](\S.*)$")
@@ -99,7 +98,7 @@ def zip_name(version: str) -> str:
 
 
 def tag_version(tag: str) -> tuple[int, int, int] | None:
-    m = _TAG.match(tag or "")
+    m = _TAG.fullmatch(tag or "")
     return (int(m[1]), int(m[2]), int(m[3])) if m else None
 
 
@@ -170,63 +169,18 @@ def find_install(*, prefix: str | os.PathLike | None = None, base_prefix: str | 
     return out
 
 
-# ------------------------------------------------------------------ the updating.json marker
-def marker_path(root: str | os.PathLike) -> Path:
-    """Beside the program folder, not in it: the folder is swapped, and the marker must outlast the swap."""
-    return Path(root) / MARKER
-
-
-def write_marker(root: str | os.PathLike, version: str, now: datetime | None = None) -> Path:
-    now = now or datetime.now(timezone.utc)
-    path = marker_path(root)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"version": version, "started": now.isoformat(timespec="seconds")}), encoding="utf-8")
-    os.replace(tmp, path)
-    return path
-
-
-def marker_started(root: str | os.PathLike) -> datetime | None:
-    """When the update that wrote the marker started, or None when there's no marker."""
-    path = marker_path(root)
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        started = datetime.fromisoformat(str(raw["started"]))
-        return started if started.tzinfo else started.replace(tzinfo=timezone.utc)
-    except FileNotFoundError:
-        return None
-    except (OSError, ValueError, KeyError, TypeError):
-        try:
-            return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-        except OSError:
-            return None
-
-
-def marker_active(root: str | os.PathLike, now: datetime | None = None) -> bool:
-    """True while an update's marker is less than an hour old. An older one (a failed update) is ignored, so it
-    can't stop runs for good; so is one dated more than five minutes ahead."""
-    started = marker_started(root)
-    if started is None:
-        return False
-    age = (now or datetime.now(timezone.utc)) - started
-    return -timedelta(minutes=5) <= age < MARKER_AGE
-
-
-def update_in_progress(prefix: str | os.PathLike | None = None, now: datetime | None = None) -> bool:
-    """For ``run --due``: whether this install's program is being updated right now. Only an install made by
-    ``install.ps1`` (an environment called ``program``) has a marker."""
-    prefix = Path(prefix if prefix is not None else sys.prefix)
-    if prefix.name.lower() != swaphelper.PROGRAM:
-        return False
-    return marker_active(prefix.parent, now)
-
-
 # ------------------------------------------------------------------ never during work
 def busy_reasons(program: Path, *, now: datetime, processes: Callable[[Path], list] = swaphelper.processes_in,
                  allow: Iterable[int] = ()) -> list[str]:
     """Why an update can't start now, or an empty list."""
     reasons = []
     allowed = set(allow)
-    others = [pid for pid, _path in processes(program) if pid not in allowed]
+    try:
+        others = [pid for pid, _path in processes(program) if pid not in allowed]
+    except swaphelper.ProcessListError:
+        others = None
+        reasons.append("Couldn't list the programs running on this computer, so it can't tell whether FOLIO-Exchange "
+                       "is running. Try again later.")
     if others:
         reasons.append(f"FOLIO-Exchange is running from {program}: a run, the page or another window. Try again "
                        "when it's finished.")
@@ -239,6 +193,25 @@ def busy_reasons(program: Path, *, now: datetime, processes: Callable[[Path], li
 
 
 # ------------------------------------------------------------------ downloading
+def _no_account(r: Any) -> Any:
+    """An ``auth`` that adds nothing, so requests never sends an account from the person's ``.netrc``."""
+    return r
+
+
+def download_session() -> requests.Session:
+    """A session that sends GitHub only what ``_download`` sets: no default headers and no ``.netrc`` account.
+    The system's proxy settings still apply."""
+    s = requests.Session()
+    s.headers.clear()
+    s.auth = _no_account
+    s.max_redirects = 0
+    return s
+
+
+def _size(limit: int) -> str:
+    return f"{limit // (1024 * 1024)} MB" if limit >= 1024 * 1024 else f"{limit // 1024} KB"
+
+
 def _download(http: Any, url: str, dest: Path, limit: int, what: str) -> None:
     """One file from GitHub to ``dest``, a new file. Redirects are followed by hand, to ``HOSTS`` only."""
     for _hop in range(MAX_REDIRECTS + 1):
@@ -269,16 +242,16 @@ def _download(http: Any, url: str, dest: Path, limit: int, what: str) -> None:
         except ValueError:
             length = 0
         if length > limit:
-            raise Stopped("download", f"{what} is larger than {limit // 1024} KB, which is more than an update "
-                                      f"should be. {DELETED}")
+            raise Stopped("download", f"{what} is larger than {_size(limit)}, which is more than an update should "
+                                      f"be. {DELETED}")
         got = 0
         with open(dest, "xb") as fh:
             try:
                 for chunk in r.iter_content(64 * 1024):
                     got += len(chunk)
                     if got > limit:
-                        raise Stopped("download", f"{what} is larger than {limit // 1024} KB, which is more than "
-                                                  f"an update should be. {DELETED}")
+                        raise Stopped("download", f"{what} is larger than {_size(limit)}, which is more "
+                                                  f"than an update should be. {DELETED}")
                     fh.write(chunk)
             except requests.RequestException:
                 raise Stopped("download", f"The download of {what} stopped, or got nothing for "
@@ -478,7 +451,7 @@ def build_environment(base_python: Path, archive: Path, target: Path, work: Path
                       run: Callable = subprocess.run) -> Path:
     """Make a Python environment at ``target`` with FOLIO-Exchange from the checked ``archive``, as
     install.ps1 does: the same base Python, the zip's own constraints.txt, and Qt when the current program has
-    it. Returns FOLIO-Exchange's wheel, which the swap reinstalls offline. Dependencies come from PyPI."""
+    it. Returns FOLIO-Exchange's wheel. Dependencies come from PyPI."""
     def step(argv: list, what: str) -> None:
         r = run([str(a) for a in argv], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 stdin=subprocess.DEVNULL, timeout=1800, cwd=str(work),
@@ -502,6 +475,55 @@ def build_environment(base_python: Path, archive: Path, target: Path, work: Path
     spec = f"folio-exchange{'[desktop]' if desktop else ''} @ {found[0].resolve().as_uri()}"
     step([*pip, "install", *quiet, *pinned, spec], "Installing FOLIO-Exchange and the parts it needs")
     return found[0]
+
+
+# ------------------------------------------------------------------ the commands' program path
+_ZIP_START = b"PK\x03\x04"
+
+
+def _retarget(data: bytes, old: bytes, new: bytes, *, exe: bool) -> bytes | None:
+    """``data`` with the old environment's path in its ``#!`` line changed to the new one, or None when it has
+    no such line. A pip command on Windows is a small launcher, then that line, then a zip of the script; on
+    other systems it's a text script whose first line it is."""
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    pattern = re.compile(rb'#!"?(' + re.escape(old) + rb")[^\r\n]*\r?\n", flags)
+    if not exe:
+        m = pattern.match(data)
+    else:
+        m = next((m for m in reversed(list(pattern.finditer(data))) if data.startswith(_ZIP_START, m.end())), None)
+    if m is None:
+        return None
+    return data[:m.start(1)] + new + data[m.end(1):]
+
+
+def retarget_scripts(env: Path, final: Path) -> list[str]:
+    """Point the commands in ``env`` (built at ``program.new``) at ``final`` (``program``) before the swap.
+    pip writes the full path of the environment's Python into each command it makes, so without this,
+    ``folio-exchange.exe`` would name a folder that's gone once the folders are swapped. Returns the commands
+    changed. Raises ``Stopped`` when FOLIO-Exchange's own commands can't be changed."""
+    scripts = swaphelper.scripts_dir(env)
+    old = (str(Path(env)) + os.sep).encode("utf-8")
+    new = (str(Path(final)) + os.sep).encode("utf-8")
+    changed = []
+    for f in sorted(scripts.iterdir()):
+        if not f.is_file():
+            continue
+        data = f.read_bytes()
+        out = _retarget(data, old, new, exe=data[:2] == b"MZ")
+        if out is None:
+            continue
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_bytes(out)
+        shutil.copymode(f, tmp)
+        os.replace(tmp, f)
+        changed.append(f.name)
+    own = {swaphelper.program_exe(env).name}
+    if (scripts / swaphelper.app_exe_name()).is_file():
+        own.add(swaphelper.app_exe_name())
+    if not own <= set(changed):
+        raise Stopped("check", "FOLIO-Exchange was built, but its commands couldn't be pointed at the program "
+                               "folder. Nothing was changed.")
+    return changed
 
 
 # ------------------------------------------------------------------ prepare, start the swap, results
@@ -554,7 +576,7 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
             raise Stopped("version", f"{version} isn't newer than the version you have ({current}), so it wasn't "
                                      "installed.")
         now = now or datetime.now(timezone.utc).astimezone()
-        allow = set(allow_pids) if allow_pids is not None else {os.getpid(), os.getppid()}
+        allow = set(allow_pids) if allow_pids is not None else swaphelper.own_chain(program, processes=processes)
         reasons = busy_reasons(program, now=now, processes=processes, allow=allow)
         if reasons:
             raise Stopped("busy", " ".join(reasons) + " Nothing was changed.")
@@ -575,7 +597,7 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
             folder.mkdir()
             stage_dirs.append(folder)
             result["stage"] = "download"
-            archive = fetch_release(tag, folder, key=key, http=http if http is not None else requests.Session())
+            archive = fetch_release(tag, folder, key=key, http=http if http is not None else download_session())
             done.append(f"Downloaded FOLIO-Exchange {version} and checked its signature.")
             stage_dirs.remove(folder)
             _prune(updates, {version, f"from-{current}", HELPER})
@@ -597,16 +619,17 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
             work.mkdir()
             stage_dirs.append(new)
             build = builder or build_environment
-            wheel = build(Path(install["python"]), archive, new, work, desktop=_has_qt(program))
+            build(Path(install["python"]), archive, new, work, desktop=_has_qt(program))
             result["stage"] = "check"
             problem = swaphelper.version_problem(run, new, version)
             if problem:
                 raise Stopped("check", f"FOLIO-Exchange {version} was built, but {problem}. Nothing was changed.")
+            retarget_scripts(new, program)
             done.append(f"Built FOLIO-Exchange {version} in {new}.")
             stage_dirs.remove(new)
 
             plan = {"format": swaphelper.PLAN_FORMAT, "root": str(program.parent), "new": str(new),
-                    "version": version, "from": current, "wheel": str(wheel) if wheel else None,
+                    "version": version, "from": current,
                     "python": install["python"], "result": str(updates / RESULT), "restart": []}
             plan_path = folder / PLAN
             plan_path.write_text(json.dumps(plan, indent=1), encoding="utf-8")

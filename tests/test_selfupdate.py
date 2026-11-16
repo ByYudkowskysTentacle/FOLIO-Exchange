@@ -99,9 +99,22 @@ def fake_env(folder: Path, version: str) -> None:
     scripts = swaphelper.scripts_dir(folder)
     scripts.mkdir(parents=True, exist_ok=True)
     (folder / "pyvenv.cfg").write_text(f"home = {folder.parent / 'base'}\n", encoding="utf-8")
-    for exe in (swaphelper.env_python(folder), swaphelper.program_exe(folder)):
-        exe.write_text("fake", encoding="utf-8")
+    swaphelper.env_python(folder).write_text("fake", encoding="utf-8")
+    for exe in (swaphelper.program_exe(folder), scripts / swaphelper.app_exe_name()):
+        exe.write_bytes(launcher(folder))
     (folder / "VERSION").write_text(version, encoding="utf-8")
+
+
+def launcher(env: Path, python: str | None = None) -> bytes:
+    """A pip command as pip makes it: on Windows a launcher, a #! line naming the environment's Python and a
+    zip of the script; elsewhere a text script with that #! line."""
+    python = python or str(swaphelper.env_python(env))
+    if os.name != "nt":
+        return f"#!{python}\nimport sys\n".encode()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("__main__.py", "import sys\n")
+    return b"MZ launcher stub #!not-this\n" + f'#!"{python}"\r\n'.encode() + buf.getvalue()
 
 
 class Builder:
@@ -124,16 +137,15 @@ class Builder:
 
 class Runner:
     """Stands in for subprocess.run: ``--version`` prints the VERSION file of the environment the program is in;
-    pip succeeds unless told otherwise."""
+    nothing else is run."""
 
-    def __init__(self, pip_fails=False, broken=()):
-        self.pip_fails, self.broken, self.calls = pip_fails, set(broken), []
+    def __init__(self, broken=()):
+        self.broken, self.calls = set(broken), []
 
     def __call__(self, argv, **kw):
         self.calls.append(argv)
         env = Path(argv[0]).parents[1]
-        if "pip" in argv:
-            return types.SimpleNamespace(returncode=1 if self.pip_fails else 0, stdout="", stderr="pip failed")
+        assert Path(argv[0]).name == swaphelper.program_exe(env).name, argv
         if env.name in self.broken:
             return types.SimpleNamespace(returncode=1, stdout="", stderr="ImportError: no module named yaml")
         version = (env / "VERSION").read_text(encoding="utf-8")
@@ -240,8 +252,11 @@ def test_a_good_update_downloads_checks_copies_builds_and_swaps(install, key, a_
     assert (root / "program.previous" / "VERSION").read_text(encoding="utf-8") == OLD     # a way back
     assert not (root / "program.new").exists() and not (root / "program.outgoing").exists()
     assert not (root / "updating.json").exists()
-    pip = [c for c in run.calls if "pip" in c][0]
-    assert pip[0] == str(swaphelper.env_python(root / "program")) and "--no-index" in pip and "--no-deps" in pip
+    # the commands were pointed at program before the swap, so they work the moment it has that name
+    for name in (swaphelper.program_exe(root).name, swaphelper.app_exe_name()):
+        data = (root / "program" / swaphelper.scripts_dir(root).name / name).read_bytes()
+        assert str(swaphelper.env_python(root / "program")).encode() in data
+        assert b"program.new" not in data
     assert selfupdate.last_result(updates)["ok"] is True
 
 
@@ -502,7 +517,7 @@ def test_a_program_folder_still_in_use_is_not_renamed(install, ready):
 
 
 def test_a_new_version_that_fails_after_the_swap_is_rolled_back(install, ready):
-    for run in (Runner(pip_fails=True), Runner(broken={"program"})):
+    for run in (Runner(broken={"program"}),):
         plan = json.loads(Path(ready).read_text(encoding="utf-8"))
         if not Path(plan["new"]).exists():
             fake_env(Path(plan["new"]), NEW)
@@ -643,3 +658,162 @@ def test_run_due_skips_while_the_program_is_being_updated(tmp_path, monkeypatch,
     assert "being updated, so this scheduled pass is skipped" in capsys.readouterr().out
     selfupdate.write_marker(tmp_path, NEW, datetime.now(timezone.utc) - timedelta(hours=2))
     assert not selfupdate.update_in_progress()
+
+
+# ------------------------------------------------------------------ review of 16 Nov: regressions
+def test_no_entry_point_starts_while_the_program_is_being_swapped(tmp_path, monkeypatch, capsys):
+    """Windows lets the program folder be renamed under a running program, so nothing may start from it
+    during the swap: the command line (every command), the desktop app and the tray."""
+    from folio_exchange import desktop
+
+    program = tmp_path / "program"
+    program.mkdir()
+    monkeypatch.setattr(sys, "prefix", str(program))
+    site = make_site(tmp_path / "lakeside", "https://folio.example.org")
+    selfupdate.write_marker(tmp_path, NEW)
+    for argv in (["-s", str(site), "feeds"], ["-s", str(site), "run", "--all"], ["init", str(tmp_path / "x")]):
+        assert main(argv) == 1
+        assert capsys.readouterr().err.strip() == "FOLIO-Exchange is being updated. Try again in a few minutes."
+    assert not (tmp_path / "x").exists()
+    assert desktop.main(["--site", str(site)]) == 1
+    assert desktop.main(["--tray"]) == 1
+    assert capsys.readouterr().err.count("FOLIO-Exchange is being updated.") == 2
+    with pytest.raises(SystemExit) as stopped:           # --version answers: the swap's own check uses it
+        main(["--version"])
+    assert stopped.value.code == 0
+    selfupdate.write_marker(tmp_path, NEW, datetime.now(timezone.utc) - timedelta(hours=2))
+    assert main(["-s", str(site), "feeds"]) == 0           # an old marker, from an update that died, is ignored
+
+
+def test_a_process_list_that_cannot_be_read_never_means_nothing_runs(install, key, ready, monkeypatch):
+    def unreadable(folder):
+        raise swaphelper.ProcessListError("access denied")
+
+    result = run_prepare(install, key, Offline(), processes=unreadable, allow_pids={1})
+    assert result["stage"] == "busy" and result["reason"].startswith("Couldn't list the programs running")
+    result = selfupdate.swap(ready, run=Runner(), processes=unreadable, now=lambda: CALM, sleep=lambda s: None)
+    assert result["program"] == "old" and result["reason"].startswith("Couldn't list the programs running")
+    assert (Path(install["root"]) / "program" / "VERSION").read_text(encoding="utf-8") == OLD
+    # the real listing raises too, rather than returning nothing
+    name = "_windows_processes" if os.name == "nt" else "_proc_processes"
+    monkeypatch.setattr(swaphelper, name, lambda: (_ for _ in ()).throw(OSError("denied")))
+    with pytest.raises(swaphelper.ProcessListError):
+        swaphelper.processes_in(Path(install["program"]))
+
+
+def test_a_program_started_during_the_swap_puts_the_old_folder_back(install, ready):
+    def caught(folder):
+        return [(77, str(Path(folder) / "Scripts" / "folio-exchange.exe"))] if Path(folder).name == "program.outgoing" \
+            else []
+
+    slept = []
+    result = selfupdate.swap(ready, run=Runner(), processes=caught, now=lambda: CALM, sleep=slept.append)
+    assert result["program"] == "old" and result["reason"].startswith("A program started from the program folder")
+    assert sum(slept) >= swaphelper.SETTLE_SECONDS
+    root = Path(install["root"])
+    assert (root / "program" / "VERSION").read_text(encoding="utf-8") == OLD
+    assert (root / "program.new").is_dir() and not (root / "program.outgoing").exists()
+    # one that quits within a few seconds (it found the marker) doesn't stop the update
+    answers = [[(77, "x")], []]
+    result = selfupdate.swap(ready, run=Runner(), now=lambda: CALM, sleep=lambda s: None,
+                             processes=lambda f: (answers.pop(0) if answers else [])
+                             if Path(f).name == "program.outgoing" else [])
+    assert result["ok"], result["reason"]
+
+
+def test_the_app_started_from_its_launcher_is_not_another_program(install, key):
+    """Started as folio-exchange-app.exe, the app is three processes: the launcher and the environment's
+    pythonw.exe (both in the program folder) and the base Python. None is another program to wait for."""
+    program = Path(install["program"])
+    me = os.getpid()
+    running = [(10, str(program / "Scripts" / "folio-exchange-app.exe")), (11, str(program / "Scripts" / "pythonw.exe"))]
+    tree = {me: 11, 11: 10, 10: 4}
+    assert swaphelper.own_chain(program, processes=lambda f: running, parents=lambda: tree) == {me, 10, 11}
+    import folio_exchange.swaphelper as helper_module
+
+    original = helper_module.parent_pids
+    helper_module.parent_pids = lambda: tree
+    try:
+        assert run_prepare(install, key, FakeGitHub(release(key[0])), processes=lambda f: running)["ok"]
+        # a scheduled run started by Task Scheduler is not in the chain
+        others = [*running, (20, str(program / "Scripts" / "folio-exchange.exe"))]
+        assert run_prepare(install, key, Offline(), processes=lambda f: others)["stage"] == "busy"
+    finally:
+        helper_module.parent_pids = original
+
+
+def test_parent_pids_finds_this_process_parent():
+    if sys.platform not in ("win32", "linux"):
+        pytest.skip("parents are read on Windows and Linux")
+    assert swaphelper.parent_pids().get(os.getpid()) == os.getppid()
+
+
+def test_commands_are_pointed_at_the_program_folder_before_the_swap(tmp_path):
+    new, final = tmp_path / "program.new", tmp_path / "program"
+    fake_env(new, NEW)
+    (swaphelper.scripts_dir(new) / ("pip.exe" if os.name == "nt" else "pip")).write_bytes(launcher(new))
+    (swaphelper.scripts_dir(new) / "activate.bat").write_text("set X=1\n", encoding="utf-8")
+    changed = selfupdate.retarget_scripts(new, final)
+    assert set(changed) == {swaphelper.program_exe(new).name, swaphelper.app_exe_name(),
+                            "pip.exe" if os.name == "nt" else "pip"}
+    data = swaphelper.program_exe(new).read_bytes()
+    assert str(swaphelper.env_python(final)).encode() in data and b"program.new" not in data
+    if os.name == "nt":
+        assert data.startswith(b"MZ launcher stub #!not-this\n")           # only the line before the zip
+        assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["__main__.py"]
+
+
+def test_a_build_whose_commands_cannot_be_retargeted_is_never_swapped_in(install, key):
+    class Odd(Builder):
+        def __call__(self, *a, **k):
+            wheel = super().__call__(*a, **k)
+            swaphelper.program_exe(a[2]).write_bytes(b"no #! line here")
+            return wheel
+
+    result = run_prepare(install, key, FakeGitHub(release(key[0])), builder=Odd())
+    assert result["stage"] == "check" and "couldn't be pointed at the program folder" in result["reason"]
+    old_program_untouched(install)
+
+
+def test_a_real_pip_command_runs_after_its_folder_is_renamed(tmp_path):
+    """A real environment and a command made by distlib (pip's own): after retargeting and renaming the
+    folder, the command starts from its new place and runs."""
+    import subprocess
+
+    distlib = pytest.importorskip("pip._vendor.distlib.scripts")
+    new, final = tmp_path / "program.new", tmp_path / "program"
+    made = subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(new)], capture_output=True, text=True,
+                          timeout=120)
+    assert made.returncode == 0, made.stderr
+    (tmp_path / "fxprobe.py").write_text("def main():\n    print('probe ran')\n", encoding="utf-8")
+    maker = distlib.ScriptMaker(None, str(swaphelper.scripts_dir(new)))
+    maker.executable = str(swaphelper.env_python(new))
+    maker.variants = {""}
+    maker.make("folio-exchange = fxprobe:main")
+    assert "folio-exchange" in " ".join(selfupdate.retarget_scripts(new, final))
+    os.rename(new, final)
+    out = subprocess.run([str(swaphelper.program_exe(final))], capture_output=True, text=True, timeout=60,
+                         env={**os.environ, "PYTHONPATH": str(tmp_path)})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "probe ran"
+
+
+def test_downloads_send_no_account_from_netrc_and_no_extra_headers(tmp_path, monkeypatch):
+    netrc = tmp_path / "netrc"
+    netrc.write_text("machine github.com login someone password not-a-real-token\n", encoding="utf-8")
+    monkeypatch.setenv("NETRC", str(netrc))
+    url = f"{BASE}SHA256SUMS"
+    headers = {"User-Agent": "FOLIO-Exchange/0.2.0", "Accept": "application/octet-stream"}
+    plain = requests.Session()
+    assert "Authorization" in plain.prepare_request(requests.Request("GET", url, headers=headers)).headers, \
+        "the test's .netrc reaches a plain session"
+    s = selfupdate.download_session()
+    sent = s.prepare_request(requests.Request("GET", url, headers=headers))
+    assert dict(sent.headers) == headers
+    settings = s.merge_environment_settings(url, {}, True, None, None)
+    assert "auth" not in settings or settings.get("auth") is None
+
+
+def test_a_tag_with_a_trailing_newline_is_not_a_release_tag():
+    assert selfupdate.tag_version("v0.3.0\n") is None
+    assert selfupdate.tag_version("v0.3.0") == (0, 3, 0)

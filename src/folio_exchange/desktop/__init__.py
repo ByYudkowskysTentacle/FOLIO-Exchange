@@ -144,6 +144,11 @@ def main(argv: list[str] | None = None) -> int:
     except _Usage as exc:
         tell(str(exc), console)
         return 1
+    from ..updating import UPDATING, update_in_progress
+
+    if update_in_progress():                           # the window and the tray: the program folder is being swapped
+        tell(UPDATING, console, icon=MB_ICONINFORMATION)
+        return 1
     spare_constants()                                  # before the first Qt call (see its note)
     problem = qt_problem()
     if problem:
