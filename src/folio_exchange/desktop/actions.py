@@ -1,5 +1,5 @@
 """The window's setup actions (D3): connecting to FOLIO, adding a feed, a feed's settings, delivery, password and
-key, recipes, renaming the site folder, the scheduled task and alerts. ``MainWindow`` takes these in as a
+key, recipes, renaming the site folder, the scheduled task, alerts, and installing an update (``installing.py``). ``MainWindow`` takes these in as a
 mixin, so ``window.py`` keeps the reading, the feeds' actions and closing.
 
 As for the feeds' actions: whatever changes a file, reaches the network or stores a secret runs off the window's
@@ -16,14 +16,16 @@ import logging
 import os
 from pathlib import Path
 
-from .. import recipeops, runner, setupops, siteops, sources, updates, views
+from PySide6.QtCore import QTimer
+
+from .. import __version__, recipeops, runner, setupops, siteops, sources, updates, views
 from ..config import load_site
 from ..errors import ConfigError, FxError
-from . import model, places, startup
+from . import installing, model, places, startup
 from .alerts import AlertsDialog
 from .builder import RecipeBuilder
 from .delivery import DeliveryDialog
-from .options import task_command
+from .options import UpdateDialog, task_command
 from .settings import SettingsDialog
 
 log = logging.getLogger(__name__)
@@ -32,7 +34,7 @@ log = logging.getLogger(__name__)
 SETUP_DONE = {"connect": "_connected", "add-feed": "_feed_added", "settings": "_settings_saved",
               "delivery": "_delivery_saved", "password": "_password_saved", "private-key": "_key_saved",
               "recipe-install": "_recipes_installed", "recipe-save": "_recipe_saved", "alerts": "_alerts_saved",
-              "test-alert": "_alert_tested"}
+              "test-alert": "_alert_tested", "update": "_update_installed"}
 CONFLICT = ("changed since this form was opened", "changed while this was being saved")
 
 
@@ -121,6 +123,8 @@ class SetupActions:
                 self._open_alerts(result, message)
             else:
                 self.options.show_alerts(result, message)
+        elif what == "after-update":
+            self.options.show_last_update((result or {}).get("line"))
 
     # ------------------------------------------------------------ connecting to FOLIO
     def connect_folio(self, form) -> None:
@@ -766,6 +770,116 @@ class SetupActions:
     def open_release_page(self, url: str) -> None:
         """Open a release's page on GitHub in the browser (the address is built in ``updates.release_page``)."""
         self.open_url(url)
+
+    # ------------------------------------------------------------ installing an update (docs/updates-inplace.md)
+    def update_offer(self, status: dict) -> dict:
+        """Whether Options offers "Install X.Y.Z…" (installing.offer), with the key in the code and nothing else.
+        Whether this install can update itself is looked up once."""
+        new = status.get("available")
+        if new and status.get("mode") == "on" and self.install_info is None:
+            self.install_info = self.find_install(version=new["version"])
+        return installing.offer(status, self.install_info, updates.RELEASE_KEY)
+
+    def ask_install(self, release: dict) -> bool:
+        """True only when the person chose "Install" (Cancel is the default). Tests replace this."""
+        dialog = self.install_dialog = UpdateDialog(release, self)
+        try:
+            return dialog.exec() == UpdateDialog.DialogCode.Accepted
+        finally:
+            self.install_dialog = None
+            dialog.deleteLater()
+
+    def install_update(self, version: str) -> None:
+        """"Install X.Y.Z…": ask, then install as the window's running action (installing.install), off this
+        thread. Refused at once while another action runs here or on the page."""
+        if not self.options.offered or updates.RELEASE_KEY is None:
+            return                                         # no Install button: nothing reaches the engine
+        why = self._install_waits()
+        if why:
+            self.options.installing(False, why)
+            return
+        release = dict(updates.status().get("available") or {})
+        if release.get("version") != version:
+            self.options.installing(False, "What's available changed since this was shown. Nothing was installed.")
+            self.options.show_updates(updates.status())
+            return
+        if not self.ask_install(release) or self.quitting:
+            self.options.installing(False, "Nothing was installed.")
+            return
+        why = self._install_waits()                        # something may have started while the question was open
+        key = updates.RELEASE_KEY
+        if why or key is None:
+            self.options.installing(False, why or "Nothing was installed.")
+            return
+        self._follow_page()
+        root, install = self.site_root, self.updater
+        log.info("Installing FOLIO-Exchange %s, asked under Options", version)
+
+        def refused(message: str) -> None:
+            self.options.installing(False, message)
+
+        if self._setup_job("update", version, lambda: install(version, key=key, own=root), refused):
+            self.options.installing(True)
+
+    def _install_waits(self) -> str | None:
+        """Why the update can't start in this window now, or None."""
+        job = self.jobs.running()
+        if job is not None:
+            return f"Wait for the {model.job_words(job.kind, job.feed)} to finish, then install the update."
+        if self.toggling or self.renaming or self.reviewing or self.closing_after_job:
+            return "Wait for the action under way to finish, then install the update."
+        return None
+
+    def _update_installed(self, state: dict, version: str) -> None:
+        failed = self._failed(state)
+        res = state.get("result") or {}
+        if failed:
+            log.warning("The update to %s stopped with an error: %s", version, failed)
+            self.options.install_stopped({"reason": "Something went wrong, so the update stopped. The details are "
+                                                    "in the log.",
+                                          "done": [f"FOLIO-Exchange {__version__} is still installed."]})
+        elif res.get("ok") and res.get("stage") == "swap":
+            log.info("The swap to %s has started; this window closes and opens again", version)
+            self.options.installing(True, f"FOLIO-Exchange closes now and opens again on version {version}.")
+            QTimer.singleShot(0, self.quit_for_update)
+        else:
+            self.options.install_stopped(res)
+
+    def forms_open(self) -> bool:
+        """Whether a form whose typing would be lost is open in this window: a feed's settings or delivery, the
+        alerts, the recipe builder, or one being opened."""
+        return any(d is not None for d in (self.settings_dialog, self.delivery_dialog, self.alerts_dialog,
+                                           self.builder_dialog)) or bool(self.opening_settings)
+
+    def may_quit_for_update(self) -> bool:
+        """Whether an update another window installs may close this one: not while an action runs here or on
+        the page, a pause, a rename or a release question is under way, or a form is open (its typing would be
+        lost). The update then waits, and says which window it's waiting for. The install question isn't a form:
+        "quit for update" closes it, since another window's update is then under way."""
+        return (self.jobs.running() is None and not self.toggling and not self.renaming and not self.reviewing
+                and not self.closing_after_job and not self.forms_open())
+
+    def quit_for_update(self) -> None:
+        """Close for an update, with an install question still open (the answer is no). The update starts this
+        window again afterwards."""
+        log.info("Closing for an update")
+        if self.install_dialog is not None:
+            self.install_dialog.reject()
+        self.close_now()
+
+    def after_update(self) -> None:
+        """Once the window's first reading has ended: how the last update went, for Options, and its audit entry
+        in each site. Nothing at all when no update has finished on this PC."""
+        found = installing.pending()
+        if found is None:
+            return
+        folder, sites = found
+
+        def look() -> dict:
+            return {"recorded": installing.record_update(updates_dir=folder, sites=sites),
+                    "line": installing.last_update(updates_dir=folder)}
+
+        self.errands.run(("after-update",), look)
 
     def start_tray(self) -> bool:
         """Start ``folio-exchange-app --tray`` in a process of its own. Tests replace this."""

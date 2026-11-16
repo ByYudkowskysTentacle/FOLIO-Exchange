@@ -28,7 +28,8 @@ KIND_WORDS = {"preview": "preview", "run": "run", "build": "build", "release": "
               "connect": "save of the FOLIO connection", "add-feed": "feed setup", "settings": "save of a feed's settings",
               "delivery": "save of a feed's delivery", "password": "save of an SFTP password",
               "private-key": "save of an SFTP key", "alerts": "save of the alert settings",
-              "test-alert": "test alert", "recipe-install": "recipe install", "recipe-save": "save of a recipe"}
+              "test-alert": "test alert", "recipe-install": "recipe install", "recipe-save": "save of a recipe",
+              "update": "program update"}
 DOING_WORDS = {"preview": "Previewing", "run": "Running", "build": "Building", "release": "Sending"}
 ERRAND_WORDS = {"release-summary": "Looking at what a release would send", "enabled": "Pausing or resuming a feed",
                 "run": "Opening a run", "rows": "Reading a run's rows", "folder": "Opening a run's folder",
@@ -37,7 +38,7 @@ ERRAND_WORDS = {"release-summary": "Looking at what a release would send", "enab
                 "recipe-check": "Checking a recipe source", "recipe-form": "Opening the recipe builder",
                 "recipe-review": "Checking a custom recipe", "rename": "Renaming the site folder",
                 "register": "Registering the scheduled task", "task": "Looking for the scheduled task",
-                "alert-settings": "Reading the alert settings"}
+                "alert-settings": "Reading the alert settings", "after-update": "Recording the last update"}
 # The new-feed wizard's and settings form's schedules (the page's SCHEDULES): the value, and how it is offered.
 SCHEDULES = (("Sun 03:30", "Weekly, on Sunday at 03:30"), ("daily 03:30", "Daily at 03:30"),
              ("monthly 1 03:30", "Monthly, on the 1st at 03:30"), ("manual", "Only when run by hand"))

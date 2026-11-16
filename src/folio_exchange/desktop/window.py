@@ -33,10 +33,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import updates, version_text, views
+from .. import selfupdate, updates, version_text, views
 from ..errors import FxError
 from ..jobs import Job, Jobs
-from . import model, places, startup, theme
+from . import installing, model, places, startup, theme
 from .actions import SETUP_DONE, SetupActions
 from .activity import ActivityPage
 from .feed import FeedPage
@@ -108,6 +108,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.registering = False                                 # a console registers the scheduled task
         self.start_console = start_console                       # how that console is started (tests replace it)
         self.settings_dialog = self.delivery_dialog = self.alerts_dialog = self.builder_dialog = None
+        self.install_dialog = None                               # the install question, while it's open
         self.shown_key: str | None = None
         self.closing_after_job = False
         self.quitting = False
@@ -119,6 +120,9 @@ class MainWindow(QMainWindow, SetupActions):
         self.update_reader = Reader(self)                        # the check for a newer version (actions.py)
         self.update_reader.done.connect(self._update_checked)
         self.update_asked = False                                # the check under way was asked for under Options
+        self.install_info: dict | None = None                    # selfupdate.find_install's answer, once looked up
+        self.find_install = selfupdate.find_install              # tests replace these two
+        self.updater = installing.install                          # installs an update (the running action)
         self.errands = Errands(self)
         self.errands.done.connect(self._errand_done)
         self._build()
@@ -132,8 +136,12 @@ class MainWindow(QMainWindow, SetupActions):
         self.busy_timer.timeout.connect(self.sync_busy)
         self.busy_timer.start()
         self.resize(1000, 680)
+        if instance is not None:                                 # "quit for update" from another window
+            instance.may_quit = self.may_quit_for_update
+            instance.quit_asked.connect(self.quit_for_update)
         self.refresh()
         self.look_for_update()
+        self.after_update_asked = False                          # once the first reading has ended (_read_done)
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -230,6 +238,8 @@ class MainWindow(QMainWindow, SetupActions):
         self.options.check_updates.connect(lambda: self.look_for_update(asked=True))
         self.options.update_choice.connect(self.choose_updates)
         self.options.open_release.connect(self.open_release_page)
+        self.options.install.connect(self.install_update)
+        self.options.offer_of = self.update_offer
         self.reading = QLabel("Loading the site…")
         self.reading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reading.setWordWrap(True)
@@ -458,6 +468,11 @@ class MainWindow(QMainWindow, SetupActions):
             self._set_title(summary.get("name") or self.site_root.name)
             self._fill_sidebar()
             self._select_pending()
+        if not self.after_update_asked:
+            # Not alongside the first reading: on a site whose history is new, the two opening it at once could
+            # each find it locked (seen on Linux CI), and the window would say it couldn't load the site.
+            self.after_update_asked = True
+            self.after_update()
         if self.renaming and not self.renaming_started:
             self._start_rename()                         # it waited for this reading to end
             return
@@ -541,6 +556,8 @@ class MainWindow(QMainWindow, SetupActions):
         kind, feed = self.watching
         if kind == "check":
             self.connection.add_lines(lines)
+        elif kind == "update":
+            self.options.install_lines(lines)
         elif kind != "test-delivery" and feed:
             self.feed.job_lines(feed, lines)
 

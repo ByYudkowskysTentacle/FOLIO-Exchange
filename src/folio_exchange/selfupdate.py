@@ -397,16 +397,38 @@ def site_copy_folder(dest: Path, root: Path) -> Path:
     return Path(dest) / site_id(root)[:16]
 
 
-def copy_sites(sites: Iterable[Path], dest: Path, *, version: str = __version__) -> dict:
+def _same(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def copy_sites(sites: Iterable[Path], dest: Path, *, version: str = __version__,
+               required: Iterable[Path] | None = None) -> dict:
     """Copy each site's settings, feeds, own recipes and history into ``dest``. Not the cache, run folders,
     logs or ``keys``. A folder with no site.yaml is skipped. Raises ``Stopped`` for a site that can't be
-    copied."""
-    copied, skipped = [], []
+    copied, and for one that can't be reached when it's in ``required`` (None: every site): the asking window's
+    and the ones the tray watches. One that's only on the list of recent sites (a USB stick or an old share,
+    which the app has no way to drop from the list) is skipped and named, or it would stop every update."""
+    must = None if required is None else [Path(r) for r in required]
+    copied, skipped, unreachable = [], [], []
     for root in sites:
         root = Path(root)
         if not (root / SITE_FILE).is_file():
-            skipped.append(str(root))
-            continue
+            # A folder that's there with no site in it, or gone from a folder that's there (a site deleted or
+            # moved), isn't a site to copy. One whose parent can't be reached either (a drive or share that isn't
+            # connected) may well hold a site, so the update stops rather than go on without its copy, unless
+            # it's only a recent site.
+            if root.is_dir() or root.parent.is_dir():
+                log.info("%s isn't copied, because there's no site there now.", root)
+                skipped.append(str(root))
+                continue
+            if must is not None and not any(_same(root, r) for r in must):
+                log.info("The site %s can't be reached, so it isn't copied. It's only on the list of recent sites, "
+                         "so the update goes on.", root)
+                unreachable.append(str(root))
+                continue
+            raise Stopped("copy", f"The site {root} can't be reached, so it couldn't be copied. Nothing was "
+                                  "updated. Connect the drive or network share it's on, then try again.")
+        log.info("Copying the site %s…", root)
         target = site_copy_folder(dest, root)
         try:
             if target.exists():
@@ -428,7 +450,7 @@ def copy_sites(sites: Iterable[Path], dest: Path, *, version: str = __version__)
             raise Stopped("copy", f"The site {root} couldn't be copied ({exc}). Nothing was updated. Fix the site "
                                   "or close what's using it, then try again.") from None
         copied.append(str(root))
-    return {"copied": copied, "skipped": skipped}
+    return {"copied": copied, "skipped": skipped, "unreachable": unreachable}
 
 
 # ------------------------------------------------------------------ building the new environment
@@ -527,6 +549,25 @@ def retarget_scripts(env: Path, final: Path) -> list[str]:
 
 
 # ------------------------------------------------------------------ prepare, start the swap, results
+def _tidy_outgoing(root: Path, last: dict | None) -> str | None:
+    """``program.outgoing`` left by an update that worked (its ``program.previous`` couldn't be removed then):
+    keep it as ``program.previous``, or remove it. Returns what was done, or None when it's from an update that
+    didn't finish (then it may hold the only working version) or can't be tidied."""
+    outgoing, previous = root / swaphelper.OUTGOING, root / swaphelper.PREVIOUS
+    if not last or not last.get("ok") or last.get("program") != "new":
+        return None
+    if swaphelper._remove(previous):
+        try:
+            os.rename(outgoing, previous)
+            return (f"{outgoing}, left by the update to {last.get('version')}, is now {previous}, so you can go back "
+                    "to it.")
+        except OSError:
+            pass
+    if swaphelper._remove(outgoing):
+        return f"Removed {outgoing}, left by the update to {last.get('version')}."
+    return None
+
+
 def updates_folder() -> Path:
     from .desktop import places  # no Qt
 
@@ -547,7 +588,8 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
             http: Any = None, builder: Callable | None = None, run: Callable = subprocess.run,
             sites: Iterable[Path] | None = None, now: datetime | None = None,
             processes: Callable[[Path], list] = swaphelper.processes_in, allow_pids: Iterable[int] | None = None,
-            updates_dir: Path | None = None, protect: Callable | None = None) -> dict:
+            updates_dir: Path | None = None, protect: Callable | None = None,
+            required: Iterable[Path] | None = None) -> dict:
     """Get the release ``tag`` ready to swap in: every check, the download, the site copies and the new
     environment. Nothing is installed yet, and the old version stays the one that runs. Returns
     ``ok``, ``stage``, ``done``, ``left``, ``reason`` and, when ready, ``plan`` (the file ``start_swap`` takes)."""
@@ -580,12 +622,15 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
         reasons = busy_reasons(program, now=now, processes=processes, allow=allow)
         if reasons:
             raise Stopped("busy", " ".join(reasons) + " Nothing was changed.")
+        updates = Path(updates_dir) if updates_dir is not None else updates_folder()
         outgoing = program.parent / swaphelper.OUTGOING
         if outgoing.exists():
-            raise Stopped("busy", f"An earlier update didn't finish, and {outgoing} holds the version from before "
-                                  "it. Run the installer again, then delete that folder.")
+            tidied = _tidy_outgoing(program.parent, last_result(updates))
+            if tidied is None:
+                raise Stopped("busy", f"An earlier update didn't finish, and {outgoing} holds the version from "
+                                      "before it. Run the installer again, then delete that folder.")
+            done.append(tidied)
 
-        updates = Path(updates_dir) if updates_dir is not None else updates_folder()
         updates.mkdir(parents=True, exist_ok=True)
         if protect is None:
             from .setupops import _owner_only as protect
@@ -605,9 +650,16 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
             result["stage"] = "copy"
             copies = updates / f"from-{current}"
             copies.mkdir(exist_ok=True)
-            got = copy_sites(known_sites() if sites is None else sites, copies, version=current)
+            if sites is None and required is None:         # the sites the tray watches must be copied
+                from .desktop import places  # no Qt
+
+                required = places.watched_sites()
+            got = copy_sites(known_sites() if sites is None else sites, copies, version=current, required=required)
             if got["copied"]:
                 done.append(f"Copied {len(got['copied'])} site(s) to {copies}.")
+            done.extend(f"{s} wasn't copied, because there's no site there now." for s in got["skipped"])
+            done.extend(f"{s} wasn't copied, because it can't be reached. It's only on the list of recent sites."
+                        for s in got["unreachable"])
 
             result["stage"] = "build"
             if new.exists():

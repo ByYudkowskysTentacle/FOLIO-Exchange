@@ -6,8 +6,14 @@ told the first one's process id. On Windows, where pipe names are shared between
 pipe's server is that process and runs as this user. Pipe names are also shared between the sessions of one
 user (a second sign-in, through Remote Desktop say), so a window in another session is reported, not shown
 where nobody sees it. Then it lets that process take the foreground (Windows gives focus only to the program
-the person started last, which is the second one), sends ``show`` and waits briefly for ``ok``. The first
-accepts nothing else: any other message, or more than a line, is dropped.
+the person started last, which is the second one), sends ``show`` and waits briefly for ``ok``.
+
+An update installed from the app (``installing.py``) uses two more messages, after the same checks. ``may-quit``
+asks whether the window or tray could close now: ``ok``, or ``busy`` while it has an action running or a form open
+(``may_quit`` says which), and nothing closes. ``quit-for-update`` then asks it to close: ``ok`` and it quits, or
+``busy``. The update asks everything first and closes them only once none is busy. ``probe`` only reads the
+greeting, to learn which process holds a name. The first start accepts nothing else: any other message, or more
+than a line, is dropped.
 
 Windows lets a second server listen on a pipe name that is already taken, so there the name is also held by a
 named mutex, which Windows removes with the process that made it. On macOS and Linux Qt puts a socket server that
@@ -22,6 +28,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer, Signal
@@ -34,10 +41,13 @@ log = logging.getLogger(__name__)
 HELLO = b"fx "                       # the first start's greeting: b"fx <pid>\n"
 SHOW, OK = b"show\n", b"ok\n"
 SHOW_VIEW = b"show "                 # b"show options\n": come to the front on that view (one of VIEWS)
+QUIT, BUSY = b"quit-for-update\n", b"busy\n"    # an update asks to quit; a window with an action running refuses
+MAY_QUIT = b"may-quit\n"                         # an update asks whether this could quit now, closing nothing
 LINE_MOST = 64                       # longer than any message, so a long one is dropped unread
 ASK_MS = 2000                        # how long a second start waits for each answer
 CONNECTION_MS = 3000                 # how long the first start keeps a connection that says nothing
-STEP_MS = 20                         # each slice of a blocking wait (see _wait)
+QUIT_DELAY_MS = 200                  # between answering "ok" to quit-for-update and quitting
+STEP_MS = 20                        # each slice of a blocking wait (see _wait)
 ERROR_ALREADY_EXISTS = 183
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TOKEN_QUERY = 0x0008
@@ -51,16 +61,19 @@ class OpenElsewhere(Exception):
 
 class InstanceServer(QObject):
     """The first start's side. ``shown`` fires when a second start asks for the window, and ``asked`` after it
-    when that start named a view to open."""
+    when that start named a view to open. ``quit_asked`` fires when an update asked this process to quit and
+    ``may_quit`` (set by the window or the tray; a refusal while unset) said it may, once the answer is sent."""
 
     shown = Signal()
     asked = Signal(str)
+    quit_asked = Signal()
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.name = name
         self.server: QLocalServer | None = None
         self.guard: int | None = None
+        self.may_quit: Callable[[], bool] | None = None
 
     def listen(self) -> bool:
         got = self._listen(self.name)
@@ -120,6 +133,9 @@ class InstanceServer(QObject):
                 sock.abort()
             return
         line = bytes(sock.readLine(LINE_MOST).data())
+        if line in (QUIT, MAY_QUIT):
+            self._quit(sock, now=line == QUIT)
+            return
         view = line[len(SHOW_VIEW):].strip().decode("ascii", "replace") if line.startswith(SHOW_VIEW) else None
         if line == SHOW or view in VIEWS:
             self.shown.emit()
@@ -128,6 +144,23 @@ class InstanceServer(QObject):
             sock.write(OK)
             sock.flush()
         sock.disconnectFromServer()
+
+    def _quit(self, sock: QLocalSocket, *, now: bool) -> None:
+        """An update asks whether this process could quit (``now`` false: it only answers) or asks it to quit:
+        ``ok`` (and, when ``now``, quit), or ``busy``. The answer is sent first."""
+        try:
+            yes = bool(self.may_quit and self.may_quit())
+        except Exception:  # noqa: BLE001 - a question that fails is a no; the update says what it waits for
+            log.warning("Couldn't tell whether this process may quit for an update", exc_info=True)
+            yes = False
+        if now or not yes:
+            log.info("An update asked FOLIO-Exchange to %s: %s", "quit" if now else "say whether it could quit",
+                     "quitting" if yes and now else "yes" if yes else "an action or a form is under way")
+        sock.write(OK if yes else BUSY)
+        sock.flush()
+        sock.disconnectFromServer()
+        if yes and now:                        # a moment for the answer to leave before this process quits
+            QTimer.singleShot(QUIT_DELAY_MS, self, self.quit_asked.emit)
 
 
 def _hold(name: str) -> int | None | bool:
@@ -330,6 +363,71 @@ def _user_sid(pid: int) -> str:
         kernel32.CloseHandle(process)
 
 
+def _greeted(sock: QLocalSocket, name: str, deadline: float) -> int | None:
+    """The trusted process id the first start greets ``sock`` with, or None (see ``_trusted_pid``)."""
+    hello = _line(sock, deadline)
+    if not hello.startswith(HELLO):
+        return None
+    try:
+        said = int(hello[len(HELLO):].strip())
+    except ValueError:
+        return None
+    pid = _trusted_pid(sock, said)
+    if pid is None:
+        log.warning("A program that is not this user's FOLIO-Exchange holds the name %s; it was not asked "
+                    "anything", name)
+    return pid
+
+
+def probe(name: str, wait_ms: int | None = None) -> int | None:
+    """The process id of this user's window (or tray) open under ``name`` in this Windows session, or None when
+    nothing answers there, it isn't this user's, or it's in another session. Nothing is asked of it."""
+    sock = QLocalSocket()
+    deadline = time.monotonic() + (ASK_MS if wait_ms is None else wait_ms) / 1000
+    sock.connectToServer(name)
+    try:
+        if not _connected(sock, deadline):
+            return None
+        pid = _greeted(sock, name, deadline)
+        return pid if pid is not None and _same_session(pid) else None
+    finally:
+        sock.abort()
+
+
+def ask_may_quit(name: str, wait_ms: int | None = None) -> str:
+    """Ask the window (or tray) open under ``name`` whether it could quit for an update now, closing nothing:
+    "yes", "busy" (an action running, a form open, or no answer in time) or "gone"."""
+    answer = _ask_quit(name, MAY_QUIT, wait_ms)
+    return "yes" if answer == "quit" else answer
+
+
+def ask_to_quit(name: str, wait_ms: int | None = None) -> str:
+    """Ask the window (or tray) open under ``name`` to quit for an update: "quit" when it said yes and is
+    quitting, "busy" when it has an action running or a form open (or didn't answer in time), "gone" when
+    nothing of this user's in this session answers there."""
+    return _ask_quit(name, QUIT, wait_ms)
+
+
+def _ask_quit(name: str, message: bytes, wait_ms: int | None) -> str:
+    wait_ms = ASK_MS if wait_ms is None else wait_ms
+    sock = QLocalSocket()
+    deadline = time.monotonic() + wait_ms / 1000
+    sock.connectToServer(name)
+    try:
+        if not _connected(sock, deadline):
+            return "gone"
+        pid = _greeted(sock, name, deadline)
+        if pid is None or not _same_session(pid):
+            return "gone"
+        deadline = time.monotonic() + wait_ms / 1000
+        sock.write(message)
+        if not _wait(lambda ms: sock.waitForBytesWritten(ms) or not sock.bytesToWrite(), deadline):
+            return "busy"
+        return "quit" if _line(sock, deadline) == OK else "busy"
+    finally:
+        sock.abort()
+
+
 def ask_to_show(name: str, wait_ms: int | None = None, view: str | None = None) -> bool:
     """A second start's side: ask the window already open under ``name`` to come to the front, on ``view`` when
     one is named. True when it answered; False when nothing listens there, it is not this user's (see ``_trusted_pid``), or it did not
@@ -343,17 +441,8 @@ def ask_to_show(name: str, wait_ms: int | None = None, view: str | None = None) 
     try:
         if not _connected(sock, deadline):
             return False
-        hello = _line(sock, deadline)
-        if not hello.startswith(HELLO):
-            return False
-        try:
-            said = int(hello[len(HELLO):].strip())
-        except ValueError:
-            return False
-        pid = _trusted_pid(sock, said)
+        pid = _greeted(sock, name, deadline)
         if pid is None:
-            log.warning("A program that is not this user's FOLIO-Exchange holds the name %s; it was not asked to "
-                        "show anything", name)
             return False
         if not _same_session(pid):
             raise OpenElsewhere(name)
