@@ -1,5 +1,5 @@
 """The window's setup actions (D3): connecting to FOLIO, adding a feed, a feed's settings, delivery, password and
-key, recipes, renaming the site folder, the scheduled task and alerts. ``MainWindow`` takes these in as a
+key, recipes, renaming the site folder, the scheduled task, alerts, and installing an update (``updating.py``). ``MainWindow`` takes these in as a
 mixin, so ``window.py`` keeps the reading, the feeds' actions and closing.
 
 As for the feeds' actions: whatever changes a file, reaches the network or stores a secret runs off the window's

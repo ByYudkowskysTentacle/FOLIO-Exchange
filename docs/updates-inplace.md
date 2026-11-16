@@ -1,6 +1,6 @@
 # Updating a script-based install in place
 
-_A route for in-app updates that needs neither the one-file installer (D5) nor Windows code signing (D6). Written on 16 November 2026. The engine is built (`selfupdate.py` and `swaphelper.py`, with tests); nothing in the app calls it yet. It follows [updates-plan.md](updates-plan.md) for checking, telling, "never during work", site copies and going back, and replaces that plan's download-and-run-an-installer steps for installs made by `installer/install.ps1`. Folding it into that plan and [design.md](design.md) is left for after U0 merges._
+_A route for in-app updates that needs neither the one-file installer (D5) nor Windows code signing (D6). Written on 16 November 2026. The engine (`selfupdate.py` and `swaphelper.py`) and its wiring to the app (`desktop/updating.py`, "Install X.Y.Z…" under Options, below) are built, with tests. It waits only for the release key: while `updates.RELEASE_KEY` is `None`, Options shows no Install button. It follows [updates-plan.md](updates-plan.md) for checking, telling, "never during work", site copies and going back, and replaces that plan's download-and-run-an-installer steps for installs made by `installer/install.ps1` (see that plan's "Two routes"). [design.md](design.md) has the modules' signatures._
 
 ## Why
 
@@ -88,11 +88,18 @@ Every step returns a dict a window can show, in the style of `siteops.rename_sit
 - The process check sees only this Windows user's programs. A run by another user from the same program folder isn't possible with `install.ps1`'s per-user layout.
 - The helper is a Python script, not a signed program. It's copied from the running, already-installed version, never downloaded.
 
-## Wiring left for after U0
+## In the app
 
-- An "Install X.Y.Z…" button in the Updates section of Options (`desktop/options.py`), with the confirmation the plan describes, calling `prepare` on a worker thread with `updates.RELEASE_KEY` and showing `done`, `left` and `reason`.
-- A "quit for update" message over `single.py`'s local sockets, so each open window and the tray quit (a window with an action running refuses), then `start_swap` with the windows (`--site`) and the tray to start again.
-- Reading `last_result()` when the app opens, to say "Updated to X.Y.Z." or why it didn't finish.
-- The audit entry "program updated" with both versions in each site's history.
+`desktop/updating.py` wires the engine to the Updates section of Options.
+
+- **When it's offered.** "Install X.Y.Z…" shows only in the "on" mode, for a newer version, on an install `find_install` says it can update, with a key in `updates.RELEASE_KEY`, the only key the app ever passes (no setting, file or environment variable supplies one). Otherwise U0's notice stays as it is, with a line saying why there's no button: "FOLIO-Exchange was installed with pip, so it can't update itself." (or `find_install`'s other reasons), or "This version of FOLIO-Exchange can't install updates itself." while there's no key. `FOLIO_EXCHANGE_UPDATES=notify` tells and never offers to install; `off` says IT manages updates.
+- **The question.** The version, the release notes as plain text, and "FOLIO-Exchange closes, updates and opens again. Your sites, feeds and passwords stay as they are." Cancel is the default button. Nothing happens without Install.
+- **The update is the window's running action** (a job, "program update"), so no other action starts in that window or its browser page meanwhile, and closing the window asks first. Its progress shows under Options as it logs: the download, the signature, each site copied, the build. Each of the engine's refusals shows there too, with what was done and what's left, and Install can be tried again.
+- **Closing the others.** Before `prepare`, the window notes which windows (one per known site) and whether the tray are open on their local sockets (`single.probe`), so their processes don't count as "another FOLIO-Exchange program". Once the release is ready, and outside minutes 5 to 15, it sends each one `quit-for-update` (`single.ask_to_quit`). A window with nothing running answers `ok` and closes, along with its open dialogs; one with an action, a pause, a rename or a release question under way answers `busy`, and Options says "Waiting for the window for Lakeside to finish its action." After 15 minutes of that it stops, starts again the ones it closed, and says so. The tray always says yes.
+- **The swap.** `start_swap` gets the commands that start again the windows it closed (`--site`), the tray and this window on Options, and the window quits. The helper starts them once the swap is done, or once the old version is back.
+- **Afterwards.** For a day, Options says "Updated to X.Y.Z." or "The update to X.Y.Z didn't finish. FOLIO-Exchange A.B.C is still installed." with the helper's reason (`last_update`). The first window or tray to start writes "program updated" with both versions in each known site's audit log (`record_update`), once.
+
+## Left to do
+
 - `check` warning about a marker older than an hour.
-- Folding this route into [updates-plan.md](updates-plan.md) (U1 and U2 for script-based installs) and [design.md](design.md) (the module, its signatures and the marker), and the release checklist's zip-and-sign step.
+- Going back: swapping `program.previous` back in, with the plan's rules for history and settings.

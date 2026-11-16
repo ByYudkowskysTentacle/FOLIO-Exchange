@@ -1,6 +1,6 @@
 # In-app updates plan
 
-_The plan for D7 of [desktop-plan.md](desktop-plan.md): how FOLIO-Exchange tells a library that a new version is out, and how it installs one. Written on 12 November 2026 and revised on 13 November after a review. Phase U0, the notice, was built on 16 November 2026 (see Today), except for the release key, which the maintainer makes offline. U1 needs the installer (D5), and U2 needs signed releases (D6). The open questions at the end wait on the maintainer; U0 took the recommended answer to three of them, which are marked._
+_The plan for D7 of [desktop-plan.md](desktop-plan.md): how FOLIO-Exchange tells a library that a new version is out, and how it installs one. Written on 12 November 2026 and revised on 13 November after a review. Phase U0, the notice, was built on 16 November 2026 (see Today), except for the release key, which the maintainer makes offline. So was a second route that installs an update in place for installs made by `install.ps1`, with no installer or signing ([updates-inplace.md](updates-inplace.md); see Two routes). U1 needs the installer (D5), and U2 needs signed releases (D6). The open questions at the end wait on the maintainer; U0 took the recommended answer to three of them, which are marked._
 
 ## Why
 
@@ -16,7 +16,8 @@ A library PC keeps whatever version was installed until someone runs the install
 - **The tray** (D4) runs while the person is signed in. It's the natural place to say a new version is out.
 - **Format numbers** (built 12 and 13 Nov 2026). `history.sqlite` and `cache.sqlite` carry a format number (SQLite's `user_version`, `history.FORMAT` and `cache.FORMAT`, both 1), read before anything else touches the file. A version never uses a history or a cache a newer one wrote: it stops with `NewerData` or `NewerCache` and says to reinstall the newer version, or to put back the history from before the update, or to rename the cache so it's downloaded again. These guards protect only the versions released after them: 0.2.0 has none.
 - **Settings files** have no number. An older version refuses a setting it doesn't know ("unknown setting"), but not a setting whose meaning changed. #31 is an example: `host_key_confirmed: false` used to mean "don't log in" and now means "pinned on first use". Going back past it, feeds saved without a vendor fingerprint are refused at login. That fails safe, but it stops those feeds.
-- **The notice** (U0, built 16 Nov 2026). `updates.py` checks GitHub's releases as Checking describes, the tray tells about each new version once, and Options has an Updates section with the release notes and the pip command or the release page (see `updates.py`, `tray.py` and `options.py` in [design.md](design.md)). Nothing is downloaded or installed yet. `updates.RELEASE_KEY`, the place for the release key's public half, is unset and read by nothing until U1.
+- **The notice** (U0, built 16 Nov 2026). `updates.py` checks GitHub's releases as Checking describes, the tray tells about each new version once, and Options has an Updates section with the release notes and the pip command or the release page (see `updates.py`, `tray.py` and `options.py` in [design.md](design.md)). `updates.RELEASE_KEY`, the place for the release key's public half, is unset.
+- **Updating in place** (built 16 Nov 2026, [updates-inplace.md](updates-inplace.md)). For an install made by `install.ps1`, Options offers "Install X.Y.Z…" and the app updates the program folder in place (`selfupdate.py`, `swaphelper.py`, `desktop/updating.py`). It's offered only once `updates.RELEASE_KEY` is set; until then Options says "This version of FOLIO-Exchange can't install updates itself." and shows U0's command.
 - **The app's own folders.** `places.config_dir()` (`%APPDATA%`, which roams) holds preferences, and `places.local_dir()` (`%LOCALAPPDATA%\FOLIO-Exchange\.app`, which doesn't) holds what belongs to this PC: the tray's list of sites and its log. No site can be called `.app` (`siteops.name_problem` refuses names that start with a period).
 
 ## Goals
@@ -27,6 +28,14 @@ A library PC keeps whatever version was installed until someone runs the install
 4. Only a release this project made can install: one signed with the project's own key. A download that fails any check is deleted and never run.
 5. The scheduled task, Credential Manager entries, site folders and the tray keep working across an update.
 6. Nothing about the library is sent anywhere. The check is one anonymous request a day, and IT can turn it off.
+
+## Two routes
+
+Every library install today is made by `installer/install.ps1`: a Python environment in `<install folder>\program`. For those, the in-place route ([updates-inplace.md](updates-inplace.md)) installs an update without the one-file installer (D5) or Windows code signing (D6). Nothing downloaded runs as a program: the app downloads the release's source zip and builds a new program folder beside the old one with the install's own Python, then swaps the folders. So SmartScreen, antivirus programs and Authenticode, which U1 and U2 exist for, don't come into it.
+
+What it shares with this plan: Checking and Telling (U0), the project's signature over `SHA256SUMS` (step 3 of the download, with `updates.RELEASE_KEY`), the copy of each site, "never during work", "quit for update" over the local sockets, the `updating.json` marker and `run --due` skipping, starting the windows and the tray again, "Updated to …" and the audit entry. What it replaces, for these installs: U1's download-and-open of the installer, U2's Authenticode check, the Mark of the Web and the silent Inno Setup install. Its marker sits beside the program folder rather than in it, because the folder is swapped.
+
+What it doesn't replace: the one-file installer remains the route for new installs and for PCs without `install.ps1`'s layout, so U1 and U2 still apply to installs the D5 installer makes. Going back (below) isn't wired for either route yet; the in-place route keeps the version before in `program.previous`. A pip or editable install gets neither: Options shows the pip command and says why.
 
 ## Design
 
@@ -107,10 +116,11 @@ For each release, once U0 has shipped. U3 adds the rest (release notes, the sign
 1. Raise `__version__` and `version` in `pyproject.toml` together, and tag the commit `vX.Y.Z`. Installs look only at tags of exactly that form.
 2. Write the release's text on GitHub for library staff. The app shows it as plain text under Options, so write it without Markdown that needs rendering. Say there when a stored format's number was raised or a setting's meaning changed.
 3. Publish it as a pre-release until 1.0. A draft is never offered to installs.
-4. **Sign `SHA256SUMS`** (from U1, when a release has an installer). On the offline computer that holds the release key, never on GitHub or in CI: make `SHA256SUMS` over the release's files, sign it with the Ed25519 private key to make `SHA256SUMS.sig`, check the signature against the public key in `updates.RELEASE_KEY`, and attach both files to the release. The private key never leaves that computer, apart from its offline backup.
-5. Check from an install of the version before that Options says "FOLIO-Exchange X.Y.Z is available." after "Check for updates".
+4. **The source zip** (for the in-place route, once the release key is set). Make it from the tag with `git archive --format=zip --prefix=FOLIO-Exchange-X.Y.Z/ -o folio-exchange-X.Y.Z.zip vX.Y.Z` and attach it to the release. GitHub's own "Source code (zip)" isn't used, since GitHub doesn't promise the same bytes each time.
+5. **Sign `SHA256SUMS`** (from the first release after the key is set, for every route). On the offline computer that holds the release key, never on GitHub or in CI: make `SHA256SUMS` over the release's files (the source zip included, and the installer once there is one), sign it with the Ed25519 private key to make `SHA256SUMS.sig`, check the signature against the public key in `updates.RELEASE_KEY`, and attach both files to the release. The private key never leaves that computer, apart from its offline backup.
+6. Check from an install of the version before that Options says "FOLIO-Exchange X.Y.Z is available." after "Check for updates", and, on an install made by `install.ps1`, that "Install X.Y.Z…" updates it and Options then says "Updated to X.Y.Z.".
 
-**Before the first signed release:** the maintainer makes the Ed25519 key pair offline (open question 6), keeps the private half and its backup off GitHub, and puts the 32 public bytes in `updates.RELEASE_KEY` by pull request. Until then it's `None`, and nothing reads it.
+**Before the first signed release:** the maintainer makes the Ed25519 key pair offline (open question 6), keeps the private half and its backup off GitHub, and puts the 32 public bytes in `updates.RELEASE_KEY` by pull request. Until then it's `None`: Options shows no Install button, and the app never reaches the engine.
 
 ## Tests
 
@@ -127,6 +137,7 @@ For each release, once U0 has shipped. U3 adds the rest (release notes, the sign
 - `run --due` skips while `updating.json` is new, runs once it's an hour old, and `check` warns then.
 - Wording: the Options section and notifications follow [wording.md](wording.md), label in name, mnemonics unique. No request in `run --due` (a test patches `requests` to fail there).
 - Privacy: the request's headers hold only the version.
+- The in-place route (built): `test_selfupdate.py` for the engine, `test_updating.py` and `test_desktop_install.py` for its wiring (the offer and its absence with no key, `notify`, `off` or a pip install, the question, each refusal in place, "quit for update", the restart, "Updated to …" and the audit entry). [design.md](design.md) lists what each covers.
 
 ## Risks
 
