@@ -138,7 +138,7 @@ For each release, once U0 has shipped. U3 adds the rest (release notes, the sign
 - `run --due` skips while `updating.json` is new, runs once it's an hour old, and `check` warns then.
 - Wording: the Options section and notifications follow [wording.md](wording.md), label in name, mnemonics unique. No request in `run --due` (a test patches `requests` to fail there).
 - Privacy: the request's headers hold only the version.
-- The in-place route (built): `test_selfupdate.py` for the engine, `test_installing.py` and `test_desktop_install.py` for its wiring (the offer and its absence with no key, `notify`, `off` or a pip install, the question, each refusal in place, "quit for update", the restart, "Updated to …" and the audit entry). [design.md](design.md) lists what each covers.
+- The in-place route (built): `test_selfupdate.py` for the engine, `test_installing.py` and `test_desktop_install.py` for its wiring, `test_swap_recovery.py` for its recovery (the offer and its absence with no key, `notify`, `off` or a pip install, the question, each refusal in place, "quit for update", the restart, "Updated to …" and the audit entry). [design.md](design.md) lists what each covers.
 
 ## Risks
 

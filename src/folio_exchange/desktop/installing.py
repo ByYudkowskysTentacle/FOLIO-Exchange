@@ -6,11 +6,12 @@ Updates section under Options. No Qt here; the local sockets come in through ``p
   and nothing else: no setting, file or environment variable can supply one. While it is None there is no
   Install button, and ``install`` refuses before it reaches the engine.
 - ``install`` runs as the asking window's running action, in the job's thread, so each line it logs shows in
-  Options as progress: it notes which windows and tray are open, has the engine get the release ready (download,
-  signature, site copies, new program folder), asks each open window and the tray to quit ("quit for update"
-  over ``single.py``'s sockets, waiting while a window has an action running), waits out minutes 5 to 15, and
-  starts the swap, which starts again the windows (with ``--site``) and the tray it closed, and this window on
-  Options. The window then quits.
+  Options as progress: it has the engine get the release ready (download, signature, site copies, new program
+  folder), then looks again for the open windows and the tray (one opened during the build counts too), asks each
+  whether it could quit ("may-quit" over ``single.py``'s sockets) and waits while one has an action running or a
+  form open, closes them all only once none is busy ("quit-for-update"), waits out minutes 5 to 15, and starts the
+  swap, which starts again the windows (with ``--site``) and the tray it closed, and this window on Options. The
+  window then quits.
 - ``last_update`` is the line Options shows for a day after a swap ("Updated to X.Y.Z.", or that it didn't finish),
   and ``record_update`` writes "program updated" with both versions in each site's audit log, once.
 """
@@ -22,7 +23,7 @@ import os
 import sqlite3
 import subprocess
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -46,8 +47,10 @@ LOCKED_WAIT = 0.5               # seconds between those tries
 ACTION = "program updated"
 
 NO_KEY = "This version of FOLIO-Exchange can't install updates itself."
-WHAT_HAPPENS = ("FOLIO-Exchange closes, updates and opens again. Your sites, feeds and passwords stay as they "
-                "are.")
+WHAT_HAPPENS = ("FOLIO-Exchange closes, updates and opens again, and so do its other windows and the tray icon. It "
+                "takes a few minutes and needs the internet. Your sites, feeds and passwords stay as they are.")
+STARTED = "started.json"        # in the updates folder: the swap this window started, for a helper that never ended
+ROUNDS = 10                     # looks for windows opened while the others were being closed
 
 
 def _same(a: Path | str, b: Path | str) -> bool:
@@ -89,12 +92,6 @@ class _Telling:
         return self.http.get(url, *args, **kw)
 
 
-def _copying(sites: list[Path]) -> Iterator[Path]:
-    for root in sites:
-        log.info("Copying the site %s…", root)
-        yield root
-
-
 def _launch(argv: list[str]) -> None:
     """Start a window or the tray again with the version still installed (an update that stopped after closing
     them)."""
@@ -114,8 +111,8 @@ def _stopped(stage: str, reason: str, version: str, done: list[str] | None = Non
 
 def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] | None = None,
             engine: Any = selfupdate, probe: Callable[[str], int | None] | None = None,
-            ask_quit: Callable[[str], str] | None = None, parents: Callable[[], dict[int, int]] | None = None,
-            launch: Callable[[list[str]], None] = _launch,
+            ask_may: Callable[[str], str] | None = None, ask_quit: Callable[[str], str] | None = None,
+            parents: Callable[[], dict[int, int]] | None = None, launch: Callable[[list[str]], None] = _launch,
             sleep: Callable[[float], None] = time.sleep, now: Callable[[], datetime] | None = None,
             wait_seconds: float = WAIT_SECONDS, http: Any = None) -> dict:
     """Install ``version`` (X.Y.Z) after the person's yes, from the window of the site ``own``. Returns the
@@ -123,26 +120,31 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
     when the swap has started and the window should quit now."""
     if key is None:                                     # never reached from the app (offer), but never past here
         return _stopped("key", NO_KEY + " Nothing was downloaded.", version)
-    if probe is None or ask_quit is None:
+    if probe is None or ask_may is None or ask_quit is None:
         from . import single
 
         probe = probe or single.probe
+        ask_may = ask_may or single.ask_may_quit
         ask_quit = ask_quit or single.ask_to_quit
     now = now or (lambda: datetime.now(timezone.utc).astimezone())
     tag = f"v{version}"
-    sites = list(engine.known_sites() if sites is None else sites)
-    if own is not None and not any(_same(own, s) for s in sites):
-        sites.insert(0, Path(own))
 
-    # Which windows and tray are open: they run from the program folder too, and are asked to quit later.
-    others: list[tuple[str, Path | None, str]] = [("window", Path(s), places.instance_name(Path(s)))
-                                                   for s in sites if own is None or not _same(own, s)]
-    others.append(("tray", None, places.tray_instance_name()))
-    open_now = [(kind, root, name, pid) for kind, root, name in others if (pid := probe(name)) is not None]
-    # Their ancestors and this window's too: on Windows the program folder's folio-exchange-app.exe starts the
-    # venv's pythonw.exe, which starts the base Python that answers on the socket, and both stay running from the
-    # program folder (as swaphelper.own_chain finds for this process). An ancestor outside it (Explorer, say) is
-    # never counted anyway.
+    def known() -> list[Path]:
+        found = [Path(s) for s in (engine.known_sites() if sites is None else sites)]
+        if own is not None and not any(_same(own, s) for s in found):
+            found.insert(0, Path(own))
+        return found
+
+    def open_ones() -> list[tuple[str, Path | None, str, int]]:
+        """The windows (one per known site, but this one) and the tray open now, with their process ids."""
+        names = [("window", s, places.instance_name(s)) for s in known() if own is None or not _same(own, s)]
+        names.append(("tray", None, places.tray_instance_name()))
+        return [(kind, root, name, pid) for kind, root, name in names if (pid := probe(name)) is not None]
+
+    # The ones open now, and their ancestors and this window's, may run while the release is prepared: on Windows
+    # the program folder's folio-exchange-app.exe starts the venv's pythonw.exe, which starts the base Python that
+    # answers on the socket, and both stay running from the program folder (as swaphelper.own_chain finds for this
+    # process). An ancestor outside it (Explorer, say) is never counted anyway.
     tree = (parents or swaphelper.parent_pids)()
 
     def lineage(pid: int) -> list[int]:
@@ -155,7 +157,7 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
         return out
 
     allow = {os.getpid(), os.getppid(), *lineage(os.getpid())}
-    for *_rest, pid in open_now:
+    for *_rest, pid in open_ones():
         allow |= {pid, *lineage(pid)}
 
     log.info("Getting FOLIO-Exchange %s ready. The version you have keeps running meanwhile.", version)
@@ -165,13 +167,16 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
         log.info("Building the new program folder. This takes a few minutes…")
         return engine.build_environment(*args, **kw)
 
-    res = engine.prepare(tag, key=key, http=_Telling(session, version), builder=build, sites=_copying(sites),
+    res = engine.prepare(tag, key=key, http=_Telling(session, version), builder=build, sites=known(),
                          allow_pids=allow)
     if not res.get("ok"):
         return res
     log.info("FOLIO-Exchange %s is ready.", version)
 
     closed: list[tuple[str, Path | None]] = []
+
+    def what(kind: str, root: Path | None) -> str:
+        return "the tray" if kind == "tray" else f"the window for {root.name}"
 
     def give_back() -> None:
         for kind, root in closed:
@@ -182,37 +187,42 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
         said = False
         while swaphelper.in_quiet_minutes(now()):
             if not said:
-                log.info("Waiting for minute %d: scheduled runs start between minutes %d and %d of each hour.",
+                log.info("Waiting for minute %d. Scheduled runs start between minutes %d and %d of each hour.",
                          swaphelper.QUIET[1] + 1, *swaphelper.QUIET)
                 said = True
             sleep(STEP_SECONDS)
 
-    quiet_minutes()
-    pending = [(kind, root, name) for kind, root, name, _pid in open_now]
-    waited, waiting_for = 0.0, None
-    while pending:
-        busy = []
-        for kind, root, name in pending:
-            answer = ask_quit(name)
-            if answer == "busy":
-                busy.append((kind, root, name))
-            elif answer == "quit" or (answer == "gone" and waiting_for is not None):
-                closed.append((kind, root))             # gone after saying busy: it closed meanwhile
-                log.info("Closed %s.", "the tray" if kind == "tray" else f"the window for {root.name}")
-        pending = busy
-        if not pending:
+    # Look again now, after the build: a window opened meanwhile must close too, or the swap finds it running and
+    # stops after everything else has closed. Ask every one first, and close them only once none is busy, so the
+    # idle ones (the tray among them, whose alerts stop while it's closed) don't wait closed for a busy one.
+    waited, waiting_for, rounds = 0.0, None, 0
+    while True:
+        quiet_minutes()
+        found = open_ones()
+        if not found:
             break
-        names = ", ".join(root.name for _kind, root, _name in pending if root is not None)
-        if waited >= wait_seconds:
-            give_back()
-            return _stopped("busy", f"The window for {names} was still running an action, so the update stopped. "
-                                    "Nothing was changed. Install it again once that action has finished.",
-                            version, res.get("done"))
-        if names != waiting_for:
-            log.info("Waiting for the window for %s to finish its action. The update goes on after that.", names)
-            waiting_for = names
-        sleep(STEP_SECONDS)
-        waited += STEP_SECONDS
+        busy = [(kind, root) for kind, root, name, _pid in found if ask_may(name) == "busy"]
+        if busy:
+            names = ", ".join(what(kind, root) for kind, root in busy)
+            if waited >= wait_seconds:
+                give_back()
+                return _stopped("busy", f"{names[0].upper()}{names[1:]} still had an action running or a form open, "
+                                        "so the update stopped. Nothing was changed. Install it again once that's "
+                                        "done.", version, res.get("done"))
+            if names != waiting_for:
+                log.info("Waiting for %s, which has an action running or a form open. The update goes on once "
+                         "it's done.", names)
+                waiting_for = names
+            sleep(STEP_SECONDS)
+            waited += STEP_SECONDS
+            continue
+        for kind, root, name, _pid in found:
+            if ask_quit(name) == "quit":
+                closed.append((kind, root))
+                log.info("Closed %s.", what(kind, root))
+        rounds += 1
+        if rounds >= ROUNDS:                            # windows that keep opening: the helper waits for them
+            break
     quiet_minutes()
 
     restart: list[list[str]] = []
@@ -227,6 +237,13 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
     if not started.get("ok"):
         give_back()
         return {**started, "version": version, "from": __version__}
+    plan = Path(res["plan"])                            # updates/X.Y.Z/plan.json
+    if plan.is_absolute():                              # so the next start knows, should the helper never end
+        try:
+            _write(plan.parent.parent / STARTED,
+                   {"version": version, "from": __version__, "started": now().isoformat(timespec="seconds")})
+        except OSError as exc:
+            log.warning("Couldn't note that the update started: %s", exc)
     return {**started, "version": version, "from": __version__, "done": res.get("done") or []}
 
 
@@ -239,33 +256,55 @@ def _finished(result: dict) -> datetime | None:
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
+def _read(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _recent(t: datetime | None, now: datetime) -> bool:
+    return t is not None and -timedelta(minutes=5) <= now - t < SAID_FOR      # a clock a little behind counts
+
+
 def last_update(*, updates_dir: Path | None = None, now: datetime | None = None,
                 running: str = __version__) -> str | None:
     """What Options says on the next start, for a day after a swap: "Updated to X.Y.Z." when this is that
-    version, or that the update didn't finish and which version is still installed, with why."""
-    result = selfupdate.last_result(updates_dir)
-    if not result:
-        return None
-    finished = _finished(result)
-    age = (now or datetime.now(timezone.utc)) - finished if finished is not None else None
-    if age is None or not -timedelta(minutes=5) <= age < SAID_FOR:     # a clock a little behind still counts
+    version; or that the update didn't finish, which version is installed now (the result's ``program``), why, and
+    what's left to do; or, when the helper started but never wrote a result, that it didn't finish."""
+    folder = Path(updates_dir) if updates_dir is not None else selfupdate.updates_folder()
+    now = now or datetime.now(timezone.utc)
+    result = selfupdate.last_result(folder)
+    started = _read(folder / STARTED)
+    began = _finished({"finished": (started or {}).get("started")})
+    finished = _finished(result) if result else None
+    if started and _recent(began, now) and (finished is None or finished < began - timedelta(seconds=1)):
+        return (f"The update to {started.get('version')} didn't finish. FOLIO-Exchange {running} is installed. "
+                "Install it again from here.")
+    if not result or not _recent(finished, now):
         return None
     version, before = str(result.get("version") or ""), str(result.get("from") or "")
+    left = [str(x) for x in result.get("left") or []]
     if result.get("ok"):
         same = selfupdate.parse_version(version) is not None and \
             selfupdate.parse_version(version) == selfupdate.parse_version(running)
-        return f"Updated to {version}." if same else None
+        return " ".join([f"Updated to {version}.", *left]) if same else None
     reason = str(result.get("reason") or "").strip()
-    line = f"The update to {version} didn't finish. FOLIO-Exchange {before or running} is still installed."
-    return f"{line} {reason}" if reason else line
+    if result.get("program", "old") == "old":
+        state = [f"FOLIO-Exchange {before or running} is still installed."]
+    else:                                               # a rollback that didn't work: the helper says what's where
+        state = [str(x) for x in result.get("done") or [] if str(x).startswith(("FOLIO-Exchange", "No version"))]
+    return " ".join([f"The update to {version} didn't finish.", *state, *([reason] if reason else []), *left])
 
 
 def pending() -> tuple[Path, list[Path]] | None:
     """For the window and the tray, on their own thread before they hand the rest to another: the updates folder
-    and the sites known now, or None when no swap has left a result on this PC. Both are small local files, read
-    here so the thread that records the update never looks up the app's folders itself."""
+    and the sites known now, or None when no swap has left a result (or a note that one started) on this PC. Both
+    are small local files, read here so the thread that records the update never looks up the app's folders
+    itself."""
     folder = selfupdate.updates_folder()
-    if not (folder / selfupdate.RESULT).is_file():
+    if not (folder / selfupdate.RESULT).is_file() and not (folder / STARTED).is_file():
         return None
     return folder, selfupdate.known_sites()
 

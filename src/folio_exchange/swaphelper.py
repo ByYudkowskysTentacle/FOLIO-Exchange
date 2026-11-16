@@ -49,6 +49,8 @@ QUIET = (5, 15)            # minutes of the hour when the scheduled task starts,
 WAIT_SECONDS = 120         # for the windows and the tray to quit
 STEP_SECONDS = 2
 COMMAND_SECONDS = 600
+RENAME_TRIES = 5           # a rename that fails (an antivirus scan holding a file, say) is tried this often
+RENAME_WAIT = 1.0          # seconds between those tries
 SETTLE_SECONDS = 10        # for a program caught by the first rename to quit (it finds the marker and stops)
 _VERSION = re.compile(r"\b(\d+\.\d+\.\d+)\b")
 
@@ -295,6 +297,26 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
             return None
         return before or after
 
+    def move(src: Path, dst: Path) -> None:
+        """Rename, tried again a few times: a file held for a moment (an antivirus scan) mustn't stop a swap or,
+        worse, the rollback after one."""
+        for attempt in range(RENAME_TRIES):
+            try:
+                rename(src, dst)
+                return
+            except OSError:
+                if attempt == RENAME_TRIES - 1:
+                    raise
+                sleep(RENAME_WAIT)
+
+    def none_left() -> None:
+        """Neither version is in the program folder: say what's where, and how to put it right."""
+        result["program"] = "none"
+        done.append(f"No version of FOLIO-Exchange is in {program} now. The version from before the update, "
+                    f"{old_version}, is in {outgoing}.")
+        left.append(f"Rename {outgoing} to {PROGRAM}, or run the installer again. Until then, scheduled runs "
+                    "and FOLIO-Exchange itself can't start.")
+
     unlisted = ("Couldn't list the programs running on this computer, so it can't tell whether FOLIO-Exchange "
                 "is running. Nothing was changed.")
     try:
@@ -323,7 +345,7 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
         if outgoing.exists() and not _remove(outgoing):
             return stop(f"{outgoing} is left from an earlier update and couldn't be removed. Nothing was changed.")
         try:
-            rename(program, outgoing)
+            move(program, outgoing)
         except OSError as exc:
             return stop(f"The program folder couldn't be renamed ({exc.strerror or exc}). Nothing was changed. "
                         "A program may still be using it.")
@@ -340,22 +362,20 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
                 "A program started from the program folder during the update. Nothing was changed. Try the "
                 "update again.")
             try:
-                rename(outgoing, program)
+                move(outgoing, program)
             except OSError as back:
-                result["program"] = "none"
-                left.append(f"Rename {outgoing} to {PROGRAM}, or run the installer again.")
+                none_left()
                 return stop(f"{reason.replace(' Nothing was changed.', '')} The program folder couldn't be put "
                             f"back ({back.strerror or back}).")
             return stop(reason)
         try:
-            rename(new, program)
+            move(new, program)
         except OSError as exc:
             reason = f"The new program folder couldn't be moved into place ({exc.strerror or exc})."
             try:
-                rename(outgoing, program)
+                move(outgoing, program)
             except OSError as back:
-                result["program"] = "none"
-                left.append(f"Rename {outgoing} to {PROGRAM}, or run the installer again.")
+                none_left()
                 return stop(f"{reason} The old one couldn't be put back either ({back.strerror or back}).")
             return stop(f"{reason} The old version was put back.")
 
@@ -363,11 +383,19 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
         if problem:
             reason = f"FOLIO-Exchange {version} didn't work after the swap, because {problem}."
             try:
-                rename(program, failed)
-                rename(outgoing, program)
+                move(program, failed)
             except OSError as back:
-                result["program"] = "none" if not program.exists() else "new"
-                left.append(f"Rename {outgoing} to {PROGRAM}, or run the installer again.")
+                # The new version stays in place: it's installed, though it failed its check.
+                result["program"] = "new"
+                done.append(f"FOLIO-Exchange {version} is in {program}, though it didn't pass its check. The "
+                            f"version from before the update, {old_version}, is in {outgoing}.")
+                left.append(f"Run the installer again, or rename {program} to {FAILED} and then {outgoing} to "
+                            f"{PROGRAM}.")
+                return stop(f"{reason} The old version couldn't be put back ({back.strerror or back}).")
+            try:
+                move(outgoing, program)
+            except OSError as back:
+                none_left()
                 return stop(f"{reason} The old version couldn't be put back ({back.strerror or back}).")
             _remove(failed)
             return stop(f"{reason} The old version was put back.")
@@ -379,7 +407,7 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
             left.append(f"{previous} couldn't be removed. Delete it to free the space.")
         else:
             try:
-                rename(outgoing, previous)
+                move(outgoing, previous)
                 done.append(f"FOLIO-Exchange {old_version} is kept in {previous}, so you can go back to it.")
             except OSError:
                 _remove(outgoing)
@@ -411,7 +439,20 @@ def _write_result(out: Path, result: dict) -> None:
     os.replace(tmp, out)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _tell(text: str) -> None:
+    """Show ``text`` in a message box (Windows only): for an update that left no program to start, since no
+    window of FOLIO-Exchange can say it then."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, text, "FOLIO-Exchange", 0x10 | 0x10000)   # MB_ICONERROR, foreground
+    except (OSError, AttributeError):
+        pass
+
+
+def main(argv: list[str] | None = None, *, tell=_tell) -> int:
     """``swaphelper.py PLAN.json ROOT RESULT.json``: the plan, the install folder (whose marker is removed
     whatever happens, even when the plan can't be read) and where to write what happened."""
     args = sys.argv[1:] if argv is None else argv
@@ -448,6 +489,9 @@ def main(argv: list[str] | None = None) -> int:
     for item in plan.get("restart") or []:
         if isinstance(item, list) and all(isinstance(a, str) for a in item):
             _start(item, program)
+    if result.get("program") == "none":          # nothing can start to say so: say it here
+        tell(" ".join([str(result.get("reason") or ""), *map(str, result.get("done") or []),
+                       *map(str, result.get("left") or [])]).strip())
     return 0 if result["ok"] else 1
 
 

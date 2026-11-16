@@ -2,8 +2,11 @@
 the steps, closing the other windows and the tray and starting them again, the line Options shows afterwards,
 and the audit entry. The engine and the sockets are stand-ins; the real engine runs only against PR 36's
 temporary install folder (test_selfupdate's fixtures). Nothing goes online and no real key is used."""
+# Fixtures are imported from test_selfupdate, and test functions take them by name.
+# ruff: noqa: F811
 from __future__ import annotations
 
+import ast
 import functools
 import json
 import logging
@@ -62,28 +65,48 @@ class Untouchable:
 
 
 class Sockets:
-    """Stands in for single.probe and single.ask_to_quit: which names answer, with which pid, and what each says
-    when asked to quit (a list, its last answer repeated)."""
+    """Stands in for single.probe, single.ask_may_quit and single.ask_to_quit: which names answer, with which pid,
+    and what each says when asked whether it could quit (a list, its last answer repeated). A name that quits
+    stops answering; ``opens`` names one that starts answering at the given look (a window opened meanwhile)."""
 
-    def __init__(self, open_=None, answers=None):
-        self.open, self.answers, self.asked = dict(open_ or {}), {k: list(v) for k, v in (answers or {}).items()}, []
+    def __init__(self, open_=None, busy=None, opens=None):
+        self.open = dict(open_ or {})
+        self.busy = {k: list(v) for k, v in (busy or {}).items()}
+        self.opens = dict(opens or {})              # name -> (look number, pid)
+        self.looks, self.asked, self.quit = 0, [], []
 
     def probe(self, name):
+        if name in self.opens and self.looks >= self.opens[name][0]:
+            self.open.setdefault(name, self.opens.pop(name)[1])
         return self.open.get(name)
 
-    def ask(self, name):
-        self.asked.append(name)
-        said = self.answers.get(name, ["quit"])
+    def look(self, name):                           # counts the rounds: the tray is always asked last
+        if name == places.tray_instance_name():
+            self.looks += 1
+        return self.probe(name)
+
+    def ask_may(self, name):
+        self.asked.append(("may", name))
+        said = self.busy.get(name, ["yes"])
         return said.pop(0) if len(said) > 1 else said[0]
+
+    def ask_quit(self, name):
+        self.asked.append(("quit", name))
+        if name not in self.open:
+            return "gone"
+        self.open.pop(name)
+        self.quit.append(name)
+        return "quit"
 
 
 def run(own, engine, sockets=None, *, now=None, sleeps=None, launched=None, parents=dict, **kw):
     sockets = sockets or Sockets()
     sleeps = [] if sleeps is None else sleeps
     launched = [] if launched is None else launched
-    return installing.install(NEW, key=b"k" * 32, own=own, engine=engine, probe=sockets.probe, ask_quit=sockets.ask,
-                            parents=parents, launch=launched.append, sleep=sleeps.append, now=now or (lambda: CALM),
-                            http=FakeGitHub({}), **kw)
+    return installing.install(NEW, key=b"k" * 32, own=own, engine=engine, probe=sockets.look,
+                              ask_may=sockets.ask_may, ask_quit=sockets.ask_quit, parents=parents,
+                              launch=launched.append, sleep=sleeps.append, now=now or (lambda: CALM),
+                              http=FakeGitHub({}), **kw)
 
 
 def argv(command):
@@ -136,8 +159,6 @@ def test_the_install_is_looked_up_only_when_it_matters():
 def test_the_release_key_comes_only_from_the_code():
     """updates.RELEASE_KEY is the one key the app passes: nothing else sets it, and only the window's Install
     reads it (no setting, file or environment variable)."""
-    import ast
-
     import folio_exchange
 
     src = Path(folio_exchange.__file__).parent
@@ -156,10 +177,48 @@ def test_the_release_key_comes_only_from_the_code():
     assert [where for where, _line in setters] == ["updates.py"]                    # its definition, only
 
 
+def _is_release_key(node) -> bool:
+    return (isinstance(node, ast.Attribute) and node.attr == "RELEASE_KEY" and isinstance(node.value, ast.Name)
+            and node.value.id == "updates")
+
+
+def test_every_key_the_app_passes_is_the_release_key_itself():
+    """Regression (review of PR 38): a key taken from anywhere else beside RELEASE_KEY (an environment variable,
+    a setting: ``key = os.environ.get(...) or updates.RELEASE_KEY``) passed the test above. In the window's code
+    every ``key`` assigned is ``updates.RELEASE_KEY`` and nothing more, the ``key=`` given to the install is that
+    name or that attribute, and offer gets it as is; installing.install hands its own ``key`` to the engine untouched."""
+    import folio_exchange
+
+    src = Path(folio_exchange.__file__).parent
+    tree = ast.parse((src / "desktop" / "actions.py").read_text(encoding="utf-8"))
+    assigned, passed, offered = [], [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "key" for t in node.targets):
+            assigned.append(node.value)
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "install":     # install = self.updater
+                passed += [kw.value for kw in node.keywords if kw.arg == "key"]
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "offer":
+                offered.append(node.args[2])
+    assert assigned and all(_is_release_key(v) for v in assigned), [ast.unparse(v) for v in assigned]
+    assert passed and all(_is_release_key(v) or (isinstance(v, ast.Name) and v.id == "key") for v in passed)
+    assert offered and all(_is_release_key(v) for v in offered)
+
+    install_fn = next(n for n in ast.walk(ast.parse((src / "desktop" / "installing.py").read_text(encoding="utf-8")))
+                      if isinstance(n, ast.FunctionDef) and n.name == "install")
+    for node in ast.walk(install_fn):
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            assert not any(isinstance(t, ast.Name) and t.id == "key" for t in targets), ast.unparse(node)
+    prepares = [n for n in ast.walk(install_fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "prepare"]
+    assert [ast.unparse(kw.value) for p in prepares for kw in p.keywords if kw.arg == "key"] == ["key"]
+
+
 # ------------------------------------------------------------------ installing
 def test_without_a_key_the_engine_is_never_reached(tmp_path):
-    res = installing.install(NEW, key=None, own=tmp_path, engine=Untouchable(), probe=pytest.fail, ask_quit=pytest.fail,
-                           parents=pytest.fail)                     # none of them is called
+    res = installing.install(NEW, key=None, own=tmp_path, engine=Untouchable(), probe=pytest.fail,
+                             ask_may=pytest.fail, ask_quit=pytest.fail, parents=pytest.fail)   # none is called
     assert res["ok"] is False and res["stage"] == "key" and res["reason"].startswith(installing.NO_KEY)
 
 
@@ -177,7 +236,8 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     # (folio-exchange-app.exe, then the venv's pythonw.exe), up to installing.ANCESTORS.
     assert {4239, 4240, 4241, 4242, 4342, 4343} <= kw["allow_pids"] and 4 not in kw["allow_pids"]
     assert kw["sites"] == [other, own]                              # each site known is copied
-    assert sockets.asked == [window, tray]                          # asked only after the release was ready
+    # Asked only after the release was ready: each whether it could quit, then each to quit.
+    assert sockets.asked == [("may", window), ("may", tray), ("quit", window), ("quit", tray)]
     (_, plan, restart), = engine.asked("start_swap")
     assert plan == "plan.json"
     assert restart == [argv(startup.app_command(other)), argv(startup.tray_command()),
@@ -187,19 +247,32 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     assert "Closed the window for other." in said and "Closed the tray." in said
 
 
+def test_a_window_opened_during_the_build_is_closed_too(tmp_path):
+    """Regression (review of PR 38): the open windows were found once, before the build. One opened during it
+    was never asked to quit, so the helper found it running and stopped after everything else had closed."""
+    own, early, late = tmp_path / "own", tmp_path / "Early", tmp_path / "Late"
+    engine = Engine(sites=[early, late])
+    sockets = Sockets({places.instance_name(early): 1}, opens={places.instance_name(late): (1, 2)})
+    res = run(own, engine, sockets)
+    assert res["ok"]
+    assert places.instance_name(late) in sockets.quit and places.instance_name(early) in sockets.quit
+    (_, _plan, restart), = engine.asked("start_swap")
+    assert argv(startup.app_command(late)) in restart and argv(startup.app_command(early)) in restart
+
+
 def test_the_download_sends_no_account_and_no_default_headers(tmp_path):
     """The engine's own download session (selfupdate.download_session: no .netrc account, requests' default
     headers cleared; test_selfupdate checks what it sends), never a plain requests.Session()."""
     sessions = []
     engine = Engine()
     engine.download_session = lambda: sessions.append(object()) or sessions[-1]
-    installing.install(NEW, key=b"k" * 32, own=tmp_path, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
-                     parents=dict, sleep=pytest.fail, now=lambda: CALM)
+    installing.install(NEW, key=b"k" * 32, own=tmp_path, engine=engine, probe=lambda n: None, ask_may=pytest.fail,
+                       ask_quit=pytest.fail, parents=dict, sleep=pytest.fail, now=lambda: CALM)
     (_, _tag, kw), = engine.asked("prepare")
     assert len(sessions) == 1 and kw["http"].http is sessions[0]
 
 
-def test_nothing_is_closed_when_the_engine_refuses(tmp_path):
+def test_nothing_is_asked_when_the_engine_refuses(tmp_path):
     other = tmp_path / "other"
     refusal = {"ok": False, "stage": "busy", "program": "old", "done": [], "left": [],
                "reason": "Scheduled runs start between minutes 5 and 15 of each hour. Try the update again after "
@@ -210,42 +283,54 @@ def test_nothing_is_closed_when_the_engine_refuses(tmp_path):
     assert sockets.asked == [] and engine.asked("start_swap") == []
 
 
-def test_a_busy_window_is_waited_for_and_said(tmp_path, caplog):
-    own, other = tmp_path / "own", tmp_path / "Lakeside"
-    name = places.instance_name(other)
-    engine = Engine(sites=[other])
-    sockets = Sockets({name: 7}, {name: ["busy", "busy", "quit"]})
+def test_nothing_closes_while_one_is_busy_and_it_is_said(tmp_path, caplog):
+    """The idle window and the tray stay open while another window has an action running or a form open, and all
+    close together once it's free."""
+    own, busy, idle = tmp_path / "own", tmp_path / "Lakeside", tmp_path / "Hillside"
+    tray = places.tray_instance_name()
+    names = {"busy": places.instance_name(busy), "idle": places.instance_name(idle)}
+    engine = Engine(sites=[busy, idle])
+    sockets = Sockets({names["busy"]: 1, names["idle"]: 2, tray: 3}, busy={names["busy"]: ["busy", "busy", "yes"]})
     sleeps = []
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
         res = run(own, engine, sockets, sleeps=sleeps)
     assert res["ok"] and len(sleeps) == 2
+    quits = [i for i, (what, _name) in enumerate(sockets.asked) if what == "quit"]
+    last_may = max(i for i, (what, _name) in enumerate(sockets.asked) if what == "may")
+    assert quits and min(quits) > last_may                         # nothing closed until none was busy
     said = [r.getMessage() for r in caplog.records]
-    assert said.count("Waiting for the window for Lakeside to finish its action. The update goes on after that.") == 1
-    assert engine.asked("start_swap")[0][2][0] == argv(startup.app_command(other))
+    assert said.count("Waiting for the window for Lakeside, which has an action running or a form open. The update "
+                      "goes on once it's done.") == 1
+    (_, _plan, restart), = engine.asked("start_swap")
+    assert restart[:3] == [argv(startup.app_command(busy)), argv(startup.app_command(idle)),
+                           argv(startup.tray_command())]
 
 
-def test_a_window_that_closed_after_saying_busy_is_started_again(tmp_path):
+def test_a_window_that_closes_by_itself_while_busy_is_not_started_again(tmp_path):
     other = tmp_path / "other"
     name = places.instance_name(other)
     engine = Engine(sites=[other])
-    res = run(tmp_path / "own", engine, Sockets({name: 7}, {name: ["busy", "gone"]}))
-    assert res["ok"] and engine.asked("start_swap")[0][2][0] == argv(startup.app_command(other))
+    sockets = Sockets({name: 7}, busy={name: ["busy"]})
+    sockets.ask_may = lambda n, s=sockets: (s.asked.append(("may", n)), s.open.pop(n, None), "busy")[2]
+    res = run(tmp_path / "own", engine, sockets)
+    assert res["ok"] and ("quit", name) not in sockets.asked
+    assert engine.asked("start_swap")[0][2] == [argv(startup.app_command(tmp_path / "own", "options"))]
 
 
-def test_a_window_busy_too_long_stops_the_update_and_the_closed_ones_come_back(tmp_path):
+def test_a_window_busy_too_long_stops_the_update_and_nothing_was_closed(tmp_path):
     own, busy, idle = tmp_path / "own", tmp_path / "Lakeside", tmp_path / "Hillside"
     tray = places.tray_instance_name()
     engine = Engine(sites=[busy, idle])
     sockets = Sockets({places.instance_name(busy): 1, places.instance_name(idle): 2, tray: 3},
-                      {places.instance_name(busy): ["busy"]})
+                      busy={places.instance_name(busy): ["busy"]})
     launched = []
     res = run(own, engine, sockets, launched=launched, wait_seconds=12)
     assert res["ok"] is False and res["stage"] == "busy"
-    assert res["reason"] == ("The window for Lakeside was still running an action, so the update stopped. Nothing "
-                             "was changed. Install it again once that action has finished.")
+    assert res["reason"] == ("The window for Lakeside still had an action running or a form open, so the update "
+                             "stopped. Nothing was changed. Install it again once that's done.")
     assert res["done"][-1] == f"FOLIO-Exchange {installing.__version__} is still installed."
     assert engine.asked("start_swap") == []
-    assert launched == [argv(startup.app_command(idle)), argv(startup.tray_command())]
+    assert sockets.quit == [] and launched == []                    # the idle ones were never closed
 
 
 def test_the_swap_waits_out_the_minutes_when_the_scheduled_task_starts(tmp_path, caplog):
@@ -254,7 +339,7 @@ def test_the_swap_waits_out_the_minutes_when_the_scheduled_task_starts(tmp_path,
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
         res = run(tmp_path / "own", Engine(), now=lambda: next(times), sleeps=sleeps)
     assert res["ok"] and len(sleeps) == 3
-    assert ("Waiting for minute 16: scheduled runs start between minutes 5 and 15 of each hour."
+    assert ("Waiting for minute 16. Scheduled runs start between minutes 5 and 15 of each hour."
             in [r.getMessage() for r in caplog.records])
 
 
@@ -269,13 +354,33 @@ def test_a_swap_that_cannot_start_starts_the_closed_ones_again(tmp_path):
     assert launched == [argv(startup.app_command(other))]
 
 
-def test_the_real_engine_gets_the_release_ready_from_the_tag_and_key(install, key, tmp_path, caplog):  # noqa: F811
-    """The real prepare and start_swap against PR 36's temporary install folder: progress lines in order."""
+def test_a_started_swap_is_noted_for_a_helper_that_never_ends(tmp_path):
+    """Regression (review of PR 38): a helper that died wrote no result, so the next start said nothing. The window
+    notes the swap it started; with no result after it, the next start says the update didn't finish."""
+    updates_dir = tmp_path / "updates"
+    (updates_dir / NEW).mkdir(parents=True)
+    engine = Engine()
+    engine.prepared["plan"] = str(updates_dir / NEW / "plan.json")
+    assert run(tmp_path / "own", engine)["ok"]
+    started = json.loads((updates_dir / installing.STARTED).read_text(encoding="utf-8"))
+    assert started["version"] == NEW and started["from"] == installing.__version__
+    later = CALM + timedelta(minutes=10)
+    assert installing.last_update(updates_dir=updates_dir, now=later, running=OLD) == (
+        f"The update to {NEW} didn't finish. FOLIO-Exchange {OLD} is installed. Install it again from here.")
+    write_result(updates_dir, ok=True, version=NEW, **{"from": OLD}, program="new",
+                 finished=(CALM + timedelta(minutes=1)).isoformat())
+    assert installing.last_update(updates_dir=updates_dir, now=later, running=NEW) == f"Updated to {NEW}."
+
+
+def test_the_real_engine_gets_the_release_ready_from_the_tag_and_key(install, key, tmp_path, caplog):
+    """The real prepare and start_swap against PR 36's temporary install folder: progress lines in order, the
+    site copied and a folder with no site in it said to be skipped (regression: it was said to be copied)."""
     updates_dir = tmp_path / "app" / "updates"
     started = []
+    gone = tmp_path / "sites" / "gone"
 
     class Real:
-        known_sites = staticmethod(lambda: [])
+        known_sites = staticmethod(lambda: [gone])
         build_environment = Builder()
 
         @staticmethod
@@ -292,21 +397,24 @@ def test_the_real_engine_gets_the_release_ready_from_the_tag_and_key(install, ke
     site = make_site(tmp_path / "sites" / "lakeside", "https://folio.example.org")
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
         res = installing.install(NEW, key=key[1], own=site, engine=Real(), probe=lambda n: None, parents=dict,
-                               ask_quit=pytest.fail, launch=pytest.fail, sleep=pytest.fail, now=lambda: CALM,
-                               http=FakeGitHub(release(key[0])))
+                                 ask_may=pytest.fail, ask_quit=pytest.fail, launch=pytest.fail, sleep=pytest.fail,
+                                 now=lambda: CALM, http=FakeGitHub(release(key[0])))
     assert res["ok"], res
     plan, restart = started[0]
     assert plan["version"] == NEW and restart == [argv(startup.app_command(site, "options"))]
-    said = [r.getMessage() for r in caplog.records if r.name == "folio_exchange.desktop.installing"]
-    assert said[:6] == [f"Getting FOLIO-Exchange {NEW} ready. The version you have keeps running meanwhile.",
+    said = [r.getMessage() for r in caplog.records
+            if r.name in ("folio_exchange.desktop.installing", "folio_exchange.selfupdate")]
+    assert said[:7] == [f"Getting FOLIO-Exchange {NEW} ready. The version you have keeps running meanwhile.",
                         "Downloading the signed checksums…",
                         f"The signature checks out. Downloading {selfupdate.zip_name(NEW)}…",
                         f"Copying the site {site}…",
+                        f"{gone} isn't copied, because there's no site there now.",
                         "Building the new program folder. This takes a few minutes…",
                         f"FOLIO-Exchange {NEW} is ready."]
+    assert f"{gone} wasn't copied, because there's no site there now." in res["done"]
 
 
-def test_a_download_with_another_keys_signature_stops_before_anything_closes(install, key, tmp_path):  # noqa: F811
+def test_a_download_with_another_keys_signature_stops_before_anything_closes(install, key, tmp_path):
     other, _public = make_key()
 
     class Real(Engine):
@@ -317,8 +425,8 @@ def test_a_download_with_another_keys_signature_stops_before_anything_closes(ins
 
     engine = Real()
     res = installing.install(NEW, key=key[1], own=None, engine=engine, probe=lambda n: None, parents=dict,
-                           ask_quit=pytest.fail,
-                           sleep=pytest.fail, now=lambda: CALM, http=FakeGitHub(release(other)))
+                             ask_may=pytest.fail, ask_quit=pytest.fail, sleep=pytest.fail, now=lambda: CALM,
+                             http=FakeGitHub(release(other)))
     assert res["ok"] is False and res["stage"] == "verify"
     assert res["reason"].startswith("The download isn't signed with FOLIO-Exchange's release key.")
     assert engine.asked("start_swap") == []
@@ -345,6 +453,22 @@ def test_an_update_that_did_not_finish_says_so_and_why(tmp_path):
     write_result(tmp_path, ok=False, version=NEW, **{"from": OLD}, reason=reason, finished=NOW.isoformat())
     assert installing.last_update(updates_dir=tmp_path, now=NOW, running=OLD) == (
         f"The update to {NEW} didn't finish. FOLIO-Exchange {OLD} is still installed. {reason}")
+    write_result(tmp_path, ok=False, version=NEW, **{"from": OLD}, program="old", reason=reason,
+                 finished=NOW.isoformat())
+    assert "is still installed" in installing.last_update(updates_dir=tmp_path, now=NOW, running=OLD)
+
+
+def test_a_failed_rollback_says_which_version_is_installed(tmp_path):
+    """Regression (review of PR 38): "FOLIO-Exchange 0.2.0 is still installed" was said for a rollback that failed,
+    with the new version left in place."""
+    state = (f"FOLIO-Exchange {NEW} is in C:\\FX\\program, though it didn't pass its check. The version from before "
+             f"the update, {OLD}, is in C:\\FX\\program.outgoing.")
+    write_result(tmp_path, ok=False, version=NEW, **{"from": OLD}, program="new", finished=NOW.isoformat(),
+                 reason="It didn't work after the swap. The old version couldn't be put back (Access is denied).",
+                 done=[state], left=["Run the installer again."])
+    line = installing.last_update(updates_dir=tmp_path, now=NOW, running=NEW)
+    assert line.startswith(f"The update to {NEW} didn't finish. {state} It didn't work")
+    assert line.endswith("Run the installer again.") and "still installed" not in line
 
 
 def test_no_result_says_nothing(tmp_path):

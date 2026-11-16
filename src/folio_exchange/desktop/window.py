@@ -108,6 +108,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.registering = False                                 # a console registers the scheduled task
         self.start_console = start_console                       # how that console is started (tests replace it)
         self.settings_dialog = self.delivery_dialog = self.alerts_dialog = self.builder_dialog = None
+        self.install_dialog = None                               # the install question, while it's open
         self.shown_key: str | None = None
         self.closing_after_job = False
         self.quitting = False

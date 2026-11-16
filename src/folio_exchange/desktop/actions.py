@@ -782,10 +782,11 @@ class SetupActions:
 
     def ask_install(self, release: dict) -> bool:
         """True only when the person chose "Install" (Cancel is the default). Tests replace this."""
-        dialog = UpdateDialog(release, self)
+        dialog = self.install_dialog = UpdateDialog(release, self)
         try:
             return dialog.exec() == UpdateDialog.DialogCode.Accepted
         finally:
+            self.install_dialog = None
             dialog.deleteLater()
 
     def install_update(self, version: str) -> None:
@@ -833,7 +834,9 @@ class SetupActions:
         failed = self._failed(state)
         res = state.get("result") or {}
         if failed:
-            self.options.install_stopped({"reason": f"The update stopped: {failed}",
+            log.warning("The update to %s stopped with an error: %s", version, failed)
+            self.options.install_stopped({"reason": "Something went wrong, so the update stopped. The details are "
+                                                    "in the log.",
                                           "done": [f"FOLIO-Exchange {__version__} is still installed."]})
         elif res.get("ok") and res.get("stage") == "swap":
             log.info("The swap to %s has started; this window closes and opens again", version)
@@ -842,19 +845,26 @@ class SetupActions:
         else:
             self.options.install_stopped(res)
 
+    def forms_open(self) -> bool:
+        """Whether a form whose typing would be lost is open in this window: a feed's settings or delivery, the
+        alerts, the recipe builder, or one being opened."""
+        return any(d is not None for d in (self.settings_dialog, self.delivery_dialog, self.alerts_dialog,
+                                           self.builder_dialog)) or bool(self.opening_settings)
+
     def may_quit_for_update(self) -> bool:
         """Whether an update another window installs may close this one: not while an action runs here or on
-        the page, nor while a pause, a rename or a release question is under way."""
+        the page, a pause, a rename or a release question is under way, or a form is open (its typing would be
+        lost). The update then waits, and says which window it's waiting for. The install question isn't a form:
+        "quit for update" closes it, since another window's update is then under way."""
         return (self.jobs.running() is None and not self.toggling and not self.renaming and not self.reviewing
-                and not self.closing_after_job)
+                and not self.closing_after_job and not self.forms_open())
 
     def quit_for_update(self) -> None:
-        """Close for an update: the open dialogs too, so nothing keeps this process open. The update starts this
+        """Close for an update, with an install question still open (the answer is no). The update starts this
         window again afterwards."""
         log.info("Closing for an update")
-        for dialog in (self.settings_dialog, self.delivery_dialog, self.alerts_dialog, self.builder_dialog):
-            if dialog is not None:
-                dialog.reject()
+        if self.install_dialog is not None:
+            self.install_dialog.reject()
         self.close_now()
 
     def after_update(self) -> None:

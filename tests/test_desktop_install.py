@@ -57,8 +57,8 @@ def installing_window(qtbot, site, engine, *, asked=None, yes=True, http=None, *
     w, page = options_page(qtbot, site)
     asked = [] if asked is None else asked
     w.ask_install = lambda release: asked.append(release) or yes
-    w.updater = functools.partial(installing.install, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
-                                  parents=dict,
+    w.updater = functools.partial(installing.install, engine=engine, probe=lambda n: None, ask_may=pytest.fail,
+                                  ask_quit=pytest.fail, parents=dict,
                                   launch=pytest.fail, sleep=lambda s: None, now=lambda: CALM,
                                   http=http or FakeGitHub({}), **kw)
     return w, page
@@ -135,8 +135,9 @@ def test_the_question_shows_the_version_notes_and_what_happens_with_cancel_the_d
     d.show()
     assert d.windowTitle() == f"FOLIO-Exchange – install {NEW}?"
     assert d.notes.toPlainText() == NOTES and d.notes.isReadOnly()        # plain text: never read as markup
-    assert d.happens.text() == ("FOLIO-Exchange closes, updates and opens again. Your sites, feeds and passwords "
-                                "stay as they are.")
+    assert d.happens.text() == ("FOLIO-Exchange closes, updates and opens again, and so do its other windows and "
+                                "the tray icon. It takes a few minutes and needs the internet. Your sites, feeds and "
+                                "passwords stay as they are.")
     assert d.cancel_button.isDefault() and not d.install_button.isDefault()
     assert d.install_button.text() == "&Install" and d.install_button.accessibleName() == f"Install {NEW}"
     qtbot.waitUntil(lambda: d.cancel_button.hasFocus(), timeout=5000)
@@ -196,6 +197,37 @@ def test_the_update_is_the_running_action(qtbot, site, github, keyed):
     qtbot.waitUntil(lambda: page.install_button.isEnabled(), timeout=5000)        # it can be tried again
 
 
+def test_the_key_is_checked_again_after_the_question(qtbot, site, github, keyed, monkeypatch):
+    """The answer can take a while: a key gone meanwhile (never, today) still means nothing reaches the engine."""
+    w, page = options_page(qtbot, site)
+    w.updater = lambda *a, **kw: pytest.fail("the engine was reached without a key")
+
+    def answer(release):
+        monkeypatch.setattr(updates, "RELEASE_KEY", None)
+        return True
+
+    w.ask_install = answer
+    click(qtbot, page.install_button)
+    assert page.install_result.text() == "Nothing was installed." and w.jobs.running() is None
+
+
+def test_an_update_that_fails_unexpectedly_says_so_plainly(qtbot, site, github, keyed, caplog):
+    def broken(*a, **kw):
+        raise RuntimeError("the build went wrong in a way nobody foresaw")
+
+    w, page = options_page(qtbot, site)
+    w.ask_install = lambda release: True
+    w.updater = broken
+    with caplog.at_level(logging.WARNING, logger="folio_exchange"):
+        click(qtbot, page.install_button)
+        ended(qtbot, w)
+    assert page.install_result.text() == ("Something went wrong, so the update stopped. The details are in the "
+                                          "log.")
+    assert f"FOLIO-Exchange {__version__} is still installed." in page.install_notes.text()
+    assert "RuntimeError" not in page.install_result.text()
+    assert any("nobody foresaw" in r.getMessage() for r in caplog.records)    # the details are in the log
+
+
 def test_an_action_running_holds_the_update_and_says_so(qtbot, site, github, keyed):
     w, page = installing_window(qtbot, site, Engine(), yes=True)
     w.ask_install = lambda release: pytest.fail("asked while an action was running")
@@ -225,7 +257,7 @@ def broken_site(tmp_path):
     return root
 
 
-@pytest.mark.parametrize("case", ["process", "quiet", "copy", "signature"])
+@pytest.mark.parametrize("case", ["process", "quiet", "copy", "unreachable", "signature"])
 def test_each_refusal_is_shown_in_place_and_nothing_closes(qtbot, site, github, install, key,
                                                          tmp_path, monkeypatch, case):
     # The temporary install (PR 36's fixture) is found first; then the window is told this install can update.
@@ -235,7 +267,8 @@ def test_each_refusal_is_shown_in_place_and_nothing_closes(qtbot, site, github, 
     busy = [(99999, f"{program}\\Scripts\\folio-exchange.exe")]
     engine = real_engine(install, tmp_path, processes=lambda f: busy if case == "process" else [],
                          now=CALM.replace(minute=7) if case == "quiet" else CALM,
-                         sites=[broken_site(tmp_path)] if case == "copy" else ())
+                         sites=[broken_site(tmp_path)] if case == "copy" else
+                         [tmp_path / "offline-share" / "Lakeside"] if case == "unreachable" else ())
     signer = make_key()[0] if case == "signature" else key[0]
     w, page = installing_window(qtbot, site, engine, http=FakeGitHub(release(signer)))
     click(qtbot, page.install_button)
@@ -244,6 +277,8 @@ def test_each_refusal_is_shown_in_place_and_nothing_closes(qtbot, site, github, 
     expected = {"process": f"FOLIO-Exchange is running from {program}: a run, the page or another window.",
                 "quiet": "Scheduled runs start between minutes 5 and 15 of each hour.",
                 "copy": f"The site {tmp_path / 'broken'} couldn't be copied",
+                "unreachable": f"The site {tmp_path / 'offline-share' / 'Lakeside'} can't be reached, so it couldn't "
+                               "be copied. Nothing was updated. Connect the drive or network share it's on",
                 "signature": "The download isn't signed with FOLIO-Exchange's release key."}[case]
     assert seen(page.install_result) and said.startswith(expected), said
     assert f"FOLIO-Exchange {OLD} is still installed." in page.install_notes.text()
@@ -275,6 +310,36 @@ def test_a_window_with_an_action_running_refuses_to_quit(qtbot, site, name):
     qtbot.waitUntil(lambda: w.quitting, timeout=5000)
 
 
+@pytest.mark.parametrize("form", ["settings_dialog", "delivery_dialog", "alerts_dialog", "builder_dialog",
+                                  "opening_settings"])
+def test_a_window_with_a_form_open_says_busy_and_keeps_it(qtbot, site, name, form):
+    """Regression (review of PR 38): a window with a form open said yes, and quitting rejected the form, so what
+    was typed in another site's window was lost. It now says busy, and the update waits and names it."""
+    server = single.InstanceServer(name)
+    assert server.listen()
+    w = window(qtbot, site, instance=server)
+    setattr(w, form, "chq" if form == "opening_settings" else object())
+    assert single.ask_may_quit(name) == "busy" and single.ask_to_quit(name) == "busy"
+    qtbot.wait(single.QUIT_DELAY_MS + 100)
+    assert not w.quitting
+    setattr(w, form, None)
+    assert single.ask_may_quit(name) == "yes"
+    qtbot.wait(single.QUIT_DELAY_MS + 100)
+    assert not w.quitting                                          # asking whether it could quit closes nothing
+    assert single.ask_to_quit(name) == "quit"
+    qtbot.waitUntil(lambda: w.quitting, timeout=5000)
+
+
+def test_quit_for_update_closes_the_install_question(qtbot, site, github, keyed):
+    """Another window's update closes this one, and the install question open in it is answered no."""
+    from PySide6.QtCore import QTimer
+
+    w, page = options_page(qtbot, site)
+    QTimer.singleShot(200, w.quit_for_update)
+    assert w.ask_install({"version": NEW, "notes": NOTES}) is False
+    assert w.quitting and w.install_dialog is None
+
+
 def test_nothing_there_and_a_server_that_was_not_told_are_never_quit(qtbot, name):
     assert single.ask_to_quit(name) == "gone" and single.probe(name) is None
     server = single.InstanceServer(name)
@@ -284,6 +349,18 @@ def test_nothing_there_and_a_server_that_was_not_told_are_never_quit(qtbot, name
     assert single.ask_to_quit(name) == "busy"                      # may_quit unset: a no
     qtbot.wait(single.QUIT_DELAY_MS + 100)
     assert quit_ == []
+    server.close()
+
+
+def test_the_tray_says_yes_to_may_quit_and_stays_open(qtbot, site, name, trays):
+    server = single.InstanceServer(name)
+    assert server.listen()
+    t = make_tray(qtbot, [site])
+    trays.append(t)
+    t.listen(server)
+    assert single.ask_may_quit(name) == "yes"
+    qtbot.wait(single.QUIT_DELAY_MS + 100)
+    assert t.quits == []
     server.close()
 
 

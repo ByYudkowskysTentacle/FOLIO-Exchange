@@ -405,8 +405,16 @@ def copy_sites(sites: Iterable[Path], dest: Path, *, version: str = __version__)
     for root in sites:
         root = Path(root)
         if not (root / SITE_FILE).is_file():
-            skipped.append(str(root))
-            continue
+            # A folder that's there with no site in it, or gone from a folder that's there (a site deleted or
+            # moved), isn't a site to copy. One whose parent can't be reached either (a drive or share that isn't
+            # connected) may well hold a site, so the update stops rather than go on without its copy.
+            if root.is_dir() or root.parent.is_dir():
+                log.info("%s isn't copied, because there's no site there now.", root)
+                skipped.append(str(root))
+                continue
+            raise Stopped("copy", f"The site {root} can't be reached, so it couldn't be copied. Nothing was "
+                                  "updated. Connect the drive or network share it's on, then try again.")
+        log.info("Copying the site %s…", root)
         target = site_copy_folder(dest, root)
         try:
             if target.exists():
@@ -527,6 +535,25 @@ def retarget_scripts(env: Path, final: Path) -> list[str]:
 
 
 # ------------------------------------------------------------------ prepare, start the swap, results
+def _tidy_outgoing(root: Path, last: dict | None) -> str | None:
+    """``program.outgoing`` left by an update that worked (its ``program.previous`` couldn't be removed then):
+    keep it as ``program.previous``, or remove it. Returns what was done, or None when it's from an update that
+    didn't finish (then it may hold the only working version) or can't be tidied."""
+    outgoing, previous = root / swaphelper.OUTGOING, root / swaphelper.PREVIOUS
+    if not last or not last.get("ok") or last.get("program") != "new":
+        return None
+    if swaphelper._remove(previous):
+        try:
+            os.rename(outgoing, previous)
+            return (f"{outgoing}, left by the update to {last.get('version')}, is now {previous}, so you can go back "
+                    "to it.")
+        except OSError:
+            pass
+    if swaphelper._remove(outgoing):
+        return f"Removed {outgoing}, left by the update to {last.get('version')}."
+    return None
+
+
 def updates_folder() -> Path:
     from .desktop import places  # no Qt
 
@@ -580,12 +607,15 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
         reasons = busy_reasons(program, now=now, processes=processes, allow=allow)
         if reasons:
             raise Stopped("busy", " ".join(reasons) + " Nothing was changed.")
+        updates = Path(updates_dir) if updates_dir is not None else updates_folder()
         outgoing = program.parent / swaphelper.OUTGOING
         if outgoing.exists():
-            raise Stopped("busy", f"An earlier update didn't finish, and {outgoing} holds the version from before "
-                                  "it. Run the installer again, then delete that folder.")
+            tidied = _tidy_outgoing(program.parent, last_result(updates))
+            if tidied is None:
+                raise Stopped("busy", f"An earlier update didn't finish, and {outgoing} holds the version from "
+                                      "before it. Run the installer again, then delete that folder.")
+            done.append(tidied)
 
-        updates = Path(updates_dir) if updates_dir is not None else updates_folder()
         updates.mkdir(parents=True, exist_ok=True)
         if protect is None:
             from .setupops import _owner_only as protect
@@ -608,6 +638,7 @@ def prepare(tag: str, *, key: Any, install: dict | None = None, current: str = _
             got = copy_sites(known_sites() if sites is None else sites, copies, version=current)
             if got["copied"]:
                 done.append(f"Copied {len(got['copied'])} site(s) to {copies}.")
+            done.extend(f"{s} wasn't copied, because there's no site there now." for s in got["skipped"])
 
             result["stage"] = "build"
             if new.exists():
