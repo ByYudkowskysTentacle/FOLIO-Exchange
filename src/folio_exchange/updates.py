@@ -20,7 +20,9 @@ a window don't both ask), ``found`` (the newest release, and the newest that isn
 
 When the file can't be saved (a read-only or full profile), what should have been written is kept in this
 process's memory (``_unsaved``) and laid over the file whenever it is read, so the once-a-day rule, the retries and
-"told once" still hold for as long as the process runs.
+"told once" still hold for as long as the process runs. The tray's and the window's check threads share that
+memory with the thread that shows it, so it is only touched under ``_lock``, and it is dropped once the file is
+newer than it: another process saved since, and its answer is the later one.
 """
 from __future__ import annotations
 
@@ -29,6 +31,8 @@ import logging
 import os
 import re
 import tempfile
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -144,21 +148,29 @@ def _stamp(t: datetime) -> str:
 
 
 _unsaved: dict[str, Any] = {}       # what a failed save should have written (None: a key it should have removed)
+_unsaved_at = 0.0                   # when it was last added to (time.time())
+_lock = threading.RLock()           # _unsaved, and each read-change-save of the file in this process
 
 
 def load() -> dict:
     """``updates.json`` as saved, with what this process couldn't save laid over it; empty when there is none
-    or it can't be read."""
-    try:
-        data = json.loads((places.config_dir() / FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    data = data if isinstance(data, dict) else {}
-    for key, value in _unsaved.items():
-        if value is None:
-            data.pop(key, None)
-        else:
-            data[key] = value
+    or it can't be read. A file saved after what is kept in memory (by another process, since this one can't)
+    wins, and the memory is dropped: laid over it, the older values would be written back at the next save."""
+    path = places.config_dir() / FILE
+    with _lock:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            saved_at = path.stat().st_mtime
+        except (OSError, ValueError):
+            data, saved_at = {}, 0.0
+        data = data if isinstance(data, dict) else {}
+        if _unsaved and saved_at > _unsaved_at:
+            _unsaved.clear()
+        for key, value in _unsaved.items():
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
     return data
 
 
@@ -175,21 +187,24 @@ def _change(**values: Any) -> dict:
     """Read the file, set ``values`` (None removes a key) and save it. A file that can't be saved is logged,
     and the values are kept in this process's memory (``_unsaved``), which ``load`` lays over the file: the
     time of the last check must hold even then, or the tray would ask GitHub at every poll."""
-    data = load()
-    for key, value in values.items():
-        if value is None:
-            data.pop(key, None)
+    global _unsaved_at
+    with _lock:
+        data = load()
+        for key, value in values.items():
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
+        try:
+            _save(data)
+        except OSError as exc:
+            if not _unsaved:
+                log.warning("Could not save %s in %s: %s. Until it can be saved, the last check is remembered "
+                            "only while this program runs.", FILE, places.config_dir(), exc)
+            _unsaved.update(values)
+            _unsaved_at = time.time()
         else:
-            data[key] = value
-    try:
-        _save(data)
-    except OSError as exc:
-        if not _unsaved:
-            log.warning("Could not save %s in %s: %s. Until it can be saved, the last check is remembered only "
-                        "while this program runs.", FILE, places.config_dir(), exc)
-        _unsaved.update(values)
-    else:
-        _unsaved.clear()                 # the file now holds everything, what was kept in memory included
+            _unsaved.clear()             # the file now holds everything, what was kept in memory included
     return data
 
 
@@ -217,10 +232,11 @@ def set_choice(key: str, on: bool) -> None:
     saved: they asked for this, and must hear that it didn't happen."""
     if key not in ("automatic", "prereleases"):
         raise ValueError(key)
-    data = load()
-    data[key] = bool(on)
-    _save(data)
-    _unsaved.clear()                     # the file now holds everything, what was kept in memory included
+    with _lock:
+        data = load()
+        data[key] = bool(on)
+        _save(data)
+        _unsaved.clear()                 # the file now holds everything, what was kept in memory included
 
 
 # ------------------------------------------------------------------ when
