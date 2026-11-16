@@ -51,6 +51,8 @@ WHAT_HAPPENS = ("FOLIO-Exchange closes, updates and opens again, and so do its o
                 "takes a few minutes and needs the internet. Your sites, feeds and passwords stay as they are.")
 STARTED = "started.json"        # in the updates folder: the swap this window started, for a helper that never ended
 ROUNDS = 10                     # looks for windows opened while the others were being closed
+CLOSE_SECONDS = 10              # how long a window or the tray that said yes is given to be gone
+CLOSE_STEP = 0.25               # between looks whether it has
 
 
 def _same(a: Path | str, b: Path | str) -> bool:
@@ -167,8 +169,11 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
         log.info("Building the new program folder. This takes a few minutes…")
         return engine.build_environment(*args, **kw)
 
+    # A site that can't be reached stops the update only when it's this window's or one the tray watches; one
+    # that's only on the list of recent sites (a USB stick, an old share) is skipped and named.
+    required = [*([Path(own)] if own is not None else []), *places.watched_sites()]
     res = engine.prepare(tag, key=key, http=_Telling(session, version), builder=build, sites=known(),
-                         allow_pids=allow)
+                         allow_pids=allow, required=required)
     if not res.get("ok"):
         return res
     log.info("FOLIO-Exchange %s is ready.", version)
@@ -196,9 +201,10 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
     # stops after everything else has closed. Ask every one first, and close them only once none is busy, so the
     # idle ones (the tray among them, whose alerts stop while it's closed) don't wait closed for a busy one.
     waited, waiting_for, rounds = 0.0, None, 0
+    asked: set[str] = set()                             # the names asked to quit that said yes: once each
     while True:
         quiet_minutes()
-        found = open_ones()
+        found = [one for one in open_ones() if one[2] not in asked]
         if not found:
             break
         busy = [(kind, root) for kind, root, name, _pid in found if ask_may(name) == "busy"]
@@ -218,8 +224,16 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
             continue
         for kind, root, name, _pid in found:
             if ask_quit(name) == "quit":
+                asked.add(name)
                 closed.append((kind, root))
                 log.info("Closed %s.", what(kind, root))
+        # A window that said yes takes a moment to close and still answers meanwhile: wait for the ones asked to
+        # be gone before looking again, so none is asked, or started again afterwards, twice. One that lingers
+        # past CLOSE_SECONDS is left to the helper, which waits for every program in the folder to quit.
+        given = 0.0
+        while given < CLOSE_SECONDS and any(probe(name) is not None for name in asked):
+            sleep(CLOSE_STEP)
+            given += CLOSE_STEP
         rounds += 1
         if rounds >= ROUNDS:                            # windows that keep opening: the helper waits for them
             break

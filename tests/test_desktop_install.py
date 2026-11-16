@@ -265,6 +265,8 @@ def test_each_refusal_is_shown_in_place_and_nothing_closes(qtbot, site, github, 
     monkeypatch.setattr(updates, "RELEASE_KEY", key[1])            # the window passes it; the release is signed so
     program = install["program"]
     busy = [(99999, f"{program}\\Scripts\\folio-exchange.exe")]
+    if case == "unreachable":                                      # one the tray watches must be copied
+        places.watch_site(tmp_path / "offline-share" / "Lakeside", True)
     engine = real_engine(install, tmp_path, processes=lambda f: busy if case == "process" else [],
                          now=CALM.replace(minute=7) if case == "quiet" else CALM,
                          sites=[broken_site(tmp_path)] if case == "copy" else

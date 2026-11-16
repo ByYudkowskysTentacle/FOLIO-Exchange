@@ -66,18 +66,26 @@ class Untouchable:
 
 class Sockets:
     """Stands in for single.probe, single.ask_may_quit and single.ask_to_quit: which names answer, with which pid,
-    and what each says when asked whether it could quit (a list, its last answer repeated). A name that quits
-    stops answering; ``opens`` names one that starts answering at the given look (a window opened meanwhile)."""
+    and what each says when asked whether it could quit (a list, its last answer repeated). A name that says yes
+    to quitting goes on answering for ``linger`` more looks, as a real window does while it closes (about 200 ms),
+    then stops; ``opens`` names one that starts answering at the given look (a window opened meanwhile)."""
 
-    def __init__(self, open_=None, busy=None, opens=None):
+    def __init__(self, open_=None, busy=None, opens=None, linger=3):
         self.open = dict(open_ or {})
         self.busy = {k: list(v) for k, v in (busy or {}).items()}
         self.opens = dict(opens or {})              # name -> (look number, pid)
+        self.linger, self.closing = linger, {}      # name -> looks left before it's gone
         self.looks, self.asked, self.quit = 0, [], []
 
     def probe(self, name):
         if name in self.opens and self.looks >= self.opens[name][0]:
             self.open.setdefault(name, self.opens.pop(name)[1])
+        if name in self.closing:
+            if self.closing[name] <= 0:
+                del self.closing[name]
+                self.open.pop(name, None)
+            else:
+                self.closing[name] -= 1
         return self.open.get(name)
 
     def look(self, name):                           # counts the rounds: the tray is always asked last
@@ -94,7 +102,7 @@ class Sockets:
         self.asked.append(("quit", name))
         if name not in self.open:
             return "gone"
-        self.open.pop(name)
+        self.closing.setdefault(name, self.linger)
         self.quit.append(name)
         return "quit"
 
@@ -236,6 +244,7 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     # (folio-exchange-app.exe, then the venv's pythonw.exe), up to installing.ANCESTORS.
     assert {4239, 4240, 4241, 4242, 4342, 4343} <= kw["allow_pids"] and 4 not in kw["allow_pids"]
     assert kw["sites"] == [other, own]                              # each site known is copied
+    assert kw["required"] == [own]                                  # this one must be; a recent one may be skipped
     # Asked only after the release was ready: each whether it could quit, then each to quit.
     assert sockets.asked == [("may", window), ("may", tray), ("quit", window), ("quit", tray)]
     (_, plan, restart), = engine.asked("start_swap")
@@ -258,6 +267,46 @@ def test_a_window_opened_during_the_build_is_closed_too(tmp_path):
     assert places.instance_name(late) in sockets.quit and places.instance_name(early) in sockets.quit
     (_, _plan, restart), = engine.asked("start_swap")
     assert argv(startup.app_command(late)) in restart and argv(startup.app_command(early)) in restart
+
+
+def test_each_window_and_the_tray_is_closed_and_started_again_once(tmp_path):
+    """Regression (re-review of PR 38): a window that said yes still answered while it closed, so the next look
+    found it, asked again and listed it again, for all ten rounds: the helper would have started each window ten
+    times. Each is now asked once, and the update waits for those asked to be gone before looking again."""
+    own, a, b = tmp_path / "own", tmp_path / "Lakeside", tmp_path / "Hillside"
+    tray = places.tray_instance_name()
+    names = [places.instance_name(a), places.instance_name(b), tray]
+    engine = Engine(sites=[a, b])
+    sockets = Sockets(dict(zip(names, (1, 2, 3), strict=True)), linger=4)
+    sleeps = []
+    assert run(own, engine, sockets, sleeps=sleeps)["ok"]
+    assert sorted(sockets.quit) == sorted(names)                  # each asked to quit once
+    (_, _plan, restart), = engine.asked("start_swap")
+    assert restart == [argv(startup.app_command(a)), argv(startup.app_command(b)), argv(startup.tray_command()),
+                       argv(startup.app_command(own, "options"))]
+    assert installing.CLOSE_STEP in sleeps                         # it waited for them to be gone
+
+
+def test_the_sites_that_must_be_copied_are_this_one_and_the_trays(tmp_path):
+    own, watched, recent = tmp_path / "own", tmp_path / "Lakeside", tmp_path / "Hillside"
+    places.watch_site(watched, True)
+    engine = Engine(sites=[watched, recent])
+    assert run(own, engine)["ok"]
+    (_, _tag, kw), = engine.asked("prepare")
+    assert kw["required"] == [own, watched] and recent in kw["sites"]
+
+
+def test_a_window_that_never_goes_is_left_to_the_helper_and_listed_once(tmp_path):
+    own, stuck = tmp_path / "own", tmp_path / "Lakeside"
+    name = places.instance_name(stuck)
+    engine = Engine(sites=[stuck])
+    sockets = Sockets({name: 1}, linger=10 ** 6)
+    sleeps = []
+    assert run(own, engine, sockets, sleeps=sleeps)["ok"]
+    assert sockets.quit == [name]
+    assert sleeps.count(installing.CLOSE_STEP) == int(installing.CLOSE_SECONDS / installing.CLOSE_STEP)
+    (_, _plan, restart), = engine.asked("start_swap")
+    assert restart.count(argv(startup.app_command(stuck))) == 1
 
 
 def test_the_download_sends_no_account_and_no_default_headers(tmp_path):
@@ -294,7 +343,7 @@ def test_nothing_closes_while_one_is_busy_and_it_is_said(tmp_path, caplog):
     sleeps = []
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
         res = run(own, engine, sockets, sleeps=sleeps)
-    assert res["ok"] and len(sleeps) == 2
+    assert res["ok"] and sleeps.count(installing.STEP_SECONDS) == 2
     quits = [i for i, (what, _name) in enumerate(sockets.asked) if what == "quit"]
     last_may = max(i for i, (what, _name) in enumerate(sockets.asked) if what == "may")
     assert quits and min(quits) > last_may                         # nothing closed until none was busy

@@ -165,6 +165,34 @@ def test_a_site_that_cannot_be_reached_stops_the_update(install, key, tmp_path):
                                 "updated. Connect the drive or network share it's on, then try again.")
 
 
+def test_an_unreachable_site_that_is_only_recent_is_skipped_and_named(install, key, tmp_path, caplog):
+    """Regression (re-review of PR 38): the recent list keeps ten folders, roams, and the app can't drop one, so a
+    site once opened from a USB stick or an old share stopped every Install. Only the asking window's site and the
+    tray's must be copied; a recent one that can't be reached is skipped and named."""
+    stick = tmp_path / "usb-stick" / "Lakeside"
+    with caplog.at_level(logging.INFO, logger="folio_exchange"):
+        result = run_prepare(install, key, FakeGitHub(release(key[0])), sites=[stick], required=[])
+    assert result["ok"], result["reason"]
+    assert (f"{stick} wasn't copied, because it can't be reached. It's only on the list of recent sites."
+            in result["done"])
+    assert (f"The site {stick} can't be reached, so it isn't copied. It's only on the list of recent sites, so the "
+            "update goes on." in [r.getMessage() for r in caplog.records])
+
+
+def test_an_unreachable_site_the_tray_watches_still_stops_the_update(install, key, tmp_path, monkeypatch):
+    """With no list given, the engine takes the tray's sites as the ones that must be copied."""
+    from folio_exchange.desktop import places
+
+    watched, recent = tmp_path / "share-a" / "Lakeside", tmp_path / "share-b" / "Hillside"
+    places.watch_site(watched, True)
+    monkeypatch.setattr(selfupdate, "known_sites", lambda: [recent, watched])
+    result = run_prepare(install, key, FakeGitHub(release(key[0])), sites=None)
+    assert result["ok"] is False and result["stage"] == "copy"
+    assert result["reason"].startswith(f"The site {watched} can't be reached")
+    places.watch_site(watched, False)
+    assert run_prepare(install, key, FakeGitHub(release(key[0])), sites=None)["ok"]   # the recent one alone
+
+
 def test_a_folder_with_no_site_in_it_is_skipped_and_said(install, key, tmp_path, caplog):
     site = make_site(tmp_path / "sites" / "lakeside", "https://folio.example.org")
     deleted = tmp_path / "sites" / "deleted"                       # gone, from a folder that's there
