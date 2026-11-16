@@ -59,7 +59,7 @@ def installing_window(qtbot, site, engine, *, asked=None, yes=True, http=None, *
     asked = [] if asked is None else asked
     w.ask_install = lambda release: asked.append(release) or yes
     w.updater = functools.partial(updating.install, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
-                                  parent=pytest.fail,
+                                  parent=lambda pid: None,
                                   launch=pytest.fail, sleep=lambda s: None, now=lambda: CALM,
                                   http=http or FakeGitHub({}), **kw)
     return w, page

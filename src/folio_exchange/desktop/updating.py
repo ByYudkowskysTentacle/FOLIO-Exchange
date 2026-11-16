@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import __version__, selfupdate, swaphelper
+from .. import __version__, selfupdate, swaphelper, updates
 from ..config import load_site
 from ..errors import LockBusy
 from ..history import History
@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 
 WAIT_SECONDS = 15 * 60          # how long the update waits for a window's action to end
 STEP_SECONDS = 5
+ANCESTORS = 3                   # how far up from each open window, the tray and this window their launchers may be
 SAID_FOR = timedelta(days=1)    # how long after a swap Options says how it went
 AUDITED = "audited"             # set in the result file once each site's audit log has the entry
 ACTION = "program updated"
@@ -136,14 +137,24 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
                                                    for s in sites if own is None or not _same(own, s)]
     others.append(("tray", None, places.tray_instance_name()))
     open_now = [(kind, root, name, pid) for kind, root, name in others if (pid := probe(name)) is not None]
-    # Each one's parent too: on Windows the program folder's launcher (folio-exchange-app.exe) starts the base
-    # Python, which is what answers on the socket, and stays running from the program folder itself.
-    allow = {os.getpid(), os.getppid()}
+    # Their ancestors and this window's too: on Windows the program folder's folio-exchange-app.exe starts the
+    # venv's pythonw.exe, which starts the base Python that answers on the socket, and both stay running from the
+    # program folder. An ancestor outside it (Explorer, say) is never counted anyway.
+    def lineage(pid: int) -> list[int]:
+        out: list[int] = []
+        for _step in range(ANCESTORS):
+            pid = parent(pid) or 0
+            if pid <= 0 or pid in out:
+                break
+            out.append(pid)
+        return out
+
+    allow = {os.getpid(), os.getppid(), *lineage(os.getpid())}
     for *_rest, pid in open_now:
-        allow |= {pid, *([p] if (p := parent(pid)) else [])}
+        allow |= {pid, *lineage(pid)}
 
     log.info("Getting FOLIO-Exchange %s ready. The version you have keeps running meanwhile.", version)
-    session = http if http is not None else _session()
+    session = http if http is not None else updates._session()        # no .netrc account, no default headers
 
     def build(*args: Any, **kw: Any) -> Any:
         log.info("Building the new program folder. This takes a few minutes…")
@@ -212,12 +223,6 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
         give_back()
         return {**started, "version": version, "from": __version__}
     return {**started, "version": version, "from": __version__, "done": res.get("done") or []}
-
-
-def _session() -> Any:
-    import requests
-
-    return requests.Session()
 
 
 # ------------------------------------------------------------------ afterwards

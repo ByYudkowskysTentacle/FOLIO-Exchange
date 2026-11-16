@@ -13,7 +13,7 @@ import pytest
 from sitekit import make_site
 from test_selfupdate import CALM, NEW, OLD, Builder, FakeGitHub, Runner, install, key, make_key, release  # noqa: F401
 
-from folio_exchange import selfupdate
+from folio_exchange import selfupdate, updates
 from folio_exchange.config import load_site
 from folio_exchange.desktop import places, startup, updating
 from folio_exchange.history import History
@@ -157,7 +157,7 @@ def test_the_release_key_comes_only_from_the_code():
 # ------------------------------------------------------------------ installing
 def test_without_a_key_the_engine_is_never_reached(tmp_path):
     res = updating.install(NEW, key=None, own=tmp_path, engine=Untouchable(), probe=pytest.fail, ask_quit=pytest.fail,
-                           parent=pytest.fail)
+                           parent=pytest.fail)                      # none of them is called
     assert res["ok"] is False and res["stage"] == "key" and res["reason"].startswith(updating.NO_KEY)
 
 
@@ -167,12 +167,13 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     engine = Engine(sites=[other, own])
     sockets = Sockets({window: 4242, tray: 4343})
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
-        res = run(own, engine, sockets, parent={4242: 4241, 4343: 4342}.get)
+        res = run(own, engine, sockets, parent={4242: 4241, 4241: 4240, 4240: 4239, 4239: 4, 4343: 4342}.get)
     assert res["ok"] and res["stage"] == "swap" and res["version"] == NEW
     (_, tag, kw), = engine.asked("prepare")
     assert tag == f"v{NEW}" and kw["key"] == b"k" * 32
-    # The open window and the tray may be running, and so may their launchers in the program folder.
-    assert {4241, 4242, 4342, 4343} <= kw["allow_pids"]
+    # The open window and the tray may be running, and so may the launchers above them in the program folder
+    # (folio-exchange-app.exe, then the venv's pythonw.exe), up to updating.ANCESTORS.
+    assert {4239, 4240, 4241, 4242, 4342, 4343} <= kw["allow_pids"] and 4 not in kw["allow_pids"]
     assert kw["sites"] == [other, own]                              # each site known is copied
     assert sockets.asked == [window, tray]                          # asked only after the release was ready
     (_, plan, restart), = engine.asked("start_swap")
@@ -182,6 +183,18 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     said = [r.getMessage() for r in caplog.records]
     assert any(s.startswith(f"Getting FOLIO-Exchange {NEW} ready") for s in said)
     assert "Closed the window for other." in said and "Closed the tray." in said
+
+
+def test_the_download_sends_no_account_and_no_default_headers(tmp_path, monkeypatch):
+    """The engine gets U0's session (updates._session: no .netrc account, requests' default headers cleared;
+    test_updates checks what it sends), never a plain requests.Session()."""
+    sessions = []
+    monkeypatch.setattr(updates, "_session", lambda: sessions.append(object()) or sessions[-1])
+    engine = Engine()
+    updating.install(NEW, key=b"k" * 32, own=tmp_path, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
+                     parent=lambda pid: None, sleep=pytest.fail, now=lambda: CALM)
+    (_, _tag, kw), = engine.asked("prepare")
+    assert len(sessions) == 1 and kw["http"].http is sessions[0]
 
 
 def test_nothing_is_closed_when_the_engine_refuses(tmp_path):
@@ -276,7 +289,7 @@ def test_the_real_engine_gets_the_release_ready_from_the_tag_and_key(install, ke
 
     site = make_site(tmp_path / "sites" / "lakeside", "https://folio.example.org")
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
-        res = updating.install(NEW, key=key[1], own=site, engine=Real(), probe=lambda n: None, parent=pytest.fail,
+        res = updating.install(NEW, key=key[1], own=site, engine=Real(), probe=lambda n: None, parent=lambda pid: None,
                                ask_quit=pytest.fail, launch=pytest.fail, sleep=pytest.fail, now=lambda: CALM,
                                http=FakeGitHub(release(key[0])))
     assert res["ok"], res
@@ -301,7 +314,7 @@ def test_a_download_with_another_keys_signature_stops_before_anything_closes(ins
                                       protect=lambda *a, **k: None, **kw)
 
     engine = Real()
-    res = updating.install(NEW, key=key[1], own=None, engine=engine, probe=lambda n: None, parent=pytest.fail,
+    res = updating.install(NEW, key=key[1], own=None, engine=engine, probe=lambda n: None, parent=lambda pid: None,
                            ask_quit=pytest.fail,
                            sleep=pytest.fail, now=lambda: CALM, http=FakeGitHub(release(other)))
     assert res["ok"] is False and res["stage"] == "verify"
