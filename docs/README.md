@@ -25,6 +25,7 @@
 - [Working notes](notes.md) – where things stand, the decisions so far and why, and what's been learned about FOLIO and collectionHQ.
 - [Desktop app plan](desktop-plan.md) – why and how a Windows app replaces the browser page, in phases D1 to D8.
 - [In-app updates plan](updates-plan.md) – how the app tells a library that a new version is out (U0, built) and will install it after a yes, in phases U0 to U3 (D7 of the desktop plan), with the release checklist.
+- [Updating in place](updates-inplace.md) – an update route for installs made by `install.ps1`, without the one-file installer or code signing: a signed download, a new program folder built beside the old one, and a swap that puts the old one back if anything fails.
 - [Services and destinations plan](services-plan.md) – a proposal, not started, to make the services a library sends data to, and the places they receive it, objects of their own, in phases S1 to S5.
 - [Improvement plan](improvement-plan.md) – the work planned after the October 2026 review, in batches, with what's done.
 

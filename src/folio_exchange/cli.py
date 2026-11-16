@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import credentials, delivery, feedops, notify, reads, runner, schedule, siteops, version_text
+from . import credentials, delivery, feedops, notify, reads, runner, schedule, siteops, updating, version_text
 from .client import probe
 from .config import BUNDLED_RECIPES, SITE_FILE, Site, find_site, load_site, password_note, read_yaml, rewrite_key
 from .errors import ConfigError, FxError, LockBusy, RecipeError, damaged_database
@@ -1113,7 +1113,13 @@ NO_SITE = {"init", "fields", "recipes", "app"}       # app sets up its own log, 
 
 def main(argv: list[str] | None = None) -> int:
     _utf8_console()
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)           # --version and --help answer even during an update
+    if updating.update_in_progress():                # the program folder is being swapped: start nothing
+        if args.command == "run" and getattr(args, "due", False):
+            print("FOLIO-Exchange is being updated, so this scheduled pass is skipped. The next one runs as usual.")
+            return 0                                 # the next hourly start catches up
+        print(updating.UPDATING, file=sys.stderr)
+        return 1
     logs_dir = None
     if args.command not in NO_SITE:
         try:
