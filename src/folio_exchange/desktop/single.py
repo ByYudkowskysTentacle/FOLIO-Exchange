@@ -49,6 +49,7 @@ ERROR_ALREADY_EXISTS = 183
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 TOKEN_QUERY = 0x0008
 TOKEN_USER = 1                       # TOKEN_INFORMATION_CLASS: the user the process runs as
+TH32CS_SNAPPROCESS = 0x2             # CreateToolhelp32Snapshot: the list of processes
 HOLDS = "instances"                  # macOS and Linux: the folder of lock files, in places.config_dir()
 
 
@@ -355,6 +356,48 @@ def _user_sid(pid: int) -> str:
             kernel32.CloseHandle(token)
     finally:
         kernel32.CloseHandle(process)
+
+
+def parent_pid(pid: int) -> int | None:
+    """The process that started ``pid``, or None when it can't be told. On Windows a program folder's
+    ``folio-exchange-app.exe`` (or ``pythonw.exe``) starts the base Python and stays running as its parent, so the
+    process an update finds in the program folder is the parent of the one that greets on the socket."""
+    if sys.platform != "win32":
+        try:
+            stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="ascii", errors="replace")
+            return int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):                       # PROCESSENTRY32W
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    kernel32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
+    kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return None
+    try:
+        entry = Entry()
+        entry.dwSize = ctypes.sizeof(Entry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.th32ProcessID == pid:
+                return int(entry.th32ParentProcessID)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        return None
+    finally:
+        kernel32.CloseHandle(snapshot)
 
 
 def _greeted(sock: QLocalSocket, name: str, deadline: float) -> int | None:

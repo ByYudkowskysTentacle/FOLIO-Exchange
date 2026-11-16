@@ -110,7 +110,8 @@ def _stopped(stage: str, reason: str, version: str, done: list[str] | None = Non
 
 def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] | None = None,
             engine: Any = selfupdate, probe: Callable[[str], int | None] | None = None,
-            ask_quit: Callable[[str], str] | None = None, launch: Callable[[list[str]], None] = _launch,
+            ask_quit: Callable[[str], str] | None = None, parent: Callable[[int], int | None] | None = None,
+            launch: Callable[[list[str]], None] = _launch,
             sleep: Callable[[float], None] = time.sleep, now: Callable[[], datetime] | None = None,
             wait_seconds: float = WAIT_SECONDS, http: Any = None) -> dict:
     """Install ``version`` (X.Y.Z) after the person's yes, from the window of the site ``own``. Returns the
@@ -118,11 +119,12 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
     when the swap has started and the window should quit now."""
     if key is None:                                     # never reached from the app (offer), but never past here
         return _stopped("key", NO_KEY + " Nothing was downloaded.", version)
-    if probe is None or ask_quit is None:
+    if probe is None or ask_quit is None or parent is None:
         from . import single
 
         probe = probe or single.probe
         ask_quit = ask_quit or single.ask_to_quit
+        parent = parent or single.parent_pid
     now = now or (lambda: datetime.now(timezone.utc).astimezone())
     tag = f"v{version}"
     sites = list(engine.known_sites() if sites is None else sites)
@@ -134,7 +136,11 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
                                                    for s in sites if own is None or not _same(own, s)]
     others.append(("tray", None, places.tray_instance_name()))
     open_now = [(kind, root, name, pid) for kind, root, name in others if (pid := probe(name)) is not None]
-    allow = {os.getpid(), os.getppid(), *(pid for *_rest, pid in open_now)}
+    # Each one's parent too: on Windows the program folder's launcher (folio-exchange-app.exe) starts the base
+    # Python, which is what answers on the socket, and stays running from the program folder itself.
+    allow = {os.getpid(), os.getppid()}
+    for *_rest, pid in open_now:
+        allow |= {pid, *([p] if (p := parent(pid)) else [])}
 
     log.info("Getting FOLIO-Exchange %s ready. The version you have keeps running meanwhile.", version)
     session = http if http is not None else _session()

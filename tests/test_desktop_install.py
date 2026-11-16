@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import os
 import threading
 import uuid
 
@@ -58,6 +59,7 @@ def installing_window(qtbot, site, engine, *, asked=None, yes=True, http=None, *
     asked = [] if asked is None else asked
     w.ask_install = lambda release: asked.append(release) or yes
     w.updater = functools.partial(updating.install, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
+                                  parent=pytest.fail,
                                   launch=pytest.fail, sleep=lambda s: None, now=lambda: CALM,
                                   http=http or FakeGitHub({}), **kw)
     return w, page
@@ -272,6 +274,11 @@ def test_a_window_with_an_action_running_refuses_to_quit(qtbot, site, name):
     w.toggling = False
     assert single.ask_to_quit(name) == "quit"
     qtbot.waitUntil(lambda: w.quitting, timeout=5000)
+
+
+def test_the_parent_of_a_process_is_found():
+    assert single.parent_pid(os.getpid()) == os.getppid()
+    assert single.parent_pid(2 ** 31 - 3) is None                   # no such process
 
 
 def test_nothing_there_and_a_server_that_was_not_told_are_never_quit(qtbot, name):
