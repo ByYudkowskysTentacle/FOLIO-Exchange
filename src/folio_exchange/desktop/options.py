@@ -47,8 +47,8 @@ UPDATES_ABOUT = ("Once a day, FOLIO-Exchange asks GitHub whether a new version i
 UPDATES_MANAGED = "Updates on this computer are managed by IT."
 UPDATES_BY_IT = "Your IT staff install updates on this computer."
 UPDATE_HOW = "To update, close FOLIO-Exchange and its tray icon. Then run this command in Command Prompt:"
-UPDATE_INSTALLER = ("To update, close FOLIO-Exchange and its tray icon. Then run the installer (install.cmd) again "
-                    "with the same install folder and site name.")
+UPDATE_INSTALLER = ("To update, close FOLIO-Exchange and its tray icon. Then run install.cmd -Ref v{version} in the "
+                    "installer's folder, with the same install folder and site name.")
 PRERELEASE_ABOUT = "Until version 1.0, every release is a pre-release."
 NOTES_MOST = 3000                 # characters of release notes shown; the release page has the rest
 
@@ -388,7 +388,9 @@ class OptionsPage(Page):
         self.update_notes.setVisible(bool(notes))
         how = bool(new) and status.get("mode") == "on"           # "notify": tell, but never offer to install
         command = how and not installer_install()                # the installer's own install runs it again
-        self.update_how.setText(UPDATE_HOW if command else UPDATE_INSTALLER)
+        # The installer follows main unless told otherwise: -Ref names the release this notice is about.
+        self.update_how.setText(UPDATE_HOW if command or not new else
+                                UPDATE_INSTALLER.format(version=new["version"]))
         self.update_how.setVisible(how)
         self.update_line.setText(update_command(new["version"]) if command else "")
         for w in (self.update_line, self.copy_button):

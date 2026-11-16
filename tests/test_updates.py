@@ -363,6 +363,71 @@ def test_what_could_not_be_saved_is_written_once_the_file_can_be(monkeypatch):
     assert saved()["told"] == "0.3.0" and saved()["found"]["any"]["version"] == "0.3.0" and "checking" not in saved()
 
 
+def test_what_could_not_be_saved_is_read_and_changed_from_two_threads_safely(monkeypatch):
+    """Regression (re-review of #37): the check's thread changed what couldn't be saved while the window's
+    thread read it, which could raise "dictionary changed size during iteration"."""
+    import threading
+
+    monkeypatch.setattr(updates, "_save", lambda data: (_ for _ in ()).throw(OSError(28, "No space left")))
+    assert isinstance(updates._lock, type(threading.RLock()))
+    inside: list[bool] = []
+    real_items = dict.items
+
+    class Watched(dict):
+        def items(self):                                   # every reading of it happens under the lock
+            inside.append(updates._lock._is_owned())
+            return real_items(self)
+
+        def update(self, *args, **kwargs):                 # and so does every change
+            inside.append(updates._lock._is_owned())
+            return dict.update(self, *args, **kwargs)
+
+    monkeypatch.setattr(updates, "_unsaved", Watched())
+    errors: list[BaseException] = []
+
+    def change():
+        try:
+            for n in range(300):
+                updates._change(**{f"key{n % 40}": n if n % 3 else None})
+        except BaseException as exc:  # noqa: BLE001 - whatever it is, the test must see it
+            errors.append(exc)
+
+    def read():
+        try:
+            for _ in range(300):
+                updates.load()
+                updates.status()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=f) for f in (change, read, read)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert errors == [] and inside and all(inside)
+
+
+def test_what_another_process_saved_since_is_not_overwritten(monkeypatch):
+    """Regression (re-review of #37): values kept in memory after a failed save were laid over the file for
+    good, so a later save wrote them back over what another process had saved in between."""
+    import os
+
+    real = updates._save
+    monkeypatch.setattr(updates, "_save", lambda data: (_ for _ in ()).throw(OSError(28, "No space left")))
+    updates._change(last_ok=updates._stamp(T0), told="0.3.0")
+    assert updates.load()["last_ok"] == updates._stamp(T0)             # kept in memory
+    monkeypatch.setattr(updates, "_save", real)
+    path = places.config_dir() / updates.FILE                          # the tray, say, saves a later check
+    path.write_text(json.dumps({"last_ok": updates._stamp(T0 + 24 * HOUR), "told": "0.3.1"}), encoding="utf-8")
+    later = updates._unsaved_at + 5
+    os.utime(path, (later, later))
+    assert updates.load() == {"last_ok": updates._stamp(T0 + 24 * HOUR), "told": "0.3.1"}
+    assert not updates._unsaved
+    updates.set_choice("automatic", False)
+    assert saved() == {"last_ok": updates._stamp(T0 + 24 * HOUR), "told": "0.3.1", "automatic": False}
+
+
 # ------------------------------------------------------------------ what is shown, and the key
 def test_the_pip_command_names_the_repository_and_tag_never_the_bare_name():
     assert updates.pip_command("0.3.0") == ('pip install "folio-exchange[desktop] @ https://github.com/'

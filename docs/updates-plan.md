@@ -49,7 +49,7 @@ A library PC keeps whatever version was installed until someone runs the install
   - "Get pre-releases" and "Check for updates automatically", both per Windows user.
 - An install made with pip (no installer) gets the same notice, with the command to run instead of an Install button:
   `"<python>" -m pip install "folio-exchange[desktop] @ https://github.com/ByYudkowskysTentacle/FOLIO-Exchange/archive/refs/tags/v0.3.0.zip"`. FOLIO-Exchange is never installed by its bare name, which isn't on PyPI. As built in U0, the command names the zip GitHub makes of the tag, not `git+https://…`, so the PC needs no Git, and starts with this install's own Python. Options says to run it in Command Prompt: PowerShell refuses a command that starts with a quoted path.
-- An install that `installer/install.ps1` made (every library PC today) is told to run the installer again instead, with the same install folder and site name, which updates in place. "Open the release page" sits beside either.
+- An install that `installer/install.ps1` made (every library PC today) is told to run the installer for that release instead, `install.cmd -Ref v0.3.0`, with the same install folder and site name, which updates in place. Run with no `-Ref`, the installer follows `main`, not the release. "Open the release page" sits beside either.
 
 ### Downloading and checking the file
 
