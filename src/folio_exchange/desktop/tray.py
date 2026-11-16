@@ -11,6 +11,9 @@ The tray only reads. It never runs, sends or changes anything but its own list: 
 window, where every action is. Each site is read every POLL_MS in a thread of its own (a ``worker.Reader`` per
 site), and a site whose last reading hasn't ended is skipped, so a share that has stopped answering neither
 freezes the menu nor holds up the other sites.
+
+The tray also looks for a newer FOLIO-Exchange (``updates.look``, in a thread of its own, at most once a day) and
+tells about each new version once: "FOLIO-Exchange 0.3.0 is available." Clicking that opens Options.
 """
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ from PySide6.QtCore import QObject, QPoint, QProcess, QRectF, QTimer
 from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from .. import updates
 from ..config import find_site
 from ..errors import FxError
 from ..logsetup import setup_logging
@@ -68,8 +72,8 @@ def _menu_text(text: str) -> str:
 
 
 class Tray(QObject):
-    """The tray icon, its menu and its notifications. ``show_message``, ``launch`` and ``quit_app`` are methods
-    tests replace."""
+    """The tray icon, its menu and its notifications. ``show_message``, ``show_notice``, ``launch``,
+    ``look_for_update`` and ``quit_app`` are methods tests replace."""
 
     def __init__(self, sites=places.watched_sites, poll_ms: int = POLL_MS, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -82,6 +86,10 @@ class Tray(QObject):
         self.poll_s = poll_ms / 1000
         self.awake_since = self.last_tick = time.monotonic()
         self.last_told: Path | None = None
+        self.last_view: str | None = None            # the view a click on the last notification opens
+        self.update_reader = Reader(self)
+        self.update_reader.done.connect(self._update_looked)
+        self.update_looks = 0                        # looks for a newer version delivered, for tests to wait on
         self.closed = False
         self.plain = theme.logo_icon()
         self.marked = badged(self.plain)
@@ -123,6 +131,8 @@ class Tray(QObject):
                 reader.done.connect(lambda result, error, r=root: self._looked(r, result, error))
             if not reader.busy:                      # a reading still under way (a share not answering) is left
                 reader.read(lambda r=root: watch.look(r))
+        if not self.update_reader.busy:
+            self.update_reader.read(self.look_for_update)
 
     def reload(self) -> None:
         """The list of sites changed (another ``--tray`` start asked): read it and the sites at once."""
@@ -176,6 +186,21 @@ class Tray(QObject):
     def snaps(self) -> list[dict]:
         return [self.looks[str(r)] for r in self.roots if str(r) in self.looks]
 
+    def _update_looked(self, version: str | None, error) -> None:
+        """A newer version the person hasn't been told about: one notification, which opens Options."""
+        self.update_looks += 1
+        if self.closed or not self.roots:
+            return
+        if error is not None:                        # updates.look logs a check that fails; this is unexpected
+            log.warning("The tray couldn't look for updates: %s: %s", type(error).__name__, error)
+            return
+        if not version:
+            return
+        log.info("Tray notification: FOLIO-Exchange %s is available", version)
+        self.last_told, self.last_view = self.roots[0], "options"
+        self.show_notice("FOLIO-Exchange", f"FOLIO-Exchange {version} is available.")
+        updates.told(version)
+
     # ------------------------------------------------------------ telling
     def tell(self, root: Path, lines: list[str]) -> None:
         """One notification for one site. Clicking it opens that site."""
@@ -184,14 +209,22 @@ class Tray(QObject):
         if len(lines) > MOST_LINES:
             more = len(lines) - MOST_LINES
             shown.append(f"And {more} more thing{'s' if more != 1 else ''}.")
-        self.last_told = root
+        self.last_told, self.last_view = root, None
         self.show_message(f"FOLIO-Exchange – {name}", "\n".join(shown))
 
     def show_message(self, title: str, text: str) -> None:
         self.icon.showMessage(title, text, QSystemTrayIcon.MessageIcon.Warning, MESSAGE_MS)
 
+    def show_notice(self, title: str, text: str) -> None:
+        """News that isn't a problem (a newer version)."""
+        self.icon.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, MESSAGE_MS)
+
     def _message_clicked(self) -> None:
-        if self.last_told is not None:
+        if self.last_told is None:
+            return
+        if self.last_view:
+            self.launch(self.last_told, self.last_view)
+        else:
             self.launch(self.last_told)
 
     # ------------------------------------------------------------ the menu
@@ -259,9 +292,14 @@ class Tray(QObject):
         self.refresh()
 
     # ------------------------------------------------------------ what tests replace
-    def launch(self, root: Path) -> None:
-        """Open the site's window: a process of its own, or the open window brought to the front."""
-        exe, args, folder = startup.app_command(root)
+    def look_for_update(self) -> str | None:
+        """In a thread: check for a newer version when a check is due, and say which one to tell about."""
+        return updates.look()
+
+    def launch(self, root: Path, view: str | None = None) -> None:
+        """Open the site's window: a process of its own, or the open window brought to the front. ``view``:
+        the view to open it on ("options")."""
+        exe, args, folder = startup.app_command(root, view)
         started = QProcess.startDetached(exe, args, folder)
         if not (started[0] if isinstance(started, tuple) else started):
             log.warning("Couldn't open %s: starting %s failed", root, exe)

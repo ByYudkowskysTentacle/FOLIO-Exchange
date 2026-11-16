@@ -83,6 +83,20 @@ def no_real_secrets_in_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_real_update_checks(monkeypatch):
+    """No test asks GitHub whether a newer version is out: checking is off (as IT can turn it off), and a test
+    that turns it on brings its own faked GitHub, since the real session can't be made."""
+    from folio_exchange import updates
+
+    def refuse():
+        raise AssertionError("a test tried to ask GitHub for releases")
+
+    monkeypatch.setenv(updates.ENV, "off")
+    monkeypatch.setattr(updates, "_unsaved", {})       # nothing one test couldn't save reaches the next
+    monkeypatch.setattr(updates, "_session", refuse)
+
+
 def _real_app_folders():
     """The app's real folder functions, kept before every test redirects them: a test may compute them, never
     write there."""

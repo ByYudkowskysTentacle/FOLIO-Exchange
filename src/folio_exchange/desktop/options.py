@@ -1,5 +1,6 @@
-"""Options: the site folder (and renaming it), the scheduled task that starts runs every hour, the alerts, and the
-tray (whether it watches this site, and whether it starts when the person signs in to Windows).
+"""Options: the site folder (and renaming it), the scheduled task that starts runs every hour, the alerts, the
+tray (whether it watches this site, and whether it starts when the person signs in to Windows), and updates
+(this version, when a newer one was last looked for, and how to get it).
 
 Renaming works as on the page: the core (``siteops.rename_site``) refuses while a run holds the site, when a
 setting names the folder by its full path, or when the name is taken, and says what is left to do. The window
@@ -8,6 +9,11 @@ runs it off its thread as the running action (``Jobs.holding``), so no other act
 The scheduled task is registered by the command line (``folio-exchange schedule --register``) in a console window
 of its own, where schtasks asks for the Windows password: the app never asks for it, sees it or keeps it. The
 window waits for that console to close, then looks again whether the task is there.
+
+Updates (phase U0 of docs/updates-plan.md) only tell: the newer version, its release notes as plain text, the
+release page, and how to update this install: the installer again for one ``installer/install.ps1`` made, else a
+pip command for Command Prompt. Nothing is downloaded or installed from here. With ``FOLIO_EXCHANGE_UPDATES=off``
+(or ``"check": false`` in updates.json) the section says IT manages updates and offers nothing else.
 """
 from __future__ import annotations
 
@@ -18,12 +24,12 @@ import sysconfig
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QFormLayout
+from PySide6.QtWidgets import QApplication, QCheckBox, QFormLayout
 
-from .. import schedule, siteops
+from .. import schedule, siteops, updates
 from ..launcher import program_path
 from . import model, theme
-from .forms import Rows, edit
+from .forms import Rows, edit, tell
 from .pages import Facts, Page, actions_row, button, divider, heading, lines_label, set_lines, text
 
 RENAME_ABOUT = ("The folder's name is the site's name. It shows at the top of this window and in alerts, and the "
@@ -36,6 +42,15 @@ TRAY_ABOUT = ("The FOLIO-Exchange icon in the taskbar's notification area shows 
               "scheduled run fails or is held for review, even when this window is closed.")
 STARTUP_OTHER = ("When you sign in, Windows starts the tray from another copy of FOLIO-Exchange. Turn this off and on "
                  "again to use this copy.")
+UPDATES_ABOUT = ("Once a day, FOLIO-Exchange asks GitHub whether a new version is out. It sends nothing about your "
+                 "library.")
+UPDATES_MANAGED = "Updates on this computer are managed by IT."
+UPDATES_BY_IT = "Your IT staff install updates on this computer."
+UPDATE_HOW = "To update, close FOLIO-Exchange and its tray icon. Then run this command in Command Prompt:"
+UPDATE_INSTALLER = ("To update, close FOLIO-Exchange and its tray icon. Then run the installer (install.cmd) again "
+                    "with the same install folder and site name.")
+PRERELEASE_ABOUT = "Until version 1.0, every release is a pre-release."
+NOTES_MOST = 3000                 # characters of release notes shown; the release page has the rest
 
 
 def task_command(site_root: Path) -> tuple[str, list[str], str]:
@@ -65,6 +80,24 @@ def start_console(exe: str, args: list[str], folder: str) -> int:
     return done.returncode
 
 
+def installer_install() -> bool:
+    """Whether ``installer/install.ps1`` made this install: it runs from the Python environment the installer
+    makes, a folder called ``program`` with a ``pyvenv.cfg``. Such a PC updates by running the installer again,
+    which needs neither Git nor a command typed by hand."""
+    home = Path(sys.prefix)
+    return home.name.lower() == "program" and (home / "pyvenv.cfg").is_file()
+
+
+def update_command(version: str) -> str:
+    """The pip command that installs ``version`` over this install, for Command Prompt (PowerShell refuses a
+    command that starts with a quoted path), run by this Python's full path (the console Python beside pythonw,
+    so pip's progress shows)."""
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe" and (exe.parent / "python.exe").is_file():
+        exe = exe.parent / "python.exe"
+    return updates.pip_command(version, str(exe))
+
+
 def cron_line(site_root: Path) -> str:
     return schedule.os_command(site_root, program_path(), platform.system())
 
@@ -76,15 +109,19 @@ class OptionsPage(Page):
     test_alert = Signal()
     watch = Signal(bool)
     startup = Signal(bool)
+    check_updates = Signal()
+    update_choice = Signal(str, bool)          # "prereleases" or "automatic", and whether it's ticked
+    open_release = Signal(str)                 # the release page's address
 
     def __init__(self) -> None:
         super().__init__()
         self.windows = platform.system() == "Windows"
         self.site: dict = {}
         self.idle = True
-        self.busy = {"rename": False, "register": False, "test": False}
+        self.busy = {"rename": False, "register": False, "test": False, "update": False}
+        self.update_state: dict = {}
         self.box.addWidget(heading("Options"))
-        self.box.addWidget(text("The site folder, scheduled runs, alerts and the tray.", "About options"))
+        self.box.addWidget(text("The site folder, scheduled runs, alerts, the tray and updates.", "About options"))
 
         self.box.addWidget(heading("Rename the site folder", 1.15))
         self.done = text(about="Renamed")
@@ -162,6 +199,46 @@ class OptionsPage(Page):
         self.tray_result = text(about="Tray settings")
         self.tray_result.hide()
         self.box.addWidget(self.tray_result)
+        self.box.addWidget(divider())
+
+        self.box.addWidget(heading("Updates", 1.15))
+        self.updates_about = text(UPDATES_ABOUT, "About updates")
+        self.box.addWidget(self.updates_about)
+        self.update_facts = Facts()
+        self.box.addWidget(self.update_facts)
+        self.update_managed = text(about="Who installs updates")
+        self.update_available = text(about="New version")
+        self.update_notes = text(about="Release notes")
+        self.update_how = text(UPDATE_HOW, "How to update")
+        self.update_line = text(about="The command that updates FOLIO-Exchange")
+        for w in (self.update_managed, self.update_available, self.update_notes, self.update_how, self.update_line):
+            w.hide()
+            self.box.addWidget(w)
+        self.copy_button = button("Cop&y the command", "Copy the command")
+        self.copy_button.clicked.connect(self._copy_command)
+        self.release_button = button("&Open the release page", "Open the release page")
+        self.release_button.clicked.connect(self._open_release)
+        self.copy_button.hide()
+        self.release_button.hide()
+        self.box.addLayout(actions_row(self.copy_button, self.release_button))
+        self.check_button = button("Check for &updates", "Check for updates")
+        self.check_button.clicked.connect(self._check_updates)
+        self.box.addLayout(actions_row(self.check_button))
+        self.update_result = text(about="Checking for updates")
+        self.update_result.hide()
+        self.box.addWidget(self.update_result)
+        self.prerelease_box = QCheckBox("Get &pre-releases")
+        self.prerelease_box.setAccessibleName("Get pre-releases")
+        self.prerelease_box.clicked.connect(
+            lambda *_: self.update_choice.emit("prereleases", self.prerelease_box.isChecked()))
+        self.box.addWidget(self.prerelease_box)
+        self.prerelease_about = text(PRERELEASE_ABOUT, "About pre-releases")
+        self.box.addWidget(self.prerelease_about)
+        self.automatic_box = QCheckBox("Check for updates automati&cally")
+        self.automatic_box.setAccessibleName("Check for updates automatically")
+        self.automatic_box.clicked.connect(
+            lambda *_: self.update_choice.emit("automatic", self.automatic_box.isChecked()))
+        self.box.addWidget(self.automatic_box)
         self.box.addWidget(divider())
         self.set_platform(self.windows)
 
@@ -288,6 +365,77 @@ class OptionsPage(Page):
         self.tray_result.setText(message or "")
         self.tray_result.setVisible(bool(message))
 
+    # ------------------------------------------------------------ updates
+    def show_updates(self, status: dict, result: dict | None = None) -> None:
+        """updates.status(): this version, when a newer one was last looked for, the newer version and how to get
+        it, and the two choices. ``result``: the answer to a check the person asked for (updates.check's)."""
+        self.update_state = status
+        off = status.get("mode") == "off"
+        new = status.get("available")
+        rows = [("This version", str(status.get("version") or ""))]
+        if not off:
+            checked = model.when(status["checked"]) if status.get("checked") else "Not yet"
+            rows.append(("Last checked", f"{checked}. The last check didn't work." if status.get("failed") else checked))
+        self.update_facts.show_rows(rows)
+        self.update_managed.setText(UPDATES_MANAGED if off else UPDATES_BY_IT)
+        self.update_managed.setVisible(off or (bool(new) and status.get("mode") == "notify"))
+        self.update_available.setText(f"FOLIO-Exchange {new['version']} is available." if new else "")
+        self.update_available.setVisible(bool(new))
+        notes = str(new.get("notes") or "") if new else ""
+        if len(notes) > NOTES_MOST:
+            notes = notes[:NOTES_MOST].rstrip() + "…\n\nThe release page has the rest."
+        self.update_notes.setText(notes)
+        self.update_notes.setVisible(bool(notes))
+        how = bool(new) and status.get("mode") == "on"           # "notify": tell, but never offer to install
+        command = how and not installer_install()                # the installer's own install runs it again
+        self.update_how.setText(UPDATE_HOW if command else UPDATE_INSTALLER)
+        self.update_how.setVisible(how)
+        self.update_line.setText(update_command(new["version"]) if command else "")
+        for w in (self.update_line, self.copy_button):
+            w.setVisible(command)
+        self.release_button.setVisible(bool(new))
+        for w in (self.updates_about, self.check_button, self.prerelease_box, self.automatic_box):
+            w.setVisible(not off)
+        self.prerelease_about.setVisible(not off and (updates.running_version() or (1, 0, 0)) < (1, 0, 0))
+        self.prerelease_box.setChecked(bool(status.get("prereleases")))
+        self.automatic_box.setChecked(bool(status.get("automatic")))
+        if off:
+            self.update_result.hide()
+        if result is None:
+            return
+        self.busy["update"] = False
+        self._enable()
+        if result.get("problem"):
+            tell(self.update_result, f"Couldn't check for updates. {result['problem']}")
+        elif new:
+            self.update_result.hide()
+            tell(self.update_available, self.update_available.text())
+        else:
+            tell(self.update_result, "You have the newest version.")
+
+    def checking_updates(self) -> None:
+        self.busy["update"] = True
+        self.update_result.setText("Checking for updates…")
+        self.update_result.show()
+        self._enable()
+
+    def updates_said(self, message: str | None) -> None:
+        self.update_result.setText(message or "")
+        self.update_result.setVisible(bool(message))
+
+    def _check_updates(self) -> None:
+        if not self.busy["update"]:
+            self.check_updates.emit()
+
+    def _copy_command(self) -> None:
+        QApplication.clipboard().setText(self.update_line.text())
+        self.updates_said("Copied the command.")
+
+    def _open_release(self) -> None:
+        new = self.update_state.get("available")
+        if new:
+            self.open_release.emit(new["page"])
+
     def set_idle(self, idle: bool) -> None:
         self.idle = idle
         self._enable()
@@ -297,6 +445,7 @@ class OptionsPage(Page):
         self.register_button.setEnabled(not self.busy["register"])
         self.alerts_button.setEnabled(self.idle)
         self.test_button.setEnabled(self.idle and not self.busy["test"])
+        self.check_button.setEnabled(not self.busy["update"])
 
     def clear_typed(self) -> None:
         self.rows.clear()
