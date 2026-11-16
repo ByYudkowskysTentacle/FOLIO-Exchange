@@ -27,12 +27,13 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer, Signal
 from PySide6.QtNetwork import QAbstractSocket, QLocalServer, QLocalSocket
 
-from . import places
+from . import VIEWS, places
 
 log = logging.getLogger(__name__)
 
 HELLO = b"fx "                       # the first start's greeting: b"fx <pid>\n"
 SHOW, OK = b"show\n", b"ok\n"
+SHOW_VIEW = b"show "                 # b"show options\n": come to the front on that view (one of VIEWS)
 LINE_MOST = 64                       # longer than any message, so a long one is dropped unread
 ASK_MS = 2000                        # how long a second start waits for each answer
 CONNECTION_MS = 3000                 # how long the first start keeps a connection that says nothing
@@ -49,9 +50,11 @@ class OpenElsewhere(Exception):
 
 
 class InstanceServer(QObject):
-    """The first start's side. ``shown`` fires when a second start asks for the window."""
+    """The first start's side. ``shown`` fires when a second start asks for the window, and ``asked`` after it
+    when that start named a view to open."""
 
     shown = Signal()
+    asked = Signal(str)
 
     def __init__(self, name: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -117,8 +120,11 @@ class InstanceServer(QObject):
                 sock.abort()
             return
         line = bytes(sock.readLine(LINE_MOST).data())
-        if line == SHOW:
+        view = line[len(SHOW_VIEW):].strip().decode("ascii", "replace") if line.startswith(SHOW_VIEW) else None
+        if line == SHOW or view in VIEWS:
             self.shown.emit()
+            if view:
+                self.asked.emit(view)
             sock.write(OK)
             sock.flush()
         sock.disconnectFromServer()
@@ -324,9 +330,9 @@ def _user_sid(pid: int) -> str:
         kernel32.CloseHandle(process)
 
 
-def ask_to_show(name: str, wait_ms: int | None = None) -> bool:
-    """A second start's side: ask the window already open under ``name`` to come to the front. True when it
-    answered; False when nothing listens there, it is not this user's (see ``_trusted_pid``), or it did not
+def ask_to_show(name: str, wait_ms: int | None = None, view: str | None = None) -> bool:
+    """A second start's side: ask the window already open under ``name`` to come to the front, on ``view`` when
+    one is named. True when it answered; False when nothing listens there, it is not this user's (see ``_trusted_pid``), or it did not
     answer in time (``wait_ms``, else ASK_MS, for each answer). Raises OpenElsewhere when it is this user's
     window in another Windows session, which is not asked to show itself there. It waits without an event loop
     running (before the app's own window exists), handling this thread's events between short waits."""
@@ -353,7 +359,7 @@ def ask_to_show(name: str, wait_ms: int | None = None) -> bool:
             raise OpenElsewhere(name)
         _let_take_focus(pid)
         deadline = time.monotonic() + wait_ms / 1000
-        sock.write(SHOW)
+        sock.write(SHOW_VIEW + view.encode("ascii") + b"\n" if view else SHOW)
         if not _wait(lambda ms: sock.waitForBytesWritten(ms) or not sock.bytesToWrite(), deadline):
             return False
         return _line(sock, deadline) == OK
@@ -394,18 +400,22 @@ def _line(sock: QLocalSocket, deadline: float) -> bytes:
     return bytes(sock.readLine(LINE_MOST).data())
 
 
-def claim(name: str) -> tuple[str, InstanceServer | None]:
-    """Become the window for ``name``, or hand over to the one already open. Returns ("first", server) when
+def claim(name: str, view: str | None = None) -> tuple[str, InstanceServer | None]:
+    """Become the window for ``name``, or hand over to the one already open (asking it for ``view``; a window
+    from a version that doesn't know views is asked just to come to the front). Returns ("first", server) when
     this start should open the window, ("shown", None) when the open window was asked to come to the front,
     ("elsewhere", None) when it is open in another Windows session of this user, or ("busy", None) when
     something holds the name but does not answer."""
+    def ask() -> bool:
+        return ask_to_show(name, view=view) or (view is not None and ask_to_show(name))
+
     try:
-        if ask_to_show(name):
+        if ask():
             return "shown", None
         server = InstanceServer(name)
         if server.listen():
             return "first", server
-        if ask_to_show(name):                  # another start won the race just now
+        if ask():                              # another start won the race just now
             return "shown", None
     except OpenElsewhere:
         return "elsewhere", None

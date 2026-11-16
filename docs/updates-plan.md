@@ -1,6 +1,6 @@
 # In-app updates plan
 
-_The plan for D7 of [desktop-plan.md](desktop-plan.md): how FOLIO-Exchange tells a library that a new version is out, and how it installs one. Written on 12 November 2026 and revised on 13 November after a review. Only the groundwork is built: format numbers on the site's databases and a folder for this PC's own files (see Today). Phase U0 can start now. U1 needs the installer (D5), and U2 needs signed releases (D6). The open questions at the end wait on the maintainer._
+_The plan for D7 of [desktop-plan.md](desktop-plan.md): how FOLIO-Exchange tells a library that a new version is out, and how it installs one. Written on 12 November 2026 and revised on 13 November after a review. Phase U0, the notice, was built on 16 November 2026 (see Today), except for the release key, which the maintainer makes offline. U1 needs the installer (D5), and U2 needs signed releases (D6). The open questions at the end wait on the maintainer; U0 took the recommended answer to three of them, which are marked._
 
 ## Why
 
@@ -16,6 +16,7 @@ A library PC keeps whatever version was installed until someone runs the install
 - **The tray** (D4) runs while the person is signed in. It's the natural place to say a new version is out.
 - **Format numbers** (built 12 and 13 Nov 2026). `history.sqlite` and `cache.sqlite` carry a format number (SQLite's `user_version`, `history.FORMAT` and `cache.FORMAT`, both 1), read before anything else touches the file. A version never uses a history or a cache a newer one wrote: it stops with `NewerData` or `NewerCache` and says to reinstall the newer version, or to put back the history from before the update, or to rename the cache so it's downloaded again. These guards protect only the versions released after them: 0.2.0 has none.
 - **Settings files** have no number. An older version refuses a setting it doesn't know ("unknown setting"), but not a setting whose meaning changed. #31 is an example: `host_key_confirmed: false` used to mean "don't log in" and now means "pinned on first use". Going back past it, feeds saved without a vendor fingerprint are refused at login. That fails safe, but it stops those feeds.
+- **The notice** (U0, built 16 Nov 2026). `updates.py` checks GitHub's releases as Checking describes, the tray tells about each new version once, and Options has an Updates section with the release notes and the pip command or the release page (see `updates.py`, `tray.py` and `options.py` in [design.md](design.md)). Nothing is downloaded or installed yet. `updates.RELEASE_KEY`, the place for the release key's public half, is unset and read by nothing until U1.
 - **The app's own folders.** `places.config_dir()` (`%APPDATA%`, which roams) holds preferences, and `places.local_dir()` (`%LOCALAPPDATA%\FOLIO-Exchange\.app`, which doesn't) holds what belongs to this PC: the tray's list of sites and its log. No site can be called `.app` (`siteops.name_problem` refuses names that start with a period).
 
 ## Goals
@@ -40,14 +41,14 @@ A library PC keeps whatever version was installed until someone runs the install
 
 ### Telling
 
-- The tray shows one notification per new version: "FOLIO-Exchange 0.3.0 is available." Clicking it opens Options.
+- The tray shows one notification per new version: "FOLIO-Exchange 0.3.0 is available." Clicking it opens Options (the first watched site's window, started or brought to the front with `--view options`).
 - Options gets an **Updates** section:
   - the running version, and when updates were last checked;
   - "Check for updates";
   - for a newer version, its release notes (the release's text, shown as plain text) and "Install 0.3.0…";
   - "Get pre-releases" and "Check for updates automatically", both per Windows user.
 - An install made with pip (no installer) gets the same notice, with the command to run instead of an Install button:
-  `pip install "folio-exchange[desktop] @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@v0.3.0"`. FOLIO-Exchange is never installed by its bare name, which isn't on PyPI.
+  `pip install "folio-exchange[desktop] @ git+https://github.com/ByYudkowskysTentacle/FOLIO-Exchange.git@v0.3.0"`. FOLIO-Exchange is never installed by its bare name, which isn't on PyPI. As built in U0, the command starts with this install's own Python (`"<python>" -m pip install …`), so it works in the installer's program folder too, and "Open the release page" sits beside it. The command needs Git, which a PC set up with `installer/install.ps1` may not have: there, running the installer again updates in place.
 
 ### Downloading and checking the file
 
@@ -87,17 +88,29 @@ Before D6, step 5 can't hold, so U1 stops after step 4, marks the file (step 6) 
 ### For IT staff
 
 - `FOLIO_EXCHANGE_UPDATES=off` in the environment, or `"check": false` in `updates.json`, turns checking off. Options then says updates are managed by IT.
-- `FOLIO_EXCHANGE_UPDATES=notify` checks and tells but never offers to install.
+- `FOLIO_EXCHANGE_UPDATES=notify` checks and tells but never offers to install. In U0 that means the notice, the release notes and the release page, without the pip command, and "Your IT staff install updates on this computer."
 - The installer's own command line keeps working for software deployment tools.
 
 ## Phases
 
 | # | Change | Done when | Size |
 | --- | --- | --- | --- |
-| U0 | **Notice only** (can start now). `updates.py` (no Qt): the check with its retries, version comparison, the pre-release choice and `updates.json`. The tray's notification and the Options section with release notes and, for every install today, the pip command or a link to the release page. The environment switch. The release key made, its public half in the code, and signing `SHA256SUMS` added to the release checklist. | An install of the first version with U0 says "FOLIO-Exchange 0.3.1 is available" within a day of that release, from the tray and Options, and sends nothing else. | 2 days |
+| U0 | **Notice only** (built 16 Nov 2026, but for the release key: `updates.RELEASE_KEY` is unset until the maintainer makes the key offline, and the signing step is in the release checklist below). `updates.py` (no Qt): the check with its retries, version comparison, the pre-release choice and `updates.json`. The tray's notification and the Options section with release notes and, for every install today, the pip command or a link to the release page. The environment switch. The release key made, its public half in the code, and signing `SHA256SUMS` added to the release checklist. | An install of the first version with U0 says "FOLIO-Exchange 0.3.1 is available" within a day of that release, from the tray and Options, and sends nothing else. | 2 days |
 | U1 | **Download and hand over** (after D5). Download to the owner-only folder, the host list with the release page as a fallback, size limits, the project's signature over `SHA256SUMS` and the installer's SHA-256, the Mark of the Web. A copy of each site before the installer opens. "Install 0.3.0…" opens the checked installer. `schedule.TASK_FORMAT` and the `task-outdated` warning, which the move from a pip install to the installer needs anyway. | A clean PC on 0.3.0 downloads 0.3.1, refuses a file with a bad signature or checksum, copies each site, and opens the installer only after the click. A task left on the pip install's program is warned about. | 3 days |
 | U2 | **Signed, in place** (after D6). Authenticode with its chain and version resource, the process check, "quit for update" over the local sockets, the `updating.json` marker and `run --due` skipping, the silent install from a helper, starting the windows and the tray again, "Updated to …", the audit entry, and going back as above. | A signed 0.3.1 installs over 0.3.0 with one click while the scheduled task keeps running on the hour, and the open windows and the tray come back. A wrongly signed file is deleted, and nothing runs. Going back to 0.3.0 leaves every feed loading, and a feed paused after the update stays paused. | 3 days |
 | U3 | **Docs.** Updating in the guide and `installer/README.md`, the IT switches, release notes as part of the release checklist, the signing policy for D6 and the release key naming who can publish an update. | A librarian and an IT person can each find how updates work and how to stop them. | 0.5 days |
+
+## Release checklist
+
+For each release, once U0 has shipped. U3 adds the rest (release notes, the signing policy).
+
+1. Raise `__version__` and `version` in `pyproject.toml` together, and tag the commit `vX.Y.Z`. Installs look only at tags of exactly that form.
+2. Write the release's text on GitHub for library staff. The app shows it as plain text under Options, so write it without Markdown that needs rendering. Say there when a stored format's number was raised or a setting's meaning changed.
+3. Publish it as a pre-release until 1.0. A draft is never offered to installs.
+4. **Sign `SHA256SUMS`** (from U1, when a release has an installer). On the offline computer that holds the release key, never on GitHub or in CI: make `SHA256SUMS` over the release's files, sign it with the Ed25519 private key to make `SHA256SUMS.sig`, check the signature against the public key in `updates.RELEASE_KEY`, and attach both files to the release. The private key never leaves that computer, apart from its offline backup.
+5. Check from an install of the version before that Options says "FOLIO-Exchange X.Y.Z is available." after "Check for updates".
+
+**Before the first signed release:** the maintainer makes the Ed25519 key pair offline (open question 6), keeps the private half and its backup off GitHub, and puts the 32 public bytes in `updates.RELEASE_KEY` by pull request. Until then it's `None`, and nothing reads it.
 
 ## Tests
 
@@ -129,9 +142,9 @@ Before D6, step 5 can't hold, so U1 stops after step 4, marks the file (step 6) 
 
 ## Open questions
 
-1. **Pre-releases:** until 1.0 every release is a pre-release. Should installs check pre-releases by default until then (recommended for the pilot), or only once someone ticks "Get pre-releases"?
+1. **Pre-releases:** until 1.0 every release is a pre-release. Should installs check pre-releases by default until then (recommended for the pilot), or only once someone ticks "Get pre-releases"? _U0 took the recommended answer: "Get pre-releases" is ticked until someone unticks it while the version is below 1.0. The maintainer to confirm._
 2. **Always ask (recommended), or allow "install updates at night"** for PCs nobody signs in to? That would need the scheduled task to install, against the rule that it never does more than run feeds.
-3. **Where the check runs:** the tray and the window (recommended), or the tray only, so a PC without the tray never checks?
+3. **Where the check runs:** the tray and the window (recommended), or the tray only, so a PC without the tray never checks? _U0 took the recommended answer: both check, and share the one check a day. The maintainer to confirm._
 4. **Going back:** keep the previous installer and site copies (recommended), or point to the release page only?
-5. **Release notes:** the GitHub release text as written, or a short `CHANGES.md` section that the app shows?
-6. **The release key:** who holds it, where it's kept offline, and who holds the backup?
+5. **Release notes:** the GitHub release text as written, or a short `CHANGES.md` section that the app shows? _U0 shows the GitHub release text as written, as plain text. The maintainer to confirm._
+6. **The release key:** who holds it, where it's kept offline, and who holds the backup? _Still open, and U1 waits on it: no key has been made._

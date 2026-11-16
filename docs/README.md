@@ -24,7 +24,7 @@
 - [Spec sheet](spec.md) – goals, who it's for, the feeds it aims to cover, requirements, safety rules and roadmap. It's a snapshot of a working copy; the working notes have the current status.
 - [Working notes](notes.md) – where things stand, the decisions so far and why, and what's been learned about FOLIO and collectionHQ.
 - [Desktop app plan](desktop-plan.md) – why and how a Windows app replaces the browser page, in phases D1 to D8.
-- [In-app updates plan](updates-plan.md) – how the app will tell a library that a new version is out and install it after a yes, in phases U0 to U3 (D7 of the desktop plan).
+- [In-app updates plan](updates-plan.md) – how the app tells a library that a new version is out (U0, built) and will install it after a yes, in phases U0 to U3 (D7 of the desktop plan), with the release checklist.
 - [Services and destinations plan](services-plan.md) – a proposal, not started, to make the services a library sends data to, and the places they receive it, objects of their own, in phases S1 to S5.
 - [Improvement plan](improvement-plan.md) – the work planned after the October 2026 review, in batches, with what's done.
 

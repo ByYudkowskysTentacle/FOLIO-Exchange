@@ -135,7 +135,7 @@ def test_a_first_start_makes_setting_up_the_primary_action(qtbot):
 
 
 def test_a_line_ends_each_section_of_options(qtbot, app_look):
-    """Options has four sections; a divider sits below each, before the next one's heading, drawn as a line one
+    """Options has five sections; a divider sits below each, before the next one's heading, drawn as a line one
     pixel high in the theme's line colour with room around it, and it's nothing to the keyboard or a screen reader."""
     theme.apply(app_look, dark=False)
     page = OptionsPage()
@@ -151,7 +151,7 @@ def test_a_line_ends_each_section_of_options(qtbot, app_look):
         elif isinstance(w, QFrame) and w.objectName() == "divider":
             parts.append("divider")
     assert parts == ["Rename the site folder", "divider", "Scheduled runs", "divider", "Alerts", "divider",
-                     "Tray and notifications", "divider"]
+                     "Tray and notifications", "divider", "Updates", "divider"]
     assert box.itemAt(box.count() - 1).widget().objectName() == "divider"
     lines = page.findChildren(QFrame, "divider")
     for line in lines:

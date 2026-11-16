@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import version_text, views
+from .. import updates, version_text, views
 from ..errors import FxError
 from ..jobs import Job, Jobs
 from . import model, places, startup, theme
@@ -88,7 +88,8 @@ class MainWindow(QMainWindow, SetupActions):
         super().__init__()
         self.site_root = Path(site_root).resolve()
         self.jobs = jobs or Jobs()
-        self.page = PageFallback(self.site_root, self.jobs, open_url or open_in_browser)
+        self.open_url = open_url or open_in_browser
+        self.page = PageFallback(self.site_root, self.jobs, self.open_url)
         self.instance = instance
         self.snap: dict | None = None
         self.watcher: JobWatcher | None = None
@@ -115,6 +116,9 @@ class MainWindow(QMainWindow, SetupActions):
         self.last_refresh = float("-inf")
         self.reader = Reader(self)
         self.reader.done.connect(self._read_done)
+        self.update_reader = Reader(self)                        # the check for a newer version (actions.py)
+        self.update_reader.done.connect(self._update_checked)
+        self.update_asked = False                                # the check under way was asked for under Options
         self.errands = Errands(self)
         self.errands.done.connect(self._errand_done)
         self._build()
@@ -129,6 +133,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.busy_timer.start()
         self.resize(1000, 680)
         self.refresh()
+        self.look_for_update()
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -222,6 +227,9 @@ class MainWindow(QMainWindow, SetupActions):
         self.options.test_alert.connect(self.test_alert)
         self.options.watch.connect(self.watch_from_tray)
         self.options.startup.connect(self.start_tray_at_sign_in)
+        self.options.check_updates.connect(lambda: self.look_for_update(asked=True))
+        self.options.update_choice.connect(self.choose_updates)
+        self.options.open_release.connect(self.open_release_page)
         self.reading = QLabel("Loading the site…")
         self.reading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reading.setWordWrap(True)
@@ -400,9 +408,11 @@ class MainWindow(QMainWindow, SetupActions):
         elif key == "options":
             self.options.show_site(summary)
             self.show_tray_settings()
+            self.options.show_updates(updates.status())
             if moved:
                 self.read_alerts()
                 self.look_for_task()
+                self.look_for_update()
             self.stack.setCurrentWidget(self.options)
         else:
             self.home.show_site(summary, model.attention(snap))
@@ -833,6 +843,14 @@ class MainWindow(QMainWindow, SetupActions):
         started = QProcess.startDetached(exe, args, folder)
         if not (started[0] if isinstance(started, tuple) else started):
             alert(self, f"Couldn't open {root}. Starting {exe} failed.")
+
+    def open_view(self, view: str) -> None:
+        """Open a view another start asked for (the tray's update notice asks for Options), now or once the
+        site has been read."""
+        if self.snap is not None and view in [k for k, _caption in self._items()]:
+            self.select(view)
+        else:
+            self.pending_select = (view, None)
 
     def bring_to_front(self) -> None:
         if self.isMinimized():

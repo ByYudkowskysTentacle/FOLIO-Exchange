@@ -35,6 +35,7 @@ def install_command() -> str:
 
 
 MB_ICONERROR, MB_ICONINFORMATION = 0x10, 0x40
+VIEWS = ("options",)                       # the views --view can open (the tray's update notice opens Options)
 
 
 class _Usage(Exception):
@@ -62,6 +63,7 @@ def _parser(console: bool = True) -> argparse.ArgumentParser:
     p.add_argument("--tray", action="store_true",
                    help="show the tray icon and notifications for the sites you watch, with no window "
                         "(with --site, watch that site too)")
+    p.add_argument("--view", choices=VIEWS, help="the view to open the window on")
     p.add_argument("-v", "--verbose", action="store_true", help="write more detail to the log")
     return p
 
@@ -155,4 +157,4 @@ def main(argv: list[str] | None = None) -> int:
         return run_tray(args.site, verbose=args.verbose, console=console)
     from .app import run
 
-    return run(args.site or os.environ.get(SITE_ENV), verbose=args.verbose, console=console)
+    return run(args.site or os.environ.get(SITE_ENV), verbose=args.verbose, console=console, view=args.view)
