@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from .. import selfupdate, updates, version_text, views
 from ..errors import FxError
 from ..jobs import Job, Jobs
-from . import model, places, startup, theme, updating
+from . import installing, model, places, startup, theme
 from .actions import SETUP_DONE, SetupActions
 from .activity import ActivityPage
 from .feed import FeedPage
@@ -121,7 +121,7 @@ class MainWindow(QMainWindow, SetupActions):
         self.update_asked = False                                # the check under way was asked for under Options
         self.install_info: dict | None = None                    # selfupdate.find_install's answer, once looked up
         self.find_install = selfupdate.find_install              # tests replace these two
-        self.updater = updating.install                          # installs an update (the running action)
+        self.updater = installing.install                          # installs an update (the running action)
         self.errands = Errands(self)
         self.errands.done.connect(self._errand_done)
         self._build()

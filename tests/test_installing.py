@@ -1,4 +1,4 @@
-"""Installing an update from the app (desktop/updating.py), without Qt: whether Options offers it, the order of
+"""Installing an update from the app (desktop/installing.py), without Qt: whether Options offers it, the order of
 the steps, closing the other windows and the tray and starting them again, the line Options shows afterwards,
 and the audit entry. The engine and the sockets are stand-ins; the real engine runs only against PR 36's
 temporary install folder (test_selfupdate's fixtures). Nothing goes online and no real key is used."""
@@ -15,9 +15,9 @@ import pytest
 from sitekit import make_site
 from test_selfupdate import CALM, NEW, OLD, Builder, FakeGitHub, Runner, install, key, make_key, release  # noqa: F401
 
-from folio_exchange import selfupdate, updates
+from folio_exchange import selfupdate
 from folio_exchange.config import load_site
-from folio_exchange.desktop import places, startup, updating
+from folio_exchange.desktop import installing, places, startup
 from folio_exchange.history import History
 
 STATUS = {"mode": "on", "available": {"version": NEW, "notes": "Fixes.", "page": "https://example.org"}}
@@ -26,7 +26,7 @@ UPDATABLE = {"updatable": True, "root": "x", "program": "x/program", "python": "
 
 # ------------------------------------------------------------------ stand-ins
 class Engine:
-    """Stands in for selfupdate in updating.install: records what it's asked, and answers as told."""
+    """Stands in for selfupdate in installing.install: records what it's asked, and answers as told."""
 
     def __init__(self, prepared=None, started=None, sites=()):
         self.calls: list[tuple] = []
@@ -77,12 +77,12 @@ class Sockets:
         return said.pop(0) if len(said) > 1 else said[0]
 
 
-def run(own, engine, sockets=None, *, now=None, sleeps=None, launched=None, parent=lambda pid: None, **kw):
+def run(own, engine, sockets=None, *, now=None, sleeps=None, launched=None, parents=dict, **kw):
     sockets = sockets or Sockets()
     sleeps = [] if sleeps is None else sleeps
     launched = [] if launched is None else launched
-    return updating.install(NEW, key=b"k" * 32, own=own, engine=engine, probe=sockets.probe, ask_quit=sockets.ask,
-                            parent=parent, launch=launched.append, sleep=sleeps.append, now=now or (lambda: CALM),
+    return installing.install(NEW, key=b"k" * 32, own=own, engine=engine, probe=sockets.probe, ask_quit=sockets.ask,
+                            parents=parents, launch=launched.append, sleep=sleeps.append, now=now or (lambda: CALM),
                             http=FakeGitHub({}), **kw)
 
 
@@ -93,25 +93,25 @@ def argv(command):
 
 # ------------------------------------------------------------------ whether Options offers it
 def test_offer_only_for_an_install_it_can_update_with_a_key_in_on_mode():
-    assert updating.offer(STATUS, UPDATABLE, b"k" * 32) == {"install": True, "why": None}
+    assert installing.offer(STATUS, UPDATABLE, b"k" * 32) == {"install": True, "why": None}
 
 
 def test_no_key_means_no_install_and_says_why():
-    assert updating.offer(STATUS, UPDATABLE, None) == {"install": False, "why": updating.NO_KEY}
+    assert installing.offer(STATUS, UPDATABLE, None) == {"install": False, "why": installing.NO_KEY}
 
 
 @pytest.mark.parametrize("mode", ["notify", "off"])
 def test_notify_and_off_never_offer_it(mode):
-    assert updating.offer({**STATUS, "mode": mode}, UPDATABLE, b"k" * 32) == {"install": False, "why": None}
+    assert installing.offer({**STATUS, "mode": mode}, UPDATABLE, b"k" * 32) == {"install": False, "why": None}
 
 
 def test_nothing_newer_offers_nothing():
-    assert updating.offer({**STATUS, "available": None}, UPDATABLE, b"k" * 32)["install"] is False
+    assert installing.offer({**STATUS, "available": None}, UPDATABLE, b"k" * 32)["install"] is False
 
 
 def test_a_pip_install_is_told_why_in_plain_words(tmp_path):
     pip = selfupdate.find_install(prefix=tmp_path, base_prefix=tmp_path, version=NEW)
-    got = updating.offer(STATUS, pip, b"k" * 32)
+    got = installing.offer(STATUS, pip, b"k" * 32)
     assert got == {"install": False, "why": "FOLIO-Exchange was installed with pip, so it can't update itself."}
 
 
@@ -121,15 +121,15 @@ def test_an_editable_install_is_told_why(tmp_path):
     (program / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
     editable = selfupdate.find_install(prefix=program, base_prefix=tmp_path, package_dir=tmp_path / "src",
                                        version=NEW)
-    why = updating.offer(STATUS, editable, b"k" * 32)["why"]
+    why = installing.offer(STATUS, editable, b"k" * 32)["why"]
     assert why.startswith("This copy of FOLIO-Exchange runs from") and why.endswith("so it can't update itself.")
 
 
 def test_the_install_is_looked_up_only_when_it_matters():
     asked = []
-    updating.offer({**STATUS, "mode": "notify"}, None, b"k", find=lambda **kw: asked.append(kw) or UPDATABLE)
+    installing.offer({**STATUS, "mode": "notify"}, None, b"k", find=lambda **kw: asked.append(kw) or UPDATABLE)
     assert asked == []
-    assert updating.offer(STATUS, None, b"k", find=lambda **kw: asked.append(kw) or UPDATABLE)["install"]
+    assert installing.offer(STATUS, None, b"k", find=lambda **kw: asked.append(kw) or UPDATABLE)["install"]
     assert asked == [{"version": NEW}]
 
 
@@ -158,9 +158,9 @@ def test_the_release_key_comes_only_from_the_code():
 
 # ------------------------------------------------------------------ installing
 def test_without_a_key_the_engine_is_never_reached(tmp_path):
-    res = updating.install(NEW, key=None, own=tmp_path, engine=Untouchable(), probe=pytest.fail, ask_quit=pytest.fail,
-                           parent=pytest.fail)                      # none of them is called
-    assert res["ok"] is False and res["stage"] == "key" and res["reason"].startswith(updating.NO_KEY)
+    res = installing.install(NEW, key=None, own=tmp_path, engine=Untouchable(), probe=pytest.fail, ask_quit=pytest.fail,
+                           parents=pytest.fail)                     # none of them is called
+    assert res["ok"] is False and res["stage"] == "key" and res["reason"].startswith(installing.NO_KEY)
 
 
 def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_swap(tmp_path, caplog):
@@ -169,12 +169,12 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     engine = Engine(sites=[other, own])
     sockets = Sockets({window: 4242, tray: 4343})
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
-        res = run(own, engine, sockets, parent={4242: 4241, 4241: 4240, 4240: 4239, 4239: 4, 4343: 4342}.get)
+        res = run(own, engine, sockets, parents=lambda: {4242: 4241, 4241: 4240, 4240: 4239, 4239: 4, 4343: 4342})
     assert res["ok"] and res["stage"] == "swap" and res["version"] == NEW
     (_, tag, kw), = engine.asked("prepare")
     assert tag == f"v{NEW}" and kw["key"] == b"k" * 32
     # The open window and the tray may be running, and so may the launchers above them in the program folder
-    # (folio-exchange-app.exe, then the venv's pythonw.exe), up to updating.ANCESTORS.
+    # (folio-exchange-app.exe, then the venv's pythonw.exe), up to installing.ANCESTORS.
     assert {4239, 4240, 4241, 4242, 4342, 4343} <= kw["allow_pids"] and 4 not in kw["allow_pids"]
     assert kw["sites"] == [other, own]                              # each site known is copied
     assert sockets.asked == [window, tray]                          # asked only after the release was ready
@@ -187,14 +187,14 @@ def test_a_yes_prepares_the_tag_with_the_key_closes_the_others_and_starts_the_sw
     assert "Closed the window for other." in said and "Closed the tray." in said
 
 
-def test_the_download_sends_no_account_and_no_default_headers(tmp_path, monkeypatch):
-    """The engine gets U0's session (updates._session: no .netrc account, requests' default headers cleared;
-    test_updates checks what it sends), never a plain requests.Session()."""
+def test_the_download_sends_no_account_and_no_default_headers(tmp_path):
+    """The engine's own download session (selfupdate.download_session: no .netrc account, requests' default
+    headers cleared; test_selfupdate checks what it sends), never a plain requests.Session()."""
     sessions = []
-    monkeypatch.setattr(updates, "_session", lambda: sessions.append(object()) or sessions[-1])
     engine = Engine()
-    updating.install(NEW, key=b"k" * 32, own=tmp_path, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
-                     parent=lambda pid: None, sleep=pytest.fail, now=lambda: CALM)
+    engine.download_session = lambda: sessions.append(object()) or sessions[-1]
+    installing.install(NEW, key=b"k" * 32, own=tmp_path, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
+                     parents=dict, sleep=pytest.fail, now=lambda: CALM)
     (_, _tag, kw), = engine.asked("prepare")
     assert len(sessions) == 1 and kw["http"].http is sessions[0]
 
@@ -243,7 +243,7 @@ def test_a_window_busy_too_long_stops_the_update_and_the_closed_ones_come_back(t
     assert res["ok"] is False and res["stage"] == "busy"
     assert res["reason"] == ("The window for Lakeside was still running an action, so the update stopped. Nothing "
                              "was changed. Install it again once that action has finished.")
-    assert res["done"][-1] == f"FOLIO-Exchange {updating.__version__} is still installed."
+    assert res["done"][-1] == f"FOLIO-Exchange {installing.__version__} is still installed."
     assert engine.asked("start_swap") == []
     assert launched == [argv(startup.app_command(idle)), argv(startup.tray_command())]
 
@@ -291,13 +291,13 @@ def test_the_real_engine_gets_the_release_ready_from_the_tag_and_key(install, ke
 
     site = make_site(tmp_path / "sites" / "lakeside", "https://folio.example.org")
     with caplog.at_level(logging.INFO, logger="folio_exchange"):
-        res = updating.install(NEW, key=key[1], own=site, engine=Real(), probe=lambda n: None, parent=lambda pid: None,
+        res = installing.install(NEW, key=key[1], own=site, engine=Real(), probe=lambda n: None, parents=dict,
                                ask_quit=pytest.fail, launch=pytest.fail, sleep=pytest.fail, now=lambda: CALM,
                                http=FakeGitHub(release(key[0])))
     assert res["ok"], res
     plan, restart = started[0]
     assert plan["version"] == NEW and restart == [argv(startup.app_command(site, "options"))]
-    said = [r.getMessage() for r in caplog.records if r.name == "folio_exchange.desktop.updating"]
+    said = [r.getMessage() for r in caplog.records if r.name == "folio_exchange.desktop.installing"]
     assert said[:6] == [f"Getting FOLIO-Exchange {NEW} ready. The version you have keeps running meanwhile.",
                         "Downloading the signed checksums…",
                         f"The signature checks out. Downloading {selfupdate.zip_name(NEW)}…",
@@ -316,7 +316,7 @@ def test_a_download_with_another_keys_signature_stops_before_anything_closes(ins
                                       protect=lambda *a, **k: None, **kw)
 
     engine = Real()
-    res = updating.install(NEW, key=key[1], own=None, engine=engine, probe=lambda n: None, parent=lambda pid: None,
+    res = installing.install(NEW, key=key[1], own=None, engine=engine, probe=lambda n: None, parents=dict,
                            ask_quit=pytest.fail,
                            sleep=pytest.fail, now=lambda: CALM, http=FakeGitHub(release(other)))
     assert res["ok"] is False and res["stage"] == "verify"
@@ -335,20 +335,20 @@ NOW = datetime(2026, 11, 16, 11, 0, tzinfo=timezone.utc)
 
 def test_updated_to_is_said_for_a_day_on_the_new_version(tmp_path):
     write_result(tmp_path, ok=True, version=NEW, **{"from": OLD}, finished=(NOW - timedelta(minutes=2)).isoformat())
-    assert updating.last_update(updates_dir=tmp_path, now=NOW, running=NEW) == f"Updated to {NEW}."
-    assert updating.last_update(updates_dir=tmp_path, now=NOW + timedelta(days=1), running=NEW) is None
-    assert updating.last_update(updates_dir=tmp_path, now=NOW, running=OLD) is None    # another version runs
+    assert installing.last_update(updates_dir=tmp_path, now=NOW, running=NEW) == f"Updated to {NEW}."
+    assert installing.last_update(updates_dir=tmp_path, now=NOW + timedelta(days=1), running=NEW) is None
+    assert installing.last_update(updates_dir=tmp_path, now=NOW, running=OLD) is None    # another version runs
 
 
 def test_an_update_that_did_not_finish_says_so_and_why(tmp_path):
     reason = "FOLIO-Exchange is still running from C:\\FX\\program. Nothing was changed. Close it and try again."
     write_result(tmp_path, ok=False, version=NEW, **{"from": OLD}, reason=reason, finished=NOW.isoformat())
-    assert updating.last_update(updates_dir=tmp_path, now=NOW, running=OLD) == (
+    assert installing.last_update(updates_dir=tmp_path, now=NOW, running=OLD) == (
         f"The update to {NEW} didn't finish. FOLIO-Exchange {OLD} is still installed. {reason}")
 
 
 def test_no_result_says_nothing(tmp_path):
-    assert updating.last_update(updates_dir=tmp_path, now=NOW) is None
+    assert installing.last_update(updates_dir=tmp_path, now=NOW) is None
 
 
 def test_the_swap_writes_what_the_next_start_says(install, key, tmp_path):  # noqa: F811
@@ -358,7 +358,7 @@ def test_the_swap_writes_what_the_next_start_says(install, key, tmp_path):  # no
                                builder=Builder(), run=Runner(), sites=(), now=CALM, processes=lambda f: [],
                                updates_dir=updates_dir, protect=lambda *a, **k: None)
     selfupdate.swap(ready["plan"], run=Runner(), processes=lambda f: [], now=lambda: CALM, sleep=lambda s: None)
-    assert updating.last_update(updates_dir=updates_dir, running=NEW) == f"Updated to {NEW}."
+    assert installing.last_update(updates_dir=updates_dir, running=NEW) == f"Updated to {NEW}."
 
 
 def test_the_update_is_recorded_once_in_each_sites_audit_log(tmp_path):
@@ -366,7 +366,7 @@ def test_the_update_is_recorded_once_in_each_sites_audit_log(tmp_path):
     b = make_site(tmp_path / "b", "https://folio.example.org")
     gone = tmp_path / "gone"
     write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    record = functools.partial(updating.record_update, updates_dir=tmp_path / "updates", now=NOW, sleep=pytest.fail)
+    record = functools.partial(installing.record_update, updates_dir=tmp_path / "updates", now=NOW, sleep=pytest.fail)
     assert record(sites=[a, gone, b]) == [str(a), str(b)]
     assert record(sites=[a, b]) == []                                                    # once per site
     for root in (a, b):
@@ -379,7 +379,7 @@ def program_updated(root):
 
 
 class BusyHistory:
-    """Stands in for History in updating: "database is locked" for the first ``busy`` opens of each site, as
+    """Stands in for History in installing: "database is locked" for the first ``busy`` opens of each site, as
     when the window reads the site at the moment it opens, then the real History."""
 
     def __init__(self, busy):
@@ -397,10 +397,10 @@ def test_a_busy_history_is_tried_again(tmp_path, monkeypatch):
     lost with "database is locked"."""
     a = make_site(tmp_path / "a", "https://folio.example.org")
     write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    monkeypatch.setattr(updating, "History", BusyHistory({"a": 2}))
+    monkeypatch.setattr(installing, "History", BusyHistory({"a": 2}))
     waits = []
-    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a], now=NOW, sleep=waits.append) == [str(a)]
-    assert waits == [updating.LOCKED_WAIT] * 2
+    assert installing.record_update(updates_dir=tmp_path / "updates", sites=[a], now=NOW, sleep=waits.append) == [str(a)]
+    assert waits == [installing.LOCKED_WAIT] * 2
     monkeypatch.undo()
     assert program_updated(a) == [{"from": OLD, "to": NEW, "via": "app"}]
 
@@ -409,11 +409,11 @@ def test_a_site_that_stays_busy_is_recorded_at_the_next_start(tmp_path, monkeypa
     a = make_site(tmp_path / "a", "https://folio.example.org")
     b = make_site(tmp_path / "b", "https://folio.example.org")
     write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    record = functools.partial(updating.record_update, updates_dir=tmp_path / "updates", sites=[a, b], now=NOW,
+    record = functools.partial(installing.record_update, updates_dir=tmp_path / "updates", sites=[a, b], now=NOW,
                                sleep=lambda s: None)
-    monkeypatch.setattr(updating, "History", BusyHistory({"b": updating.LOCKED_TRIES}))
+    monkeypatch.setattr(installing, "History", BusyHistory({"b": installing.LOCKED_TRIES}))
     assert record() == [str(a)]                                     # b gave up: not marked done
-    monkeypatch.setattr(updating, "History", History)
+    monkeypatch.setattr(installing, "History", History)
     assert record(now=NOW + timedelta(hours=3)) == [str(b)]          # the next start, the same day
     assert record() == []
     for root in (a, b):
@@ -423,11 +423,11 @@ def test_a_site_that_stays_busy_is_recorded_at_the_next_start(tmp_path, monkeypa
 def test_nothing_is_recorded_more_than_a_day_after_the_update(tmp_path):
     late = make_site(tmp_path / "late", "https://folio.example.org")
     write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[late], now=NOW + timedelta(days=2)) == []
+    assert installing.record_update(updates_dir=tmp_path / "updates", sites=[late], now=NOW + timedelta(days=2)) == []
     assert program_updated(late) == []
 
 
 def test_an_update_that_did_not_finish_is_not_recorded(tmp_path):
     a = make_site(tmp_path / "a", "https://folio.example.org")
     write_result(tmp_path / "updates", ok=False, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a], now=NOW) == []
+    assert installing.record_update(updates_dir=tmp_path / "updates", sites=[a], now=NOW) == []

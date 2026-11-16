@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .. import __version__, selfupdate, swaphelper, updates
+from .. import __version__, selfupdate, swaphelper
 from ..config import load_site
 from ..errors import LockBusy
 from ..history import History
@@ -114,7 +114,7 @@ def _stopped(stage: str, reason: str, version: str, done: list[str] | None = Non
 
 def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] | None = None,
             engine: Any = selfupdate, probe: Callable[[str], int | None] | None = None,
-            ask_quit: Callable[[str], str] | None = None, parent: Callable[[int], int | None] | None = None,
+            ask_quit: Callable[[str], str] | None = None, parents: Callable[[], dict[int, int]] | None = None,
             launch: Callable[[list[str]], None] = _launch,
             sleep: Callable[[float], None] = time.sleep, now: Callable[[], datetime] | None = None,
             wait_seconds: float = WAIT_SECONDS, http: Any = None) -> dict:
@@ -123,12 +123,11 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
     when the swap has started and the window should quit now."""
     if key is None:                                     # never reached from the app (offer), but never past here
         return _stopped("key", NO_KEY + " Nothing was downloaded.", version)
-    if probe is None or ask_quit is None or parent is None:
+    if probe is None or ask_quit is None:
         from . import single
 
         probe = probe or single.probe
         ask_quit = ask_quit or single.ask_to_quit
-        parent = parent or single.parent_pid
     now = now or (lambda: datetime.now(timezone.utc).astimezone())
     tag = f"v{version}"
     sites = list(engine.known_sites() if sites is None else sites)
@@ -142,11 +141,14 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
     open_now = [(kind, root, name, pid) for kind, root, name in others if (pid := probe(name)) is not None]
     # Their ancestors and this window's too: on Windows the program folder's folio-exchange-app.exe starts the
     # venv's pythonw.exe, which starts the base Python that answers on the socket, and both stay running from the
-    # program folder. An ancestor outside it (Explorer, say) is never counted anyway.
+    # program folder (as swaphelper.own_chain finds for this process). An ancestor outside it (Explorer, say) is
+    # never counted anyway.
+    tree = (parents or swaphelper.parent_pids)()
+
     def lineage(pid: int) -> list[int]:
         out: list[int] = []
         for _step in range(ANCESTORS):
-            pid = parent(pid) or 0
+            pid = tree.get(pid) or 0
             if pid <= 0 or pid in out:
                 break
             out.append(pid)
@@ -157,7 +159,7 @@ def install(version: str, *, key: Any, own: Path | None, sites: Iterable[Path] |
         allow |= {pid, *lineage(pid)}
 
     log.info("Getting FOLIO-Exchange %s ready. The version you have keeps running meanwhile.", version)
-    session = http if http is not None else updates._session()        # no .netrc account, no default headers
+    session = http if http is not None else engine.download_session()     # no .netrc account, no default headers
 
     def build(*args: Any, **kw: Any) -> Any:
         log.info("Building the new program folder. This takes a few minutes…")

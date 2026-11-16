@@ -16,7 +16,7 @@ The tray also looks for a newer FOLIO-Exchange (``updates.look``, in a thread of
 tells about each new version once: "FOLIO-Exchange 0.3.0 is available." Clicking that opens Options. An update
 installed from a window asks the tray to quit ("quit for update" over its socket); the tray always may, since it
 only reads, and the update starts it again. When it starts, it records the last update in each site's audit log
-if no window has yet (``updating.record_update``).
+if no window has yet (``installing.record_update``).
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from .. import updates
 from ..config import find_site
 from ..errors import FxError
 from ..logsetup import setup_logging
-from . import places, single, startup, theme, updating, watch
+from . import installing, places, single, startup, theme, watch
 from .worker import MainThreadCollector, Reader
 
 log = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ class Tray(QObject):
         self.update_reader = Reader(self)
         self.update_reader.done.connect(self._update_looked)
         self.update_looks = 0                        # looks for a newer version delivered, for tests to wait on
-        self.after_reader = Reader(self)             # records the last update in each site (updating.py)
+        self.after_reader = Reader(self)             # records the last update in each site (installing.py)
         self.after_asked = False                     # once, after the first readings (_after_readings)
         self.closed = False
         self.plain = theme.logo_icon()
@@ -122,7 +122,7 @@ class Tray(QObject):
         if self.after_asked or self.closed or any(r.busy for r in self.readers.values()):
             return
         self.after_asked = True
-        self.after_reader.read(updating.record_update)
+        self.after_reader.read(installing.record_update)
 
     def listen(self, server: single.InstanceServer) -> None:
         """Answer the local socket: another ``--tray`` start (read the list again), and an update's "quit for

@@ -1,5 +1,5 @@
 """The window's setup actions (D3): connecting to FOLIO, adding a feed, a feed's settings, delivery, password and
-key, recipes, renaming the site folder, the scheduled task, alerts, and installing an update (``updating.py``). ``MainWindow`` takes these in as a
+key, recipes, renaming the site folder, the scheduled task, alerts, and installing an update (``installing.py``). ``MainWindow`` takes these in as a
 mixin, so ``window.py`` keeps the reading, the feeds' actions and closing.
 
 As for the feeds' actions: whatever changes a file, reaches the network or stores a secret runs off the window's
@@ -21,7 +21,7 @@ from PySide6.QtCore import QTimer
 from .. import __version__, recipeops, runner, setupops, siteops, sources, updates, views
 from ..config import load_site
 from ..errors import ConfigError, FxError
-from . import model, places, startup, updating
+from . import installing, model, places, startup
 from .alerts import AlertsDialog
 from .builder import RecipeBuilder
 from .delivery import DeliveryDialog
@@ -773,12 +773,12 @@ class SetupActions:
 
     # ------------------------------------------------------------ installing an update (docs/updates-inplace.md)
     def update_offer(self, status: dict) -> dict:
-        """Whether Options offers "Install X.Y.Z…" (updating.offer), with the key in the code and nothing else.
+        """Whether Options offers "Install X.Y.Z…" (installing.offer), with the key in the code and nothing else.
         Whether this install can update itself is looked up once."""
         new = status.get("available")
         if new and status.get("mode") == "on" and self.install_info is None:
             self.install_info = self.find_install(version=new["version"])
-        return updating.offer(status, self.install_info, updates.RELEASE_KEY)
+        return installing.offer(status, self.install_info, updates.RELEASE_KEY)
 
     def ask_install(self, release: dict) -> bool:
         """True only when the person chose "Install" (Cancel is the default). Tests replace this."""
@@ -789,7 +789,7 @@ class SetupActions:
             dialog.deleteLater()
 
     def install_update(self, version: str) -> None:
-        """"Install X.Y.Z…": ask, then install as the window's running action (updating.install), off this
+        """"Install X.Y.Z…": ask, then install as the window's running action (installing.install), off this
         thread. Refused at once while another action runs here or on the page."""
         if not self.options.offered or updates.RELEASE_KEY is None:
             return                                         # no Install button: nothing reaches the engine
@@ -860,7 +860,7 @@ class SetupActions:
     def after_update(self) -> None:
         """When the window opens: how the last update went, for Options, and its audit entry in each site."""
         def look() -> dict:
-            return {"recorded": updating.record_update(), "line": updating.last_update()}
+            return {"recorded": installing.record_update(), "line": installing.last_update()}
 
         self.errands.run(("after-update",), look)
 

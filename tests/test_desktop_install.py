@@ -10,7 +10,6 @@ from __future__ import annotations
 import functools
 import json
 import logging
-import os
 import threading
 import uuid
 
@@ -26,12 +25,12 @@ from sitekit import make_site  # noqa: E402
 from test_desktop_setup import LONG, click, mnemonics, window  # noqa: E402
 from test_desktop_tray import make_tray, trays  # noqa: E402, F401
 from test_desktop_updates import NOTES, github, options_page, seen  # noqa: E402, F401
+from test_installing import Engine  # noqa: E402
 from test_selfupdate import CALM, OLD, Builder, FakeGitHub, Runner, install, key, make_key, release  # noqa: E402, F401
-from test_updating import Engine  # noqa: E402
 
 from folio_exchange import __version__, selfupdate, updates  # noqa: E402
 from folio_exchange.config import load_site  # noqa: E402
-from folio_exchange.desktop import options, places, single, startup, updating  # noqa: E402
+from folio_exchange.desktop import installing, options, places, single, startup  # noqa: E402
 from folio_exchange.history import History  # noqa: E402
 
 NEW = "0.3.0"                       # what the faked GitHub lists (test_desktop_updates' github fixture)
@@ -58,8 +57,8 @@ def installing_window(qtbot, site, engine, *, asked=None, yes=True, http=None, *
     w, page = options_page(qtbot, site)
     asked = [] if asked is None else asked
     w.ask_install = lambda release: asked.append(release) or yes
-    w.updater = functools.partial(updating.install, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
-                                  parent=lambda pid: None,
+    w.updater = functools.partial(installing.install, engine=engine, probe=lambda n: None, ask_quit=pytest.fail,
+                                  parents=dict,
                                   launch=pytest.fail, sleep=lambda s: None, now=lambda: CALM,
                                   http=http or FakeGitHub({}), **kw)
     return w, page
@@ -83,7 +82,7 @@ def test_no_release_key_means_no_install_button_and_no_way_to_the_engine(qtbot, 
     assert updates.RELEASE_KEY is None                             # as shipped, until the maintainer makes the key
     w, page = options_page(qtbot, site)
     assert not seen(page.install_button)
-    assert seen(page.install_why) and page.install_why.text() == updating.NO_KEY
+    assert seen(page.install_why) and page.install_why.text() == installing.NO_KEY
     assert seen(page.update_line) and seen(page.copy_button)       # U0's command stays
     w.ask_install = lambda release: pytest.fail("asked to install with no key")
     w.updater = lambda *a, **kw: pytest.fail("the engine was reached with no key")
@@ -125,7 +124,7 @@ def test_the_section_follows_the_wording_rules(qtbot, site, github, keyed):
     for b in page.findChildren(QAbstractButton):
         if b.text():
             assert b.text().replace("&", "").rstrip("…") in b.accessibleName(), b.text()     # label in name
-    for words in (updating.NO_KEY, updating.WHAT_HAPPENS):
+    for words in (installing.NO_KEY, installing.WHAT_HAPPENS):
         assert "—" not in words and words[0].isupper() and words.rstrip()[-1] == "."
 
 
@@ -274,11 +273,6 @@ def test_a_window_with_an_action_running_refuses_to_quit(qtbot, site, name):
     w.toggling = False
     assert single.ask_to_quit(name) == "quit"
     qtbot.waitUntil(lambda: w.quitting, timeout=5000)
-
-
-def test_the_parent_of_a_process_is_found():
-    assert single.parent_pid(os.getpid()) == os.getppid()
-    assert single.parent_pid(2 ** 31 - 3) is None                   # no such process
 
 
 def test_nothing_there_and_a_server_that_was_not_told_are_never_quit(qtbot, name):

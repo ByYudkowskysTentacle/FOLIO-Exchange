@@ -48,7 +48,7 @@ RELEASE_PAGE = f"https://github.com/{REPO}/releases/tag/"
 RELEASE_ZIP = f"https://github.com/{REPO}/archive/refs/tags/"
 
 # The public half of the project's Ed25519 release key, which ``SHA256SUMS.sig`` is checked against before anything
-# downloaded is used: by the in-place update the app installs (desktop/updating.py passes this and no other key to
+# downloaded is used: by the in-place update the app installs (desktop/installing.py passes this and no other key to
 # selfupdate), and by U1's installer. Not set yet: the maintainer makes the key offline (docs/updates-plan.md, open
 # question 6). While it is None, Options offers no Install. Only ever the 32 public bytes; the private key never
 # comes near this repository.

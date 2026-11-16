@@ -13,9 +13,9 @@ window waits for that console to close, then looks again whether the task is the
 Updates (phase U0 of docs/updates-plan.md) tell: the newer version, its release notes as plain text, the release
 page, and how to update this install: the installer again for one ``installer/install.ps1`` made, else a pip
 command for Command Prompt. For an install made by ``install.ps1``, once the release key is in the code
-(``updating.offer``), "Install X.Y.Z…" takes the place of that: it asks first (``UpdateDialog``, Cancel the default)
+(``installing.offer``), "Install X.Y.Z…" takes the place of that: it asks first (``UpdateDialog``, Cancel the default)
 and the window installs the update in place as its running action, with its progress and any refusal shown here
-(``updating.install``). Otherwise the section says why there's no Install button. With
+(``installing.install``). Otherwise the section says why there's no Install button. With
 ``FOLIO_EXCHANGE_UPDATES=off`` (or ``"check": false`` in updates.json) the section says IT manages updates and offers
 nothing else; with ``notify`` it tells, but never offers to install.
 """
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QFormLayout, QPl
 
 from .. import __version__, schedule, siteops, updates
 from ..launcher import program_path
-from . import model, theme, updating
+from . import installing, model, theme
 from .forms import Rows, edit, tell
 from .pages import Facts, Page, actions_row, button, divider, heading, lines_label, set_lines, text
 
@@ -131,7 +131,7 @@ class UpdateDialog(QDialog):
         self.notes.setMaximumHeight(220)
         self.notes.setVisible(bool(notes))
         box.addWidget(self.notes)
-        self.happens = text(updating.WHAT_HAPPENS, "What happens")
+        self.happens = text(installing.WHAT_HAPPENS, "What happens")
         box.addWidget(self.happens)
         self.cancel_button = button("&Cancel", "Cancel and install nothing")
         self.install_button = theme.primary(button("&Install", f"Install {version}"))
@@ -163,7 +163,7 @@ class OptionsPage(Page):
         self.idle = True
         self.busy = {"rename": False, "register": False, "test": False, "update": False, "install": False}
         self.update_state: dict = {}
-        # Whether "Install X.Y.Z…" is offered for updates.status(), and why not (updating.offer). The window sets
+        # Whether "Install X.Y.Z…" is offered for updates.status(), and why not (installing.offer). The window sets
         # it; until then nothing is offered.
         self.offer_of: Callable[[dict], dict] = lambda status: {"install": False, "why": None}
         self.offered = False
