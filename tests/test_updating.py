@@ -4,8 +4,10 @@ and the audit entry. The engine and the sockets are stand-ins; the real engine r
 temporary install folder (test_selfupdate's fixtures). Nothing goes online and no real key is used."""
 from __future__ import annotations
 
+import functools
 import json
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -364,15 +366,68 @@ def test_the_update_is_recorded_once_in_each_sites_audit_log(tmp_path):
     b = make_site(tmp_path / "b", "https://folio.example.org")
     gone = tmp_path / "gone"
     write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a, gone, b]) == [str(a), str(b)]
-    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a, b]) == []          # once
+    record = functools.partial(updating.record_update, updates_dir=tmp_path / "updates", now=NOW, sleep=pytest.fail)
+    assert record(sites=[a, gone, b]) == [str(a), str(b)]
+    assert record(sites=[a, b]) == []                                                    # once per site
     for root in (a, b):
-        with History(load_site(root).history_path) as hist:
-            entries = [e for e in hist.audit_log() if e["action"] == "program updated"]
-        assert len(entries) == 1 and entries[0]["detail"] == {"from": OLD, "to": NEW, "via": "app"}
+        assert program_updated(root) == [{"from": OLD, "to": NEW, "via": "app"}]
+
+
+def program_updated(root):
+    with History(load_site(root).history_path) as hist:
+        return [e["detail"] for e in hist.audit_log() if e["action"] == "program updated"]
+
+
+class BusyHistory:
+    """Stands in for History in updating: "database is locked" for the first ``busy`` opens of each site, as
+    when the window reads the site at the moment it opens, then the real History."""
+
+    def __init__(self, busy):
+        self.busy, self.tries = busy, {}
+
+    def __call__(self, path):
+        n = self.tries[str(path)] = self.tries.get(str(path), 0) + 1
+        if n <= self.busy.get(Path(path).parents[1].name, 0):
+            raise sqlite3.OperationalError("database is locked")
+        return History(path)
+
+
+def test_a_busy_history_is_tried_again(tmp_path, monkeypatch):
+    """Regression (Linux CI): the window's first reading of the site and the audit entry met, and the entry was
+    lost with "database is locked"."""
+    a = make_site(tmp_path / "a", "https://folio.example.org")
+    write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
+    monkeypatch.setattr(updating, "History", BusyHistory({"a": 2}))
+    waits = []
+    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a], now=NOW, sleep=waits.append) == [str(a)]
+    assert waits == [updating.LOCKED_WAIT] * 2
+    monkeypatch.undo()
+    assert program_updated(a) == [{"from": OLD, "to": NEW, "via": "app"}]
+
+
+def test_a_site_that_stays_busy_is_recorded_at_the_next_start(tmp_path, monkeypatch):
+    a = make_site(tmp_path / "a", "https://folio.example.org")
+    b = make_site(tmp_path / "b", "https://folio.example.org")
+    write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
+    record = functools.partial(updating.record_update, updates_dir=tmp_path / "updates", sites=[a, b], now=NOW,
+                               sleep=lambda s: None)
+    monkeypatch.setattr(updating, "History", BusyHistory({"b": updating.LOCKED_TRIES}))
+    assert record() == [str(a)]                                     # b gave up: not marked done
+    monkeypatch.setattr(updating, "History", History)
+    assert record(now=NOW + timedelta(hours=3)) == [str(b)]          # the next start, the same day
+    assert record() == []
+    for root in (a, b):
+        assert program_updated(root) == [{"from": OLD, "to": NEW, "via": "app"}]
+
+
+def test_nothing_is_recorded_more_than_a_day_after_the_update(tmp_path):
+    late = make_site(tmp_path / "late", "https://folio.example.org")
+    write_result(tmp_path / "updates", ok=True, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
+    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[late], now=NOW + timedelta(days=2)) == []
+    assert program_updated(late) == []
 
 
 def test_an_update_that_did_not_finish_is_not_recorded(tmp_path):
     a = make_site(tmp_path / "a", "https://folio.example.org")
     write_result(tmp_path / "updates", ok=False, version=NEW, **{"from": OLD}, finished=NOW.isoformat())
-    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a]) == []
+    assert updating.record_update(updates_dir=tmp_path / "updates", sites=[a], now=NOW) == []

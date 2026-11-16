@@ -351,5 +351,6 @@ def test_a_tray_started_again_records_the_update_when_no_window_has(qtbot, site,
     trays.append(t)
     t.look_for_update = lambda: None
     t.start()
-    qtbot.waitUntil(lambda: not t.after_reader.busy, timeout=LONG)
+    qtbot.waitUntil(lambda: t.after_asked and not t.after_reader.busy, timeout=LONG)
+    assert t.readings >= 1                                         # after the first reading, not alongside it
     assert len(audit_entries(site)) == 1

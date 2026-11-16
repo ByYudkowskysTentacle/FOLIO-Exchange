@@ -140,7 +140,7 @@ class MainWindow(QMainWindow, SetupActions):
             instance.quit_asked.connect(self.quit_for_update)
         self.refresh()
         self.look_for_update()
-        self.after_update()
+        self.after_update_asked = False                          # once the first reading has ended (_read_done)
 
     # ------------------------------------------------------------ layout
     def _build(self) -> None:
@@ -467,6 +467,11 @@ class MainWindow(QMainWindow, SetupActions):
             self._set_title(summary.get("name") or self.site_root.name)
             self._fill_sidebar()
             self._select_pending()
+        if not self.after_update_asked:
+            # Not alongside the first reading: on a site whose history is new, the two opening it at once could
+            # each find it locked (seen on Linux CI), and the window would say it couldn't load the site.
+            self.after_update_asked = True
+            self.after_update()
         if self.renaming and not self.renaming_started:
             self._start_rename()                         # it waited for this reading to end
             return

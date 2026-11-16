@@ -94,6 +94,7 @@ class Tray(QObject):
         self.update_reader.done.connect(self._update_looked)
         self.update_looks = 0                        # looks for a newer version delivered, for tests to wait on
         self.after_reader = Reader(self)             # records the last update in each site (updating.py)
+        self.after_asked = False                     # once, after the first readings (_after_readings)
         self.closed = False
         self.plain = theme.logo_icon()
         self.marked = badged(self.plain)
@@ -113,8 +114,15 @@ class Tray(QObject):
         self.icon.show()
         self.timer.start()
         self.refresh()
-        self.after_reader.read(updating.record_update)
         return self
+
+    def _after_readings(self) -> None:
+        """Once the first readings of the sites have ended, record the last update in each site (not alongside
+        them: two openings of a new history at once can each find it locked)."""
+        if self.after_asked or self.closed or any(r.busy for r in self.readers.values()):
+            return
+        self.after_asked = True
+        self.after_reader.read(updating.record_update)
 
     def listen(self, server: single.InstanceServer) -> None:
         """Answer the local socket: another ``--tray`` start (read the list again), and an update's "quit for
@@ -145,6 +153,7 @@ class Tray(QObject):
             if reader is None:
                 reader = self.readers[key] = Reader(self)
                 reader.done.connect(lambda result, error, r=root: self._looked(r, result, error))
+                reader.done.connect(lambda *_answer: self._after_readings())
             if not reader.busy:                      # a reading still under way (a share not answering) is left
                 reader.read(lambda r=root: watch.look(r))
         if not self.update_reader.busy:

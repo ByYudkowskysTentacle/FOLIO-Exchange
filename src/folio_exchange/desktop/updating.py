@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -39,7 +40,9 @@ WAIT_SECONDS = 15 * 60          # how long the update waits for a window's actio
 STEP_SECONDS = 5
 ANCESTORS = 3                   # how far up from each open window, the tray and this window their launchers may be
 SAID_FOR = timedelta(days=1)    # how long after a swap Options says how it went
-AUDITED = "audited"             # set in the result file once each site's audit log has the entry
+AUDITED = "audited"             # in the result file: the sites whose audit log has the entry
+LOCKED_TRIES = 5                # a site's history that is busy (another connection writing) is tried this often
+LOCKED_WAIT = 0.5               # seconds between those tries
 ACTION = "program updated"
 
 NO_KEY = "This version of FOLIO-Exchange can't install updates itself."
@@ -261,31 +264,56 @@ def _write(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
-def record_update(*, updates_dir: Path | None = None, sites: Iterable[Path] | None = None) -> list[str]:
+def _audit(root: Path, result: dict, sleep: Callable[[float], None]) -> None:
+    """One site's entry. Its history may be busy for a moment (the window reading the site as it opens, a run
+    writing): a locked database is tried again a few times before it counts as a failure."""
+    for attempt in range(LOCKED_TRIES):
+        try:
+            with History(load_site(root).history_path) as hist:
+                hist.audit(None, None, ACTION, {"from": result.get("from"), "to": result.get("version"),
+                                                "via": "app"})
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == LOCKED_TRIES - 1:
+                raise
+            sleep(LOCKED_WAIT)
+
+
+def record_update(*, updates_dir: Path | None = None, sites: Iterable[Path] | None = None,
+                  now: datetime | None = None, sleep: Callable[[float], None] = time.sleep) -> list[str]:
     """After a swap that worked, write "program updated" with both versions in the audit log of each site the
-    app knows, once: the window and the tray both call this when they start, and the first does it. Returns the
-    sites recorded in (empty when there was nothing to do). A site whose history can't be opened is skipped and
-    logged."""
+    app knows, once per site: the window and the tray both call this when they start. ``audited`` in the result
+    file lists the sites done, so a site that couldn't be written (its history busy, its drive offline) is tried
+    again at the next start, for a day after the swap (``SAID_FOR``), and a site added after that never gets an
+    entry for an update it didn't go through. Returns the sites recorded in this time."""
     folder = Path(updates_dir) if updates_dir is not None else selfupdate.updates_folder()
+
+    def due(result: dict) -> bool:
+        finished = _finished(result)
+        age = (now or datetime.now(timezone.utc)) - finished if finished is not None else None
+        return bool(result.get("ok")) and age is not None and -timedelta(minutes=5) <= age < SAID_FOR
+
     result = selfupdate.last_result(folder)
-    if not result or not result.get("ok") or result.get(AUDITED):
+    if not result or not due(result):
         return []
     try:
         with RunLock(folder / "audit.lock"):
             result = selfupdate.last_result(folder) or {}
-            if not result.get("ok") or result.get(AUDITED):
+            if not due(result):
                 return []
+            audited = [str(s) for s in result.get(AUDITED) or [] if isinstance(s, str)]
             done = []
             for root in (selfupdate.known_sites() if sites is None else sites):
+                if any(_same(root, a) for a in audited):
+                    continue
                 try:
-                    with History(load_site(Path(root)).history_path) as hist:
-                        hist.audit(None, None, ACTION, {"from": result.get("from"), "to": result.get("version"),
-                                                        "via": "app"})
+                    _audit(Path(root), result, sleep)
                     done.append(str(root))
-                except Exception as exc:  # noqa: BLE001 - one site that can't be opened doesn't stop the others
-                    log.warning("Couldn't record the update in %s: %s", root, exc)
-            _write(folder / selfupdate.RESULT, {**result, AUDITED: True})
-            log.info("Recorded the update to %s in %d site(s)", result.get("version"), len(done))
+                except Exception as exc:  # noqa: BLE001 - one site that can't be written doesn't stop the others
+                    log.warning("Couldn't record the update in %s (tried again at the next start): %s", root, exc)
+            if done:
+                _write(folder / selfupdate.RESULT, {**result, AUDITED: [*audited, *done]})
+                log.info("Recorded the update to %s in %d site(s)", result.get("version"), len(done))
             return done
     except LockBusy:
         return []                                       # the tray or another window is recording it
