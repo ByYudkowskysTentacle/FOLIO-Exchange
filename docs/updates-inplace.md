@@ -1,6 +1,6 @@
 # Updating a script-based install in place
 
-_A route for in-app updates that needs neither the one-file installer (D5) nor Windows code signing (D6). Written on 16 November 2026. The engine is built (`selfupdate.py` and `swaphelper.py`, with tests); nothing in the app calls it yet. It follows [updates-plan.md](updates-plan.md) for checking, telling, "never during work", site copies and going back, and replaces that plan's download-and-run-an-installer steps for installs made by `installer/install.ps1`. Folding it into that plan and [design.md](design.md) is left for after U0 merges._
+_A route for in-app updates that needs neither the one-file installer (D5) nor Windows code signing (D6). Written on 16 November 2026. The engine is built (`selfupdate.py` and `swaphelper.py`, with tests); nothing in the app calls it yet. It follows [updates-plan.md](updates-plan.md) for checking, telling, "never during work", site copies and going back, and replaces that plan's download-and-run-an-installer steps for installs made by `installer/install.ps1`. [design.md](design.md) lists the modules and their signatures. Folding this route into that plan is left for the wiring._
 
 ## Why
 
@@ -23,11 +23,11 @@ _A route for in-app updates that needs neither the one-file installer (D5) nor W
 The helper, which uses the standard library only:
 
 1. waits up to two minutes for every program in the program folder to quit and for the minutes 5 to 15 to pass, and stops if either is still true or if the list of running programs can't be read;
-2. renames `program` to `program.outgoing` and waits up to ten seconds for any program caught running from it to quit. If one is still there, or the list can't be read, it renames the folder back and stops;
+2. renames `program` to `program.outgoing` and waits up to ten seconds for any program caught running from it to quit. A program counts if it's listed under either name, since Windows goes on listing a running program under the path it started from. If one is still there, or the list can't be read, it renames the folder back and stops;
 3. renames `program.new` to `program`, so the scheduled task, the Startup entry and the launchers keep their paths. Its commands already name `program`, so there's no moment when they point at a folder that's gone;
 4. checks that `program\Scripts\folio-exchange.exe --version` reports the new version;
 5. on success, removes the `program.previous` from the update before and renames `program.outgoing` to `program.previous`;
-6. removes the marker, whatever happened, writes `updates\result.json`, and starts the programs in `restart` again (only programs inside the program folder).
+6. removes the marker, whatever happened (even when the plan can't be read: `start_swap` passes the install folder and the result file on the command line too), writes `updates\result.json`, and starts the programs in `restart` again (only programs inside the program folder).
 
 ## The marker
 
@@ -100,4 +100,4 @@ Every step returns a dict a window can show, in the style of `siteops.rename_sit
 - Reading `last_result()` when the app opens, to say "Updated to X.Y.Z." or why it didn't finish.
 - The audit entry "program updated" with both versions in each site's history.
 - `check` warning about a marker older than an hour.
-- Folding this route into [updates-plan.md](updates-plan.md) (U1 and U2 for script-based installs) and [design.md](design.md) (the module, its signatures and the marker), and the release checklist's zip-and-sign step.
+- Folding this route into [updates-plan.md](updates-plan.md) (U1 and U2 for script-based installs), and the zip-and-sign step into its release checklist.

@@ -286,6 +286,15 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
         except ProcessListError:
             return None
 
+    def running_after_rename() -> bool | None:
+        """Whether a program still runs from the renamed folder. Windows goes on listing a running program
+        under the path it started from, so one listed under ``program`` counts too (that folder doesn't exist
+        between the two renames, so nothing new can have started there)."""
+        before, after = running(program), running(outgoing)
+        if before is None or after is None:
+            return None
+        return before or after
+
     unlisted = ("Couldn't list the programs running on this computer, so it can't tell whether FOLIO-Exchange "
                 "is running. Nothing was changed.")
     try:
@@ -321,11 +330,11 @@ def swap(plan: dict, *, run=subprocess.run, rename=os.rename, processes=processe
         # A program that started between the check and the rename now runs from program.outgoing. It finds the
         # marker and quits; anything still there after a few seconds means the old folder goes back.
         settled = 0
-        caught = running(outgoing)
+        caught = running_after_rename()
         while caught and settled < SETTLE_SECONDS:
             sleep(STEP_SECONDS)
             settled += STEP_SECONDS
-            caught = running(outgoing)
+            caught = running_after_rename()
         if caught is None or caught:
             reason = unlisted if caught is None else (
                 "A program started from the program folder during the update. Nothing was changed. Try the "
@@ -395,19 +404,47 @@ def _start(argv: list[str], program: Path) -> None:
         pass
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
-        print("usage: swaphelper.py PLAN.json", file=sys.stderr)
-        return 2
-    plan = json.loads(Path(args[0]).read_text(encoding="utf-8"))
-    result = swap(plan)
-    result["finished"] = _now().isoformat(timespec="seconds")
-    out = Path(plan["result"])
+def _write_result(out: Path, result: dict) -> None:
+    result = {**result, "finished": _now().isoformat(timespec="seconds")}
     tmp = out.with_name(out.name + ".tmp")
     tmp.write_text(json.dumps(result, indent=1), encoding="utf-8")
     os.replace(tmp, out)
-    program = Path(plan["root"]) / PROGRAM
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``swaphelper.py PLAN.json ROOT RESULT.json``: the plan, the install folder (whose marker is removed
+    whatever happens, even when the plan can't be read) and where to write what happened."""
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 3:
+        print("usage: swaphelper.py PLAN.json INSTALL-FOLDER RESULT.json", file=sys.stderr)
+        return 2
+    plan_path, root, out = Path(args[0]), Path(args[1]), Path(args[2])
+    result = {"ok": False, "version": None, "from": None, "program": "old", "done": [], "left": [],
+              "reason": "The update couldn't start. Nothing was changed."}
+    plan: dict = {}
+    try:
+        try:
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            if not isinstance(plan, dict) or os.path.normcase(os.path.abspath(str(plan.get("root")))) != \
+                    os.path.normcase(os.path.abspath(root)):
+                raise ValueError("the plan is for another install folder")
+        except (OSError, ValueError) as exc:
+            result["reason"] = f"The update's plan couldn't be read ({exc}). Nothing was changed."
+            plan = {}
+        else:
+            result = swap(plan)
+    except Exception as exc:  # noqa: BLE001 - whatever happens, the marker goes and a result is written
+        result["reason"] = f"The update stopped ({type(exc).__name__}: {exc})."
+    finally:
+        try:
+            (root / MARKER).unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            _write_result(out, result)
+        except OSError:
+            pass
+    program = root / PROGRAM
     for item in plan.get("restart") or []:
         if isinstance(item, list) and all(isinstance(a, str) for a in item):
             _start(item, program)

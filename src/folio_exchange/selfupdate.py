@@ -698,7 +698,8 @@ def start_swap(plan_path: str | os.PathLike, *, restart: Iterable[list[str]] = (
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | \
         getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        launch([plan["python"], "-I", "-X", "utf8", str(helper), str(plan_path)], cwd=str(helper_dir),
+        launch([plan["python"], "-I", "-X", "utf8", str(helper), str(plan_path), str(plan["root"]), str(plan["result"])],
+               cwd=str(helper_dir),
                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
                creationflags=flags)
     except OSError as exc:
