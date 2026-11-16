@@ -1,6 +1,6 @@
 # Updating a script-based install in place
 
-_A route for in-app updates that needs neither the one-file installer (D5) nor Windows code signing (D6). Written on 16 November 2026. The engine (`selfupdate.py` and `swaphelper.py`) and its wiring to the app (`desktop/installing.py`, "Install X.Y.Z…" under Options, below) are built, with tests. It waits only for the release key: while `updates.RELEASE_KEY` is `None`, Options shows no Install button. It follows [updates-plan.md](updates-plan.md) for checking, telling, "never during work", site copies and going back, and replaces that plan's download-and-run-an-installer steps for installs made by `installer/install.ps1` (see that plan's "Two routes"). [design.md](design.md) has the modules' signatures._
+_A route for in-app updates that needs neither the one-file installer (D5) nor Windows code signing (D6). Written on 16 November 2026. The engine (`selfupdate.py` and `swaphelper.py`) and its wiring to the app (`desktop/installing.py`, "Install X.Y.Z…" under Options, below) are built, with tests. The release key's public half is in `updates.RELEASE_KEY` since 16 Nov 2026, so Options offers Install for a release signed with it; a build with `None` there shows no Install button. It follows [updates-plan.md](updates-plan.md) for checking, telling, "never during work", site copies and going back, and replaces that plan's download-and-run-an-installer steps for installs made by `installer/install.ps1` (see that plan's "Two routes"). [design.md](design.md) has the modules' signatures._
 
 ## Why
 
